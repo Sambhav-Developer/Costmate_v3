@@ -1,0 +1,28 @@
+# Environments
+.env
+.env.*
+!.env.example
+
+# Application Data
+Backend/uploads/
+Backend/output/
+uploads/
+output/
+Backend/secure/
+
+# Node & Next.js Caches
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Python Caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+ENV/

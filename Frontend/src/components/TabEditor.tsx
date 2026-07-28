@@ -1,0 +1,512 @@
+'use client';
+import React, { useState, useEffect } from 'react';
+import { CheckCircle2, Clock, Play, AlertTriangle, Building2, FileSpreadsheet, Settings2, FileImage, Layers, RefreshCw } from 'lucide-react';
+import { api } from '../lib/api';
+import ResultPanel from './editor/ResultPanel';
+import { Door, Window } from './editor/types';
+import { DoorsSchedule, WindowsSchedule } from './editor/ScheduleTables';
+
+// ─── Props ─────────────────────────────────────────────────────
+interface TabEditorProps {
+  activeTab: 'drawing' | 'qa' | 'result';
+  setActiveTab: (tab: 'drawing' | 'qa' | 'result') => void;
+  sessionId: string | null;
+  sessionState: any;
+  refreshSession: () => void;
+  displayName?: string;
+}
+
+// ─── Tab Button ────────────────────────────────────────────────
+function TabBtn({ active, disabled, onClick, icon, label, badge }: {
+  active: boolean; disabled?: boolean; onClick: () => void;
+  icon: React.ReactNode; label: string; badge?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex items-center gap-2 px-6 py-3 font-bold text-xs transition-all ${active ? 'bg-gradient-accent text-white shadow-md rounded-t-xl -mb-px' : 'text-foreground hover:bg-panel-hover rounded-t-xl -mb-px'}`}
+      style={active ? { boxShadow: '0 -4px 12px rgba(255,81,47,.2)' } : undefined}
+    >
+      {icon}
+      {label}
+      {badge && (
+        <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${active ? 'bg-white/20 text-white' : 'bg-gradient-accent bg-opacity-10 text-white'}`}>
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ─── Processing Screen ─────────────────────────────────────────
+function ProcessingScreen({ step, pct }: { step: string; pct: number }) {
+  const [localPct, setLocalPct] = React.useState(pct);
+
+  React.useEffect(() => {
+    setLocalPct(prev => Math.max(prev, pct));
+  }, [pct]);
+
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      setLocalPct(prev => {
+        let targetMax = 99;
+        let increment = 0.2;
+
+        if (pct < 15) {
+          targetMax = 14;
+          increment = 0.3;
+        } else if (pct < 35) {
+          targetMax = 34;
+          increment = 0.4;
+        } else if (pct < 45) {
+          targetMax = 44;
+          increment = 0.3;
+        } else if (pct < 70) {
+          targetMax = 69;
+          increment = 0.2;
+        } else if (pct < 90) {
+          targetMax = 89;
+          increment = 0.3;
+        } else {
+          targetMax = 99;
+          increment = 0.2;
+        }
+
+        if (prev < targetMax) {
+          return Math.min(prev + increment, targetMax);
+        }
+        return prev;
+      });
+    }, 800);
+
+    return () => clearInterval(interval);
+  }, [pct]);
+
+  const desc: Record<string, string> = {
+    upload_completed: 'Analyzing floor plan boundaries and scales...',
+    ocr_completed: 'Reading annotations...',
+    vision_agents_completed: 'Extracting doors and windows...',
+    quantities_calculated: 'Formatting schedules...',
+    validation_completed: 'Running validation...',
+  };
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center p-8 select-none"
+      style={{ background: 'var(--background)' }}>
+      <div className="w-full max-w-sm rounded-2xl shadow-xl p-8 flex flex-col gap-6 items-center animate-fade-in"
+        style={{ background: 'var(--panel)', border: '1px solid var(--panel-border)' }}>
+        <div className="relative w-16 h-16">
+          <div className="w-16 h-16 rounded-2xl flex items-center justify-center bg-gradient-accent text-white" style={{ opacity: 0.8 }}>
+            <Building2 className="w-7 h-7" />
+          </div>
+          <span className="absolute inset-0 rounded-2xl border-2 border-t-transparent animate-spin"
+            style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+        </div>
+        <div className="text-center flex flex-col gap-1.5 w-full">
+          <h3 className="text-base font-bold" style={{ color: 'var(--foreground)' }}>Running AI Estimate Agents…</h3>
+          <p className="text-xs leading-relaxed" style={{ color: 'var(--muted)' }}>
+            {desc[step] || 'Running background AI agents…'}
+          </p>
+        </div>
+        <div className="w-full flex flex-col gap-1.5">
+          <div className="w-full h-2 rounded-full overflow-hidden"
+            style={{ background: 'var(--background)', border: '1px solid var(--panel-border)' }}>
+            <div className="h-full bg-gradient-accent rounded-full transition-all duration-300 ease-out"
+               style={{ width: `${Math.round(localPct)}%` }} />
+          </div>
+          <div className="flex justify-between text-[10px] font-semibold">
+            <span style={{ color: 'var(--muted)' }}>Takeoff Pipeline</span>
+            <span className="font-bold text-gradient-accent">{Math.round(localPct)}%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Drawing Tab ───────────────────────────────────────────────
+function DrawingTab({ sessionState }: { sessionState: any }) {
+  const pages = sessionState?.uploaded_page_paths || [];
+  const singlePath = sessionState?.uploaded_file_path;
+  const imgUrl = (p: string) => p.startsWith('http') ? p : `${api.baseUrl}/static/uploads/${p.split(/[/\\]/).pop()}`;
+
+  const renderBoundingBoxes = () => {
+    const doors = sessionState?.qa_prefilled?.doors || [];
+    const windows = sessionState?.qa_prefilled?.windows || [];
+    const boxes: React.ReactNode[] = [];
+    
+    doors.forEach((d: any) => {
+      if (d.bounding_boxes) {
+        d.bounding_boxes.forEach((box: number[], idx: number) => {
+          if (box.length === 4) {
+            const [ymin, xmin, ymax, xmax] = box;
+            const isUnknown = d.type === 'UNKNOWN';
+            boxes.push(
+              <div 
+                key={`door-${d.type}-${idx}`}
+                title={isUnknown ? "UNKNOWN Door" : `Door Type ${d.type}`}
+                className="absolute border-2 rounded-sm cursor-help transition-all"
+                style={{
+                  top: `${ymin * 100}%`,
+                  left: `${xmin * 100}%`,
+                  height: `${(ymax - ymin) * 100}%`,
+                  width: `${(xmax - xmin) * 100}%`,
+                  borderColor: isUnknown ? '#ef4444' : '#818cf8',
+                  backgroundColor: isUnknown ? 'rgba(239, 68, 68, 0.15)' : 'rgba(129, 140, 248, 0.15)',
+                  zIndex: isUnknown ? 20 : 10
+                }}
+              >
+                {isUnknown && <span className="absolute -top-5 left-0 whitespace-nowrap text-[9px] font-bold text-white bg-red-500 px-1.5 py-0.5 rounded shadow-sm">UNKNOWN</span>}
+              </div>
+            );
+          }
+        });
+      }
+    });
+
+    windows.forEach((w: any) => {
+      if (w.bounding_boxes) {
+        w.bounding_boxes.forEach((box: number[], idx: number) => {
+          if (box.length === 4) {
+            const [ymin, xmin, ymax, xmax] = box;
+            const isUnknown = w.type === 'UNKNOWN';
+            boxes.push(
+              <div 
+                key={`window-${w.type}-${idx}`}
+                title={isUnknown ? "UNKNOWN Window" : `Window Type ${w.type}`}
+                className="absolute border-2 rounded-sm cursor-help transition-all"
+                style={{
+                  top: `${ymin * 100}%`,
+                  left: `${xmin * 100}%`,
+                  height: `${(ymax - ymin) * 100}%`,
+                  width: `${(xmax - xmin) * 100}%`,
+                  borderColor: isUnknown ? '#f59e0b' : '#34d399',
+                  backgroundColor: isUnknown ? 'rgba(245, 158, 11, 0.15)' : 'rgba(52, 211, 153, 0.15)',
+                  zIndex: isUnknown ? 20 : 10
+                }}
+              >
+                {isUnknown && <span className="absolute -top-5 left-0 whitespace-nowrap text-[9px] font-bold text-white bg-amber-500 px-1.5 py-0.5 rounded shadow-sm">UNKNOWN</span>}
+              </div>
+            );
+          }
+        });
+      }
+    });
+    
+    return boxes;
+  };
+
+  if (pages.length > 0) {
+    return (
+      <div className="flex flex-col gap-6 rounded-2xl p-6 shadow-sm"
+        style={{ background: 'var(--panel)', border: '1px solid var(--panel-border)', minHeight: 500 }}>
+        {pages.map((path: string, i: number) => (
+          <div key={i} className="flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold" style={{ color: 'var(--muted)' }}>
+                Page {i + 1} of {pages.length}
+              </span>
+              <a href={imgUrl(path)} target="_blank" rel="noopener noreferrer"
+                className="text-xs font-bold flex items-center gap-1 cursor-pointer hover:underline text-gradient-accent">
+                🔎 Full resolution
+              </a>
+            </div>
+            <div className="rounded-xl overflow-hidden border p-3"
+              style={{ background: '#ffffff', borderColor: 'var(--panel-border)' }}>
+              <div className="flex justify-center w-full">
+                <div className="relative inline-block">
+                  <img src={imgUrl(path)} alt={`Page ${i + 1}`} className="max-w-full block" />
+                  <div className="absolute top-0 left-0 w-full h-full pointer-events-none">
+                    {renderBoundingBoxes()}
+                  </div>
+                </div>
+              </div>
+            </div>
+            {i < pages.length - 1 && <div className="border-b pt-3" style={{ borderColor: 'var(--panel-border)' }} />}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (singlePath) {
+    return (
+      <div className="flex flex-col gap-3 rounded-2xl p-6 shadow-sm"
+        style={{ background: 'var(--panel)', border: '1px solid var(--panel-border)' }}>
+        <div className="flex justify-end">
+          <a href={imgUrl(singlePath)} target="_blank" rel="noopener noreferrer"
+            className="text-xs font-bold flex items-center gap-1 cursor-pointer hover:underline text-gradient-accent">
+            🔎 Full resolution
+          </a>
+        </div>
+        <div className="rounded-xl overflow-hidden border p-3"
+          style={{ background: '#ffffff', borderColor: 'var(--panel-border)' }}>
+          <div className="flex justify-center w-full">
+            <div className="relative inline-block">
+              <img src={imgUrl(singlePath)} alt="Floor Plan" className="max-w-full block" />
+              <div className="absolute top-0 left-0 w-full h-full pointer-events-none">
+                {renderBoundingBoxes()}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <p className="text-sm italic text-center py-16" style={{ color: 'var(--muted)' }}>
+      Rendering design plan preview…
+    </p>
+  );
+}
+
+// ─── Status Chip ───────────────────────────────────────────────
+function StatusChip({ status }: { status: string }) {
+  if (status === 'completed')
+    return (
+      <span className="flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full pill-success">
+        <CheckCircle2 className="w-3 h-3" /> Complete
+      </span>
+    );
+  if (status === 'failed')
+    return (
+      <span className="flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full pill-danger">
+        <AlertTriangle className="w-3 h-3" /> Failed
+      </span>
+    );
+  return (
+    <span className="flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full pill-warning">
+      <Clock className="w-3 h-3" /> Review
+    </span>
+  );
+}
+
+// ─── Main TabEditor ────────────────────────────────────────────
+export default function TabEditor({
+  activeTab, setActiveTab, sessionId, sessionState, refreshSession, displayName,
+}: TabEditorProps) {
+  const [qaForm, setQaForm] = useState<any>(null);
+  const [submittingQA, setSubmittingQA] = useState(false);
+  const [qaError, setQaError] = useState<string | null>(null);
+
+  // Add forms
+  const [newDoor, setNewDoor] = useState<Door>({ type: 'D1', width_m: 0.9, height_m: 2.1, material: 'Teak Wood', count: 1 });
+  const [newWindow, setNewWindow] = useState<Window>({ type: 'W1', width_m: 1.2, height_m: 1.5, material: 'UPVC', count: 1 });
+
+  const lastLoadedSessionId = React.useRef<string | null>(null);
+  const lastLoadedStep = React.useRef<string | null>(null);
+  const lastLoadedChatLen = React.useRef<number>(0);
+
+  useEffect(() => {
+    if (!sessionId) {
+      setQaForm(null);
+      lastLoadedSessionId.current = null;
+      lastLoadedStep.current = null;
+      lastLoadedChatLen.current = 0;
+      return;
+    }
+
+    const verified = sessionState?.qa_verified;
+    const prefilled = sessionState?.qa_prefilled;
+    const hasVerified = verified && typeof verified === 'object' && Object.keys(verified || {}).length > 0;
+    const hasPreFilled = prefilled && typeof prefilled === 'object' && Object.keys(prefilled || {}).length > 0;
+    const currentStep = sessionState?.current_step || '';
+    const chatLen = sessionState?.chat_history?.length || 0;
+
+    const shouldLoad = 
+      (lastLoadedSessionId.current !== sessionId) || 
+      (qaForm === null && (hasVerified || hasPreFilled)) ||
+      (currentStep && currentStep !== lastLoadedStep.current && (currentStep === 'paused_qa' || currentStep === 'qa_prefilled')) ||
+      (chatLen > lastLoadedChatLen.current);
+
+    if (shouldLoad) {
+      if (hasVerified) {
+        setQaForm(JSON.parse(JSON.stringify(verified)));
+      } else if (hasPreFilled) {
+        setQaForm(JSON.parse(JSON.stringify(prefilled)));
+      }
+      lastLoadedSessionId.current = sessionId;
+      lastLoadedStep.current = currentStep;
+      lastLoadedChatLen.current = chatLen;
+    }
+  }, [sessionState, sessionId]);
+
+  const updateField = (key: string, value: any) => setQaForm((p: any) => ({ ...p, [key]: value }));
+
+  const handleListChange = (parentKey: string, idx: number, key: string, value: any) =>
+    setQaForm((p: any) => {
+      const list = [...(p[parentKey] || [])];
+      list[idx] = { ...list[idx], [key]: value };
+      return { ...p, [parentKey]: list };
+    });
+
+  const getFilename = () =>
+    displayName || sessionState?.original_filename ||
+    (sessionState?.uploaded_file_path || '').split(/[/\\]/).pop() || 'drawing.png';
+
+  const handleAddDoor = () => {
+    const list = [...(qaForm?.doors || [])];
+    list.push({ ...newDoor });
+    updateField('doors', list);
+    setNewDoor({ type: `D${list.length + 1}`, width_m: 0.9, height_m: 2.1, material: 'Teak Wood', count: 1 });
+  };
+  const handleRemoveDoor = (i: number) => updateField('doors', (qaForm?.doors || []).filter((_: any, idx: number) => idx !== i));
+  const handleDoorChange = (i: number, k: string, v: any) => handleListChange('doors', i, k, v);
+
+  const handleAddWindow = () => {
+    const list = [...(qaForm?.windows || [])];
+    list.push({ ...newWindow });
+    updateField('windows', list);
+    setNewWindow({ type: `W${list.length + 1}`, width_m: 1.2, height_m: 1.5, material: 'UPVC', count: 1 });
+  };
+  const handleRemoveWindow = (i: number) => updateField('windows', (qaForm?.windows || []).filter((_: any, idx: number) => idx !== i));
+  const handleWindowChange = (i: number, k: string, v: any) => handleListChange('windows', i, k, v);
+
+  const handleQASubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmittingQA(true);
+    setQaError(null);
+    try {
+      await api.submitQA(sessionId!, qaForm);
+      refreshSession();
+    } catch (err: any) {
+      setQaError(err.message || 'Submission failed');
+    } finally {
+      setSubmittingQA(false);
+    }
+  };
+
+  const isQAStage =
+    sessionState?.current_step === 'qa_prefilled' ||
+    sessionState?.current_step === 'paused_qa' ||
+    sessionState?.status === 'completed' ||
+    sessionState?.status === 'failed';
+
+  if (!sessionId) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center select-none"
+        style={{ background: 'var(--background)' }}>
+        <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-5 bg-gradient-accent bg-opacity-10 text-white">
+          <Layers className="w-8 h-8" />
+        </div>
+        <h3 className="text-lg font-bold" style={{ color: 'var(--foreground)' }}>No drawing selected</h3>
+        <p className="text-sm mt-1 max-w-sm leading-relaxed" style={{ color: 'var(--muted)' }}>
+          Select an estimation from the sidebar or upload a new floor plan to begin.
+        </p>
+      </div>
+    );
+  }
+
+  if ((sessionState?.status === 'processing' || sessionState?.status === 'calculating') && !isQAStage) {
+    return <ProcessingScreen step={sessionState.current_step} pct={sessionState.progress_pct || 15} />;
+  }
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden font-sans" style={{ background: 'var(--background)' }}>
+      <div className="h-14 border-b flex items-center px-5 justify-between shrink-0 shadow-sm select-none"
+        style={{ borderColor: 'var(--panel-border)', background: 'var(--panel)' }}>
+        <span className="font-bold text-sm truncate max-w-[200px]" style={{ color: 'var(--foreground)' }}
+          title={getFilename()}>
+          {getFilename()}
+        </span>
+        <div className="flex gap-1 p-1 rounded-xl"
+          style={{ background: 'var(--background)', border: '1px solid var(--panel-border)' }}>
+          <TabBtn active={activeTab === 'drawing'} onClick={() => setActiveTab('drawing')}
+            icon={<FileImage className="w-3.5 h-3.5" />} label="Drawing" />
+          <TabBtn active={activeTab === 'qa'} disabled={!qaForm} onClick={() => setActiveTab('qa')}
+            icon={<Settings2 className="w-3.5 h-3.5" />} label="Parameters" />
+          <TabBtn active={activeTab === 'result'} disabled={sessionState?.status !== 'completed'} onClick={() => setActiveTab('result')}
+            icon={<FileSpreadsheet className="w-3.5 h-3.5" />} label="Schedule" />
+        </div>
+        <div className="shrink-0">
+          <StatusChip status={sessionState?.status || 'processing'} />
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-6 selection:bg-accent/20">
+        {activeTab === 'drawing' && <DrawingTab sessionState={sessionState} />}
+
+        {activeTab === 'qa' && qaForm && (
+          <form onSubmit={handleQASubmit} className="w-full max-w-4xl mx-auto flex flex-col gap-5">
+            {!sessionState?.qa_verified?.project_name && (
+              <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-xs border border-[#8b5cf6]/20" style={{ background: 'rgba(139, 92, 246, 0.08)' }}>
+                <span className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 text-gradient-accent" style={{ background: 'rgba(139, 92, 246, 0.15)' }}>AI</span>
+                <span className="flex-1" style={{ color: 'var(--foreground)' }}>
+                  <strong className="text-gradient-accent">Auto-filled from OCR analysis</strong> — Review and edit values, then click Verify.
+                </span>
+                <button type="button" onClick={refreshSession}
+                  className="flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-lg cursor-pointer transition-colors shrink-0"
+                  style={{ color: 'var(--accent)', border: '1px solid rgba(139,92,246,.25)' }}>
+                  <RefreshCw className="w-3 h-3" /> Reload
+                </button>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-6 bg-panel border-panel-border border rounded-2xl p-6 shadow-sm">
+              <h2 className="text-lg font-bold text-foreground">Project Details</h2>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-bold text-muted uppercase tracking-wider">Project Name</label>
+                  <input type="text" value={qaForm.project_name || ''} onChange={e => updateField('project_name', e.target.value)} disabled={!isQAStage}
+                    className="border rounded-xl px-3 py-2 text-sm bg-background border-panel-border text-foreground" />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-bold text-muted uppercase tracking-wider">Sub Work Name</label>
+                  <input type="text" value={qaForm.sub_work_name || ''} onChange={e => updateField('sub_work_name', e.target.value)} disabled={!isQAStage}
+                    className="border rounded-xl px-3 py-2 text-sm bg-background border-panel-border text-foreground" />
+                </div>
+              </div>
+
+              <h2 className="text-lg font-bold text-foreground mt-4">Doors & Windows</h2>
+              <DoorsSchedule
+                doors={qaForm.doors || []}
+                editable={isQAStage}
+                onRemove={handleRemoveDoor}
+                onChange={handleDoorChange}
+                onAdd={handleAddDoor}
+                newDoor={newDoor}
+                setNewDoor={setNewDoor}
+              />
+
+              <WindowsSchedule
+                windows={qaForm.windows || []}
+                editable={isQAStage}
+                onRemove={handleRemoveWindow}
+                onChange={handleWindowChange}
+                onAdd={handleAddWindow}
+                newWindow={newWindow}
+                setNewWindow={setNewWindow}
+              />
+            </div>
+
+            {qaError && (
+              <div className="text-xs p-3.5 rounded-xl leading-snug flex items-center gap-2 pill-danger">
+                <AlertTriangle className="w-4 h-4 shrink-0" /> {qaError}
+              </div>
+            )}
+
+            {isQAStage ? (
+              <button type="submit" disabled={submittingQA}
+                className="btn-accent font-bold py-3 px-8 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 self-end">
+                <Play className="w-4 h-4" />
+                {submittingQA ? 'Processing Quantities…' : sessionState?.status === 'completed' ? 'Recalculate Estimate' : 'Verify & Run Estimate'}
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 font-bold text-xs px-4 py-3 rounded-xl select-none pill-success">
+                <CheckCircle2 className="w-4 h-4" /> Estimation parameters verified and locked.
+              </div>
+            )}
+          </form>
+        )}
+
+        {activeTab === 'result' && sessionState?.status === 'completed' && (
+          <ResultPanel
+            sessionState={sessionState}
+            sessionId={sessionId!}
+            downloadUrl={api.downloadUrl(sessionId!)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}

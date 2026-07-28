@@ -1,0 +1,395 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  /* ── Light Mode ────────────────────────────────────────────── */
+  --background:    #f5f5f7;
+  --foreground:    #111111;
+
+  --panel:         #ffffff;
+  --panel-border:  #d1d1d6;
+  --panel-header:  #f2f2f7;
+
+  --label:         #1c1c1e;
+  --muted:         #48484a;
+
+  /* Sidebar */
+  --cm-sidebar:       #ffffff;
+  --cm-sidebar-fg:    #1c1c1e;
+  --cm-sidebar-hover: #f2f2f7;
+  --cm-sidebar-active:#e8e8ed;
+
+  /* Terminal */
+  --terminal:         #1c1c1e;
+  --terminal-fg:      #30d158;
+  --terminal-border:  #2c2c2e;
+
+  /* Accent — indigo */
+  --accent:           #5856d6;
+  --accent-fg:        #ffffff;
+  --accent-hover:     #4947c0;
+  --accent-subtle:    rgba(88, 86, 214, 0.08);
+  --accent-ring:      rgba(88, 86, 214, 0.18);
+
+  /* Status */
+  --success:    #28a745;
+  --success-bg: rgba(40, 167, 69, 0.09);
+  --warning:    #c07000;
+  --warning-bg: rgba(192, 112, 0, 0.09);
+  --danger:     #cc0022;
+  --danger-bg:  rgba(204, 0, 34, 0.08);
+
+  /* Inputs */
+  --input-bg:           #ffffff;
+  --input-border:       #c7c7cc;
+  --input-fg:           #111111;
+  --input-focus-border: #5856d6;
+  --input-placeholder:  #8e8e93;
+}
+
+.dark {
+  /* ── Dark Mode — Pure Black Layered ─────────────── */
+  --background:    #000000; 
+  --foreground:    #F8F9FA;
+
+  --panel:         rgba(15, 15, 15, 0.7); /* Frosted Glass Surface Layer */
+  --panel-border:  rgba(255, 255, 255, 0.08); /* 1px subtle separation */
+  --panel-header:  rgba(20, 20, 20, 0.8);
+
+  --label:         #E2E8F0;
+  --muted:         #8B95A5; /* Muted gray for subtitles */
+
+  /* Sidebar */
+  --cm-sidebar:       rgba(5, 5, 5, 0.85);
+  --cm-sidebar-fg:    #CBD5E1;
+  --cm-sidebar-hover: rgba(255, 255, 255, 0.04);
+  --cm-sidebar-active:rgba(255, 255, 255, 0.08);
+
+  /* Terminal */
+  --terminal:         #05080F;
+  --terminal-fg:      #00E676;
+  --terminal-border:  rgba(255, 255, 255, 0.03);
+
+  /* Accent — Purple Base to complement the gradient */
+  --accent:           #8b5cf6;
+  --accent-fg:        #ffffff;
+  --accent-hover:     #7c3aed;
+  --accent-subtle:    rgba(139, 92, 246, 0.15);
+  --accent-ring:      rgba(139, 92, 246, 0.3);
+
+  /* Status */
+  --success:    #00E676; /* Neon Mint */
+  --success-bg: rgba(0, 230, 118, 0.12);
+  --warning:    #F59E0B;
+  --warning-bg: rgba(245, 158, 11, 0.12);
+  --danger:     #DD2476;
+  --danger-bg:  rgba(221, 36, 118, 0.12);
+
+  /* Inputs */
+  --input-bg:           rgba(0, 0, 0, 0.2);
+  --input-border:       rgba(255, 255, 255, 0.1);
+  --input-fg:           #F8F9FA;
+  --input-focus-border: #8b5cf6;
+  --input-placeholder:  #64748B;
+}
+
+/* ── Tailwind theme bridge ─────────────────────────────────── */
+@theme {
+  --color-bg:           var(--background);
+  --color-fg:           var(--foreground);
+  --color-panel:        var(--panel);
+  --color-border:       var(--panel-border);
+  --color-header:       var(--panel-header);
+  --color-label:        var(--label);
+  --color-muted:        var(--muted);
+  --color-term:         var(--terminal);
+  --color-term-fg:      var(--terminal-fg);
+  --color-term-border:  var(--terminal-border);
+  --color-accent:       var(--accent);
+  --color-accent-fg:    var(--accent-fg);
+  --color-accent-hover: var(--accent-hover);
+}
+
+/* ── Base ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), 'Segoe UI', system-ui, -apple-system, sans-serif;
+  transition: background-color 0.25s, color 0.25s;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Form Controls ─────────────────────────────────────────── */
+input, select, textarea {
+  color:            var(--input-fg);
+  background-color: var(--input-bg);
+  border-color:     var(--input-border);
+  transition: border-color 0.15s, box-shadow 0.15s;
+  font-family: inherit;
+}
+
+input::placeholder, textarea::placeholder {
+  color: var(--input-placeholder);
+}
+
+/* Light overrides */
+:root:not(.dark) input,
+:root:not(.dark) select,
+:root:not(.dark) textarea {
+  color:            #111111;
+  background-color: #ffffff;
+  border-color:     #c7c7cc;
+}
+
+/* Dark overrides */
+.dark input, .dark select, .dark textarea {
+  color:            #f0f0f0;
+  background-color: #1a1a1a;
+  border-color:     #2e2e2e;
+}
+.dark input::placeholder, .dark textarea::placeholder { color: #555555; }
+.dark select option { background-color: #1a1a1a; color: #f0f0f0; }
+
+/* Focus glow */
+input:focus, select:focus, textarea:focus {
+  outline:      none;
+  border-color: var(--input-focus-border);
+  box-shadow:   0 0 0 3px var(--accent-ring);
+}
+
+/* ── Inline Table Inputs ───────────────────────────────────── */
+.inline-edit-input {
+  color:      var(--input-fg);
+  background: transparent;
+  border:     none;
+  border-bottom: 1px solid transparent;
+  padding:    2px 4px;
+  font-size:  0.75rem;
+  transition: border-color 0.12s;
+}
+.inline-edit-input:focus {
+  border-bottom-color: var(--input-focus-border);
+  outline: none;
+  box-shadow: none;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar         { width: 7px; height: 7px; }
+::-webkit-scrollbar-track   { background: rgba(0, 0, 0, 0.02); }
+.dark ::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.01); }
+::-webkit-scrollbar-thumb   { background: #b0b0b5; border-radius: 6px; }
+.dark ::-webkit-scrollbar-thumb { background: #333333; }
+::-webkit-scrollbar-thumb:hover      { background: #8e8e93; }
+.dark ::-webkit-scrollbar-thumb:hover{ background: #444444; }
+
+/* ── Keyframes ─────────────────────────────────────────────── */
+@keyframes fade-in  { from { opacity:0; transform:translateY(6px); }  to { opacity:1; transform:translateY(0); } }
+@keyframes slide-in { from { opacity:0; transform:translateX(-10px); } to { opacity:1; transform:translateX(0); } }
+@keyframes scale-in { from { opacity:0; transform:scale(0.95); }       to { opacity:1; transform:scale(1); } }
+@keyframes slide-up { from { opacity:0; transform:translateY(14px); }  to { opacity:1; transform:translateY(0); } }
+@keyframes shimmer  { 0% { background-position:-400px 0; } 100% { background-position:400px 0; } }
+@keyframes pulse-ring { 0%,100%{opacity:.6;transform:scale(1);}  50%{opacity:1;transform:scale(1.04);} }
+
+.animate-fade-in   { animation: fade-in   0.24s cubic-bezier(.22,.68,0,1.2); }
+.animate-slide-in  { animation: slide-in  0.2s  ease-out; }
+.animate-scale-in  { animation: scale-in  0.2s  cubic-bezier(.22,.68,0,1.2); }
+.animate-slide-up  { animation: slide-up  0.26s cubic-bezier(.22,.68,0,1.2); }
+
+/* ── Glass utilities ───────────────────────────────────────── */
+.glass-panel {
+  background:       rgba(17,17,17,0.60);
+  backdrop-filter:  blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border:           1px solid rgba(255,255,255,0.06);
+}
+
+.glass-header {
+  background:       rgba(10,10,10,0.75);
+  backdrop-filter:  blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border-bottom:    1px solid rgba(255,255,255,0.06);
+}
+
+:root:not(.dark) .glass-panel {
+  background:      rgba(255,255,255,0.80);
+  backdrop-filter: blur(20px);
+  border-color:    rgba(0,0,0,0.07);
+}
+
+:root:not(.dark) .glass-header {
+  background:      rgba(245,245,247,0.90);
+  backdrop-filter: blur(16px);
+  border-bottom:   1px solid rgba(0,0,0,0.08);
+}
+
+/* ── Glow effects ──────────────────────────────────────────── */
+.shadow-glow    { box-shadow: 0 0 30px rgba(0,0,0,0.12); }
+.border-glow    { border: 1px solid var(--accent-ring); box-shadow: 0 0 20px var(--accent-subtle); }
+.text-glow      { text-shadow: 0 0 12px var(--accent-ring); }
+
+/* ── Semantic labels ───────────────────────────────────────── */
+.section-label {
+  font-size:      0.65rem;
+  font-weight:    700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color:          var(--muted);
+}
+
+.field-label {
+  font-size:   0.72rem;
+  font-weight: 600;
+  color:       var(--label);
+  line-height: 1.2;
+}
+/* ── Global Interactive Panels & Buttons ── */
+button, 
+.rounded-xl, 
+.rounded-2xl {
+  transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+button:not(:disabled):hover {
+  transform: translateY(-0.5px);
+  filter: brightness(1.15);
+}
+
+.rounded-xl[style*="var(--panel)"]:hover,
+.rounded-2xl[style*="var(--panel)"]:hover {
+  box-shadow: 0 12px 30px rgba(0,0,0,0.1), 0 0 0 1px rgba(139,92,246,0.2) inset !important;
+  transform: translateY(-1px);
+  filter: brightness(1.15);
+}
+
+.dark .rounded-xl[style*="var(--panel)"]:hover,
+.dark .rounded-2xl[style*="var(--panel)"]:hover {
+  box-shadow: 0 12px 30px rgba(0,0,0,0.4), 0 0 0 1px rgba(139,92,246,0.3) inset !important;
+  filter: brightness(1.15);
+}
+
+/* ── Card base ─────────────────────────────────────────────── */
+.card {
+  background:    var(--panel);
+  border:        1px solid var(--panel-border);
+  border-radius: 16px;
+  padding:       1.5rem;
+  box-shadow:    0 2px 16px rgba(0,0,0,0.05);
+}
+.dark .card { box-shadow: 0 2px 24px rgba(0,0,0,0.4); }
+
+/* ── Accent Gradient Button ────────────────────────────────── */
+.btn-accent {
+  background:  linear-gradient(135deg, #FF512F 0%, #8b5cf6 100%);
+  color:       white;
+  font-weight: 700;
+  border:      none;
+  border-radius: 12px;
+  cursor:      pointer;
+  transition:  transform 0.15s, box-shadow 0.15s, filter 0.15s;
+  box-shadow:  0 4px 14px rgba(139,92,246,0.3);
+}
+.btn-accent:hover {
+  filter:     brightness(1.1);
+  box-shadow: 0 6px 20px rgba(139,92,246,0.4);
+  transform:  translateY(-1px);
+}
+.btn-accent:active { transform: translateY(0) scale(0.98); }
+
+/* ── Gradient Utilities ────────────────────────────────────── */
+.bg-gradient-accent {
+  background: linear-gradient(135deg, #FF512F 0%, #8b5cf6 100%);
+}
+.text-gradient-accent {
+  background: linear-gradient(135deg, #FF512F 0%, #8b5cf6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ── Status pills ──────────────────────────────────────────── */
+.pill-success { background: var(--success-bg); color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 25%, transparent); }
+.pill-warning { background: var(--warning-bg); color: var(--warning); border: 1px solid color-mix(in srgb, var(--warning) 25%, transparent); }
+.pill-danger  { background: var(--danger-bg);  color: var(--danger);  border: 1px solid color-mix(in srgb, var(--danger)  25%, transparent); }
+.pill-accent  { background: var(--accent-subtle); color: var(--accent); border: 1px solid var(--accent-ring); }
+
+
+/* ── Wijmo FlexSheet Overrides ──────────────────────────────────── */
+.wj-flexsheet .wj-tab-bar .wj-sheet-tab {
+  color: #555 !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  background: #f0f0f0 !important;
+  border: 1px solid #d4d4d4 !important;
+  border-bottom: none !important;
+  padding: 8px 16px !important;
+  border-radius: 6px 6px 0 0 !important;
+  margin-right: 4px !important;
+  transition: all 0.2s ease !important;
+}
+.wj-flexsheet .wj-tab-bar .wj-sheet-tab:hover {
+  background: #e8e8e8 !important;
+}
+.wj-flexsheet .wj-tab-bar .wj-sheet-tab.wj-state-active {
+  color: #1a73e8 !important;
+  background: #ffffff !important;
+  font-weight: 700 !important;
+  border-top: 3px solid #1a73e8 !important;
+}
+.wj-flexsheet .wj-tab-bar {
+  background: #f8f9fa !important;
+  border-top: 1px solid #d4d4d4 !important;
+  padding: 4px 4px 0 4px !important;
+}
+
+/* ── Wijmo Dark Mode Overrides ──────────────────────────────────── */
+.dark .wj-flexsheet, .dark .wj-flexsheet .wj-content {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+}
+.dark .wj-flexsheet .wj-cell {
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+  border-color: var(--panel-border) !important;
+}
+.dark .wj-flexsheet .wj-header {
+  background-color: var(--panel-header) !important;
+  color: var(--foreground) !important;
+  border-color: var(--panel-border) !important;
+}
+.dark .wj-flexsheet .wj-state-selected,
+.dark .wj-flexsheet .wj-state-multi-selected {
+  background-color: #2e3b52 !important;
+  color: #ffffff !important;
+}
+.dark .wj-flexsheet .wj-marquee {
+  border: 2px solid var(--accent) !important;
+}
+.dark .wj-flexsheet .wj-tab-bar, 
+.dark .wj-flexsheet .wj-tab-bar .wj-sheet-tab {
+  background-color: var(--panel) !important;
+  color: var(--muted) !important;
+  border-color: var(--panel-border) !important;
+}
+.dark .wj-flexsheet .wj-tab-bar .wj-sheet-tab.wj-state-active {
+  background-color: var(--background) !important;
+  color: var(--accent) !important;
+  border-top: 3px solid var(--accent) !important;
+}
+
+/* ── Hide Wijmo Watermark ───────────────────────────────────────── */
+div[style*="z-index"] > a[href*="wijmo.com"],
+a[href*="wijmo.com"] {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+div[style*="z-index: 9999999"],
+div[style*="z-index:9999999"] {
+  display: none !important;
+}

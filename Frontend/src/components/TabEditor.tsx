@@ -8,8 +8,8 @@ import { DoorsSchedule, WindowsSchedule } from './editor/ScheduleTables';
 
 // ─── Props ─────────────────────────────────────────────────────
 interface TabEditorProps {
-  activeTab: 'drawing' | 'qa' | 'result';
-  setActiveTab: (tab: 'drawing' | 'qa' | 'result') => void;
+  activeTab: 'qa' | 'result';
+  setActiveTab: (tab: 'qa' | 'result') => void;
   sessionId: string | null;
   sessionState: any;
   refreshSession: () => void;
@@ -283,7 +283,7 @@ function StatusChip({ status }: { status: string }) {
 
 // ─── Main TabEditor ────────────────────────────────────────────
 export default function TabEditor({
-  activeTab, setActiveTab, sessionId, sessionState, refreshSession, displayName,
+  sessionId, sessionState, refreshSession, displayName,
 }: TabEditorProps) {
   const [qaForm, setQaForm] = useState<any>(null);
   const [submittingQA, setSubmittingQA] = useState(false);
@@ -306,25 +306,63 @@ export default function TabEditor({
       return;
     }
 
-    const verified = sessionState?.qa_verified;
-    const prefilled = sessionState?.qa_prefilled;
+    let verified = sessionState?.qa_verified;
+    let prefilled = sessionState?.qa_prefilled;
+
+    console.log("DEBUG sessionState.qa_prefilled:", prefilled);
+    console.log("DEBUG typeof prefilled:", typeof prefilled);
+
+    if (typeof verified === 'string') {
+      try { 
+        verified = JSON.parse(verified.replace(/```json/g, '').replace(/```/g, '').trim()); 
+      } catch (e) {
+        console.error("Failed to parse verified:", e, verified);
+      }
+    }
+    if (typeof prefilled === 'string') {
+      try { 
+        prefilled = JSON.parse(prefilled.replace(/```json/g, '').replace(/```/g, '').trim()); 
+      } catch (e) {
+        console.error("Failed to parse prefilled:", e, prefilled);
+      }
+    }
+
     const hasVerified = verified && typeof verified === 'object' && Object.keys(verified || {}).length > 0;
     const hasPreFilled = prefilled && typeof prefilled === 'object' && Object.keys(prefilled || {}).length > 0;
     const currentStep = sessionState?.current_step || '';
     const chatLen = sessionState?.chat_history?.length || 0;
 
+    const isFormEmpty = !qaForm || Object.keys(qaForm).length === 0;
+    const isMissingDoors = hasPreFilled && (!qaForm?.doors || qaForm.doors.length === 0) && (prefilled?.doors?.length > 0);
+    const isMissingWindows = hasPreFilled && (!qaForm?.windows || qaForm.windows.length === 0) && (prefilled?.windows?.length > 0);
+
     const shouldLoad = 
       (lastLoadedSessionId.current !== sessionId) || 
-      (qaForm === null && (hasVerified || hasPreFilled)) ||
+      (isFormEmpty && (hasVerified || hasPreFilled)) ||
+      isMissingDoors || 
+      isMissingWindows ||
       (currentStep && currentStep !== lastLoadedStep.current && (currentStep === 'paused_qa' || currentStep === 'qa_prefilled')) ||
       (chatLen > lastLoadedChatLen.current);
 
     if (shouldLoad) {
+      let finalForm: any = {};
+      if (hasPreFilled) finalForm = JSON.parse(JSON.stringify(prefilled));
       if (hasVerified) {
-        setQaForm(JSON.parse(JSON.stringify(verified)));
-      } else if (hasPreFilled) {
-        setQaForm(JSON.parse(JSON.stringify(prefilled)));
+        const parsedVerified = JSON.parse(JSON.stringify(verified));
+        finalForm = { ...finalForm, ...parsedVerified };
+        // Ensure doors/windows don't get wiped out if verified has them as empty arrays
+        if (!parsedVerified.doors || parsedVerified.doors.length === 0) {
+          finalForm.doors = prefilled?.doors || [];
+        }
+        if (!parsedVerified.windows || parsedVerified.windows.length === 0) {
+          finalForm.windows = prefilled?.windows || [];
+        }
       }
+      console.log("DEBUG setting qaForm:");
+      console.log("DEBUG prefilled.doors:", prefilled?.doors);
+      console.log("DEBUG parsedVerified:", hasVerified ? JSON.parse(JSON.stringify(verified)) : null);
+      console.log("DEBUG finalForm.doors:", finalForm.doors);
+      setQaForm(finalForm);
       lastLoadedSessionId.current = sessionId;
       lastLoadedStep.current = currentStep;
       lastLoadedChatLen.current = chatLen;
@@ -379,6 +417,7 @@ export default function TabEditor({
   const isQAStage =
     sessionState?.current_step === 'qa_prefilled' ||
     sessionState?.current_step === 'paused_qa' ||
+    sessionState?.current_step === 'reconciliation_complete' ||
     sessionState?.status === 'completed' ||
     sessionState?.status === 'failed';
 
@@ -409,25 +448,14 @@ export default function TabEditor({
           title={getFilename()}>
           {getFilename()}
         </span>
-        <div className="flex gap-1 p-1 rounded-xl"
-          style={{ background: 'var(--background)', border: '1px solid var(--panel-border)' }}>
-          <TabBtn active={activeTab === 'drawing'} onClick={() => setActiveTab('drawing')}
-            icon={<FileImage className="w-3.5 h-3.5" />} label="Drawing" />
-          <TabBtn active={activeTab === 'qa'} disabled={!qaForm} onClick={() => setActiveTab('qa')}
-            icon={<Settings2 className="w-3.5 h-3.5" />} label="Parameters" />
-          <TabBtn active={activeTab === 'result'} disabled={sessionState?.status !== 'completed'} onClick={() => setActiveTab('result')}
-            icon={<FileSpreadsheet className="w-3.5 h-3.5" />} label="Schedule" />
-        </div>
         <div className="shrink-0">
           <StatusChip status={sessionState?.status || 'processing'} />
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 selection:bg-accent/20">
-        {activeTab === 'drawing' && <DrawingTab sessionState={sessionState} />}
-
-        {activeTab === 'qa' && qaForm && (
-          <form onSubmit={handleQASubmit} className="w-full max-w-4xl mx-auto flex flex-col gap-5">
+        {qaForm && (
+          <form onSubmit={handleQASubmit} className="w-full mx-auto flex flex-col gap-5">
             {!sessionState?.qa_verified?.project_name && (
               <div className="flex items-center gap-3 rounded-xl px-4 py-3 text-xs border border-[#8b5cf6]/20" style={{ background: 'rgba(139, 92, 246, 0.08)' }}>
                 <span className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 text-gradient-accent" style={{ background: 'rgba(139, 92, 246, 0.15)' }}>AI</span>
@@ -497,14 +525,6 @@ export default function TabEditor({
               </div>
             )}
           </form>
-        )}
-
-        {activeTab === 'result' && sessionState?.status === 'completed' && (
-          <ResultPanel
-            sessionState={sessionState}
-            sessionId={sessionId!}
-            downloadUrl={api.downloadUrl(sessionId!)}
-          />
         )}
       </div>
     </div>

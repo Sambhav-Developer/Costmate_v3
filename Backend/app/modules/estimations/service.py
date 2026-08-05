@@ -238,17 +238,11 @@ class EstimationService:
             if cloud_file_path:
                 active_paths.append(cloud_file_path)
 
-        from app.core.openrouter_client import openrouter_client, parse_json_response
-        from app.core.prompts import SCHEDULE_INGESTION_PROMPT
+        from app.services.agents.layer1_schedule.schedule_parser import schedule_parser_agent
         
         try:
-            res_text = await openrouter_client.generate_chat(
-                prompt=SCHEDULE_INGESTION_PROMPT,
-                image_paths=active_paths,
-                json_mode=True
-            )
-            registry = parse_json_response(res_text)
-            return {"status": "success", "schedule_registry": registry}
+            results = await schedule_parser_agent.process_schedule(active_paths)
+            return {"status": "success", "schedule_registry": results}
         except Exception as e:
             from fastapi import HTTPException
             raise HTTPException(status_code=500, detail=f"Failed to parse schedule: {str(e)}")
@@ -257,7 +251,7 @@ class EstimationService:
         row = estimation_repo.get_draft_session(conn, session_id, user_id)
         if not row:
             raise NotFoundException("Draft session not found")
-        project_name, swarm_goal, rate_schedule, file_path, original_filename, page_paths, status = row
+        project_name, file_path, original_filename, page_paths, status = row
         if status != "file_uploaded" or not file_path:
             raise ValidationException("Cannot run quick scan without a file upload")
 
@@ -360,7 +354,7 @@ class EstimationService:
         row = estimation_repo.get_draft_session(conn, session_id, user_id)
         if not row:
             raise NotFoundException("Draft session not found")
-        project_name, swarm_goal, rate_schedule, file_path, original_filename, page_paths, status = row
+        project_name, file_path, original_filename, page_paths, status = row
         if status != "file_uploaded" or not file_path:
             raise ValidationException("Cannot complete session without a file upload")
 
@@ -385,8 +379,6 @@ class EstimationService:
             original_filename=original_filename,
             user_id=user_id,
             project_name=project_name,
-            swarm_goal=swarm_goal,
-            rate_schedule=rate_schedule,
             intake_data=intake_data
         )
         return {

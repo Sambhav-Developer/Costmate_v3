@@ -97,12 +97,6 @@ function getSubItems(session: EstimationSession): SubItem[] {
       icon: <FileSpreadsheet className="w-3 h-3" />,
       available: done,
     },
-    {
-      type: 'readme',
-      label: 'Summary',
-      icon: <BookOpen className="w-3 h-3" />,
-      available: hasQA,
-    },
   ];
 }
 

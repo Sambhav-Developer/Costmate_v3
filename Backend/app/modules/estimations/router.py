@@ -79,14 +79,16 @@ async def delete_session(session_id: str, conn = Depends(get_db), current_user: 
     return {"status": "success"}
 
 @router.post("/qa/{session_id}/submit")
-async def submit_qa(session_id: str, payload: Union[QASchema, EncryptedPayloadSchema], current_user: dict = Depends(get_current_user)):
+async def submit_qa(session_id: str, payload: Union[EncryptedPayloadSchema, QASchema, dict], current_user: dict = Depends(get_current_user)):
     if isinstance(payload, EncryptedPayloadSchema):
         aes_key = decrypt_aes_key_with_rsa(payload.rsa_encrypted_aes_key)
         decrypted_json = decrypt_payload_with_aes_gcm(payload.aes_encrypted_payload, aes_key)
-        verified_qa = QASchema(**decrypted_json)
+        verified_qa = decrypted_json
+    elif isinstance(payload, QASchema):
+        verified_qa = payload.model_dump()
     else:
         verified_qa = payload
-    return await estimation_service.submit_qa(session_id, verified_qa.model_dump(), current_user["id"])
+    return await estimation_service.submit_qa(session_id, verified_qa, current_user["id"])
 
 @router.get("/status/{session_id}/stream")
 async def stream_session_status(session_id: str, current_user: dict = Depends(get_current_user)):
@@ -127,13 +129,21 @@ async def download_output(session_id: str, current_user: dict = Depends(get_curr
         return StreamingResponse(
             stream_external_file(),
             media_type=media_type,
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+            }
         )
         
     if not os.path.exists(excel_path):
         raise HTTPException(status_code=404, detail="Excel output file not ready or not found.")
         
-    return FileResponse(path=excel_path, media_type=media_type, filename=filename)
+    return FileResponse(
+        path=excel_path, 
+        media_type=media_type, 
+        filename=filename,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    )
 
 @router.get("/files/{session_id}/plan")
 async def get_plan_image(session_id: str, current_user: dict = Depends(get_current_user)):

@@ -176,11 +176,11 @@ export const api = {
     return res.json();
   },
 
-  async createDraftSession(projectName: string, swarmGoal: string, rateSchedule: string) {
+  async createDraftSession(projectName: string) {
     const res = await request('/api/session/draft', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_name: projectName, swarm_goal: swarmGoal, rate_schedule: rateSchedule }),
+      body: JSON.stringify({ project_name: projectName }),
     });
     return res.json();
   },
@@ -258,7 +258,7 @@ export const api = {
 
   downloadUrl(sessionId: string) {
     const token = typeof window !== 'undefined' ? localStorage.getItem('costmate_token') : '';
-    return `${BASE_URL}/api/download/${sessionId}?token=${token || ''}`;
+    return `${BASE_URL}/api/download/${sessionId}?token=${token || ''}&t=${Date.now()}`;
   },
 
   planImageUrl(sessionId: string) {

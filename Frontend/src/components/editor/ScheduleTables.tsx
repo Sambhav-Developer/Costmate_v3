@@ -1,10 +1,10 @@
 'use client';
 import React from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { Door, Window } from './types';
 
 // ─── Shared tiny inline input ──────────────────────────────────
-function TdInput({ value, onChange, disabled, type = 'number', step, width = 64, placeholder }: any) {
+function TdInput({ value, onChange, disabled, readOnly, type = 'number', step, width = 64, placeholder }: any) {
   return (
     <input
       type={type}
@@ -13,13 +13,14 @@ function TdInput({ value, onChange, disabled, type = 'number', step, width = 64,
       placeholder={placeholder}
       onChange={onChange}
       disabled={disabled}
+      readOnly={readOnly}
       className="inline-edit-input text-center"
       style={{ width, color: 'var(--input-fg)' }}
     />
   );
 }
 
-function TdTextInput({ value, onChange, disabled, width = 80, placeholder }: any) {
+function TdTextInput({ value, onChange, disabled, readOnly, width = '100%', minWidth = '120px', placeholder }: any) {
   return (
     <input
       type="text"
@@ -27,9 +28,36 @@ function TdTextInput({ value, onChange, disabled, width = 80, placeholder }: any
       placeholder={placeholder}
       onChange={onChange}
       disabled={disabled}
+      readOnly={readOnly}
       className="inline-edit-input"
-      style={{ width, color: 'var(--input-fg)' }}
+      style={{ width, minWidth, color: 'var(--input-fg)' }}
     />
+  );
+}
+
+// ─── Review Status Badge (2nd column after MARK) ───────────────
+function ReviewBadge({ needsReview }: { needsReview: boolean }) {
+  if (needsReview) {
+    return (
+      <div
+        title="This row could not be cross-verified. Please double-check the values."
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wide cursor-help select-none"
+        style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.3)' }}
+      >
+        <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+        Check
+      </div>
+    );
+  }
+  return (
+    <div
+      title="Row verified by consensus."
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wide cursor-default select-none"
+      style={{ background: 'rgba(52,211,153,0.12)', color: '#34d399', border: '1px solid rgba(52,211,153,0.2)' }}
+    >
+      <CheckCircle2 className="w-2.5 h-2.5 shrink-0" />
+      OK
+    </div>
   );
 }
 
@@ -41,7 +69,7 @@ function ScheduleTable({ headers, children }: { headers: string[]; children: Rea
         <thead>
           <tr className="border-b" style={{ borderColor: 'var(--panel-border)', background: 'var(--panel-header)' }}>
             {headers.map(h => (
-              <th key={h} className="py-2.5 px-3 text-[10px] font-bold uppercase tracking-wide select-none"
+              <th key={h} className="py-2.5 px-3 text-[10px] font-bold uppercase tracking-wide"
                 style={{ color: 'var(--muted)' }}>{h}</th>
             ))}
           </tr>
@@ -52,12 +80,18 @@ function ScheduleTable({ headers, children }: { headers: string[]; children: Rea
   );
 }
 
-function ScheduleRow({ children }: { children: React.ReactNode }) {
+function ScheduleRow({ needsReview, children }: { needsReview?: boolean; children: React.ReactNode }) {
   return (
-    <tr className="border-b group transition-colors"
-      style={{ borderColor: 'var(--panel-border)' }}
-      onMouseOver={e => (e.currentTarget.style.background = 'var(--panel-header)')}
-      onMouseOut={e => (e.currentTarget.style.background = 'transparent')}>
+    <tr
+      className="border-b group transition-colors"
+      style={{
+        borderColor: 'var(--panel-border)',
+        // Subtly highlight rows that need review
+        ...(needsReview ? { background: 'rgba(251,191,36,0.04)' } : {})
+      }}
+      onMouseOver={e => (e.currentTarget.style.background = needsReview ? 'rgba(251,191,36,0.09)' : 'var(--panel-header)')}
+      onMouseOut={e => (e.currentTarget.style.background = needsReview ? 'rgba(251,191,36,0.04)' : 'transparent')}
+    >
       {children}
     </tr>
   );
@@ -109,6 +143,26 @@ function AddRowForm({ title, fields, onAdd, values, setValues }: {
   );
 }
 
+// Internal keys that should never be shown as generic text columns
+// (needs_review is handled as a dedicated visual column, not a generic key)
+const INTERNAL_KEYS = new Set(['mark', 'type', 'count', 'needs_review', '_schedule_type']);
+
+/**
+ * Returns an ordered list of display column keys.
+ * Uses the key order from the first row (since the LLM now produces consistent
+ * columns across all rows). Falls back to the union of all rows if needed.
+ */
+function getOrderedDisplayKeys(rows: any[]): string[] {
+  if (rows.length === 0) return [];
+  // Use the first row's key order as the canonical order
+  const firstRowKeys = Object.keys(rows[0]).filter(k => !INTERNAL_KEYS.has(k));
+  // Then add any extra keys from other rows that aren't already included
+  const extraKeys = Array.from(
+    new Set(rows.slice(1).flatMap(r => Object.keys(r).filter(k => !INTERNAL_KEYS.has(k))))
+  ).filter(k => !firstRowKeys.includes(k));
+  return [...firstRowKeys, ...extraKeys];
+}
+
 // ─── Doors Schedule ─────────────────────────────────────────
 interface DoorsProps {
   doors: Door[];
@@ -121,36 +175,53 @@ interface DoorsProps {
 }
 
 export function DoorsSchedule({ doors, editable, onRemove, onChange, onAdd, newDoor, setNewDoor }: DoorsProps) {
+  const displayKeys = getOrderedDisplayKeys(doors);
+  // Total columns: MARK + REVIEW + data cols + actions
+  const totalCols = 2 + displayKeys.length + 1;
+
   return (
     <div className="flex flex-col gap-4">
-      <ScheduleTable headers={['Code', 'Width m', 'Height m', 'Material', 'Count', '']}>
-        {doors.length === 0 && <EmptyRow colSpan={6} label="No doors added yet." />}
-        {doors.map((d, idx) => (
-          <ScheduleRow key={idx}>
-            <td className="py-2.5 px-3 font-bold text-xs" style={{ color: 'var(--foreground)' }}><TdTextInput value={d.type || 'Door'} disabled={!editable} onChange={(e: any) => onChange(idx, 'type', e.target.value)} /></td>
-            <td className="py-2.5 px-2"><TdInput value={d.width_m} step={0.01} disabled={!editable} onChange={(e: any) => onChange(idx, 'width_m', parseFloat(e.target.value) || 0)} /></td>
-            <td className="py-2.5 px-2"><TdInput value={d.height_m} step={0.01} disabled={!editable} onChange={(e: any) => onChange(idx, 'height_m', parseFloat(e.target.value) || 0)} /></td>
-            <td className="py-2.5 px-2"><TdTextInput value={d.material || d.frame_material || 'Teak'} disabled={!editable} onChange={(e: any) => onChange(idx, 'material', e.target.value)} /></td>
-            <td className="py-2.5 px-2"><TdInput value={d.count} disabled={!editable} onChange={(e: any) => onChange(idx, 'count', parseInt(e.target.value) || 0)} /></td>
-            <td className="py-2.5 px-2 text-center opacity-0 group-hover:opacity-100 transition-opacity">
-              {editable && (
-                <button type="button" onClick={() => onRemove(idx)}
-                  className="text-red-400 hover:text-red-300 hover:bg-red-400/10 p-1.5 rounded-lg cursor-pointer transition-all">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </td>
-          </ScheduleRow>
-        ))}
+      <ScheduleTable headers={['MARK', 'REVIEW', ...displayKeys.map(k => k.toUpperCase().replace(/_/g, ' ')), '']}>
+        {doors.length === 0 && <EmptyRow colSpan={totalCols} label="No doors added yet." />}
+        {doors.map((d, idx) => {
+          const needsReview = !!(d as any).needs_review;
+          return (
+            <ScheduleRow key={idx} needsReview={needsReview}>
+              {/* MARK */}
+              <td className="py-2.5 px-3 font-bold text-xs" style={{ color: 'var(--foreground)' }}>
+                <TdTextInput value={(d as any).mark || (d as any).type || 'Door'} readOnly={!editable} onChange={(e: any) => onChange(idx, 'mark', e.target.value)} width={80} />
+              </td>
+              {/* REVIEW status badge */}
+              <td className="py-2 px-3 text-center whitespace-nowrap">
+                <ReviewBadge needsReview={needsReview} />
+              </td>
+              {displayKeys.map(k => (
+                <td key={k} className="py-2.5 px-2">
+                  <TdTextInput value={(d as any)[k] || ''} readOnly={!editable} onChange={(e: any) => {
+                    const val = e.target.value;
+                    const parsed = parseFloat(val);
+                    const isNumberField = ['width_m', 'height_m', 'count'].includes(k);
+                    onChange(idx, k, isNumberField && !isNaN(parsed) && val.trim() !== '' ? parsed : val);
+                  }} />
+                </td>
+              ))}
+              <td className="py-2.5 px-2 text-center opacity-0 group-hover:opacity-100 transition-opacity">
+                {editable && (
+                  <button type="button" onClick={() => onRemove(idx)}
+                    className="text-red-400 hover:text-red-300 hover:bg-red-400/10 p-1.5 rounded-lg cursor-pointer transition-all">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </td>
+            </ScheduleRow>
+          );
+        })}
       </ScheduleTable>
       {editable && (
         <AddRowForm title="Add New Door" onAdd={onAdd} values={newDoor} setValues={setNewDoor}
           fields={[
             { label: 'Code', key: 'type', type: 'text', width: 80 },
-            { label: 'Width m', key: 'width_m', type: 'number', step: 0.1, width: 70 },
-            { label: 'Height m', key: 'height_m', type: 'number', step: 0.1, width: 70 },
-            { label: 'Material', key: 'material', type: 'text', width: 100 },
-            { label: 'Count', key: 'count', type: 'number', width: 60 },
+            ...displayKeys.map(k => ({ label: k.toUpperCase().replace(/_/g, ' '), key: k, type: 'text', width: 100 }))
           ]} />
       )}
     </div>
@@ -169,36 +240,52 @@ interface WindowsProps {
 }
 
 export function WindowsSchedule({ windows, editable, onRemove, onChange, onAdd, newWindow, setNewWindow }: WindowsProps) {
+  const displayKeys = getOrderedDisplayKeys(windows);
+  const totalCols = 2 + displayKeys.length + 1;
+
   return (
     <div className="flex flex-col gap-4">
-      <ScheduleTable headers={['Code', 'Width m', 'Height m', 'Material', 'Count', '']}>
-        {windows.length === 0 && <EmptyRow colSpan={6} label="No windows added yet." />}
-        {windows.map((w, idx) => (
-          <ScheduleRow key={idx}>
-            <td className="py-2.5 px-3 font-bold text-xs" style={{ color: 'var(--foreground)' }}><TdTextInput value={w.type || 'Window'} disabled={!editable} onChange={(e: any) => onChange(idx, 'type', e.target.value)} /></td>
-            <td className="py-2.5 px-2"><TdInput value={w.width_m} step={0.01} disabled={!editable} onChange={(e: any) => onChange(idx, 'width_m', parseFloat(e.target.value) || 0)} /></td>
-            <td className="py-2.5 px-2"><TdInput value={w.height_m} step={0.01} disabled={!editable} onChange={(e: any) => onChange(idx, 'height_m', parseFloat(e.target.value) || 0)} /></td>
-            <td className="py-2.5 px-2"><TdTextInput value={w.material || 'UPVC'} disabled={!editable} onChange={(e: any) => onChange(idx, 'material', e.target.value)} /></td>
-            <td className="py-2.5 px-2"><TdInput value={w.count} disabled={!editable} onChange={(e: any) => onChange(idx, 'count', parseInt(e.target.value) || 0)} /></td>
-            <td className="py-2.5 px-2 text-center opacity-0 group-hover:opacity-100 transition-opacity">
-              {editable && (
-                <button type="button" onClick={() => onRemove(idx)}
-                  className="text-red-400 hover:text-red-300 hover:bg-red-400/10 p-1.5 rounded-lg cursor-pointer transition-all">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </td>
-          </ScheduleRow>
-        ))}
+      <ScheduleTable headers={['MARK', 'REVIEW', ...displayKeys.map(k => k.toUpperCase().replace(/_/g, ' ')), '']}>
+        {windows.length === 0 && <EmptyRow colSpan={totalCols} label="No windows added yet." />}
+        {windows.map((w, idx) => {
+          const needsReview = !!(w as any).needs_review;
+          return (
+            <ScheduleRow key={idx} needsReview={needsReview}>
+              {/* MARK */}
+              <td className="py-2.5 px-3 font-bold text-xs" style={{ color: 'var(--foreground)' }}>
+                <TdTextInput value={(w as any).mark || (w as any).type || 'Window'} readOnly={!editable} onChange={(e: any) => onChange(idx, 'mark', e.target.value)} width={80} />
+              </td>
+              {/* REVIEW status badge */}
+              <td className="py-2 px-3 text-center whitespace-nowrap">
+                <ReviewBadge needsReview={needsReview} />
+              </td>
+              {displayKeys.map(k => (
+                <td key={k} className="py-2.5 px-2">
+                  <TdTextInput value={(w as any)[k] || ''} readOnly={!editable} onChange={(e: any) => {
+                    const val = e.target.value;
+                    const parsed = parseFloat(val);
+                    const isNumberField = ['width_m', 'height_m', 'count'].includes(k);
+                    onChange(idx, k, isNumberField && !isNaN(parsed) && val.trim() !== '' ? parsed : val);
+                  }} />
+                </td>
+              ))}
+              <td className="py-2.5 px-2 text-center opacity-0 group-hover:opacity-100 transition-opacity">
+                {editable && (
+                  <button type="button" onClick={() => onRemove(idx)}
+                    className="text-red-400 hover:text-red-300 hover:bg-red-400/10 p-1.5 rounded-lg cursor-pointer transition-all">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </td>
+            </ScheduleRow>
+          );
+        })}
       </ScheduleTable>
       {editable && (
         <AddRowForm title="Add New Window" onAdd={onAdd} values={newWindow} setValues={setNewWindow}
           fields={[
             { label: 'Code', key: 'type', type: 'text', width: 80 },
-            { label: 'Width m', key: 'width_m', type: 'number', step: 0.1, width: 70 },
-            { label: 'Height m', key: 'height_m', type: 'number', step: 0.1, width: 70 },
-            { label: 'Material', key: 'material', type: 'text', width: 100 },
-            { label: 'Count', key: 'count', type: 'number', width: 60 },
+            ...displayKeys.map(k => ({ label: k.toUpperCase().replace(/_/g, ' '), key: k, type: 'text', width: 100 }))
           ]} />
       )}
     </div>

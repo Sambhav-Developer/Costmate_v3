@@ -393,3 +393,32 @@ div[style*="z-index: 9999999"],
 div[style*="z-index:9999999"] {
   display: none !important;
 }
+
+/* ── Fortune Sheet Overrides ───────────────────────────────────────── */
+/* Fortune sheet has a light background even in dark mode, so we must force its UI components to stay light-themed. */
+.dark .costmate-fortune-wrapper {
+  background-color: #ffffff !important;
+  color: #333333 !important;
+}
+.dark .costmate-fortune-wrapper * {
+  color: #333333 !important;
+  border-color: #e2e8f0 !important;
+}
+.dark .costmate-fortune-wrapper input,
+.dark .costmate-fortune-wrapper select,
+.dark .costmate-fortune-wrapper textarea {
+  color: #333333 !important;
+  background-color: #ffffff !important;
+  border: 1px solid #cccccc !important;
+}
+.dark .costmate-fortune-wrapper select option {
+  color: #333333 !important;
+  background-color: #ffffff !important;
+}
+.dark .costmate-fortune-wrapper .luckysheet-menu-item,
+.dark .costmate-fortune-wrapper .luckysheet-menuButton,
+.dark .costmate-fortune-wrapper .luckysheet-cols-menu,
+.dark .costmate-fortune-wrapper .luckysheet-toolbar-menu-button {
+  color: #333333 !important;
+  background-color: #ffffff !important;
+}

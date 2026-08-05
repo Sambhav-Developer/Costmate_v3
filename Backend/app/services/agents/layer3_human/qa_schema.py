@@ -105,3 +105,5 @@ class QASchema(BaseModel):
     
     # --- Floor Wise Details ---
     floors: List[FloorSpecSchema] = Field(default_factory=list, description="Floor details list")
+    
+    model_config = {"extra": "allow"}

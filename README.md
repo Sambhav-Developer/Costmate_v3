@@ -1,90 +1,78 @@
-<div align="center">
-  <h1>🏗️ Costmate</h1>
-  <p><strong>Next-Generation AI Civil Work Estimation & Quantization Engine</strong></p>
-  <p>Costmate is a powerful, AI-driven platform that revolutionizes the way construction estimates are created. By leveraging a Multi-Agent Vision Swarm, it autonomously reads 2D architectural floor plans, extracts spatial dimensions, identifies structural elements, and instantly generates comprehensive Bills of Quantities (BOQ) and Civil Quantization reports.</p>
-</div>
+# Costmate: AI-Powered Civil Estimation Platform
 
----
+Welcome to the **Costmate** repository! Costmate is a cutting-edge web application designed to automate and streamline the process of civil engineering and construction estimation. 
+
+By leveraging an advanced Agentic AI Swarm, Costmate can analyze architectural floor plans (PDFs or images), intelligently extract structural dimensions and elements, and automatically generate a comprehensive Bill of Quantities (BOQ) and cost estimate.
 
 ## 🚀 Key Features
 
-*   **Multi-Agent AI Swarm:** Utilizes a highly concurrent LangGraph-based AI architecture (OCR Node, Dimension Extractor, Element Detector, Floor Plan Reader) to process complex floor plans in parallel.
-*   **Computer Vision OCR:** Deep integration with OpenRouter vision models (`OpenRouter Vision Model`) to accurately detect rooms, dimensions, doors, windows, and structural columns directly from uploaded PDFs and images.
-*   **Conversational AI Copilot:** A built-in LLM chat assistant that understands the project context. You can use natural language to execute CRUD operations (e.g., *"Change all toilet doors on the terrace to UPVC"*), and the backend instantly deep-merges the updates.
-*   **Interactive Bounding Boxes:** Real-time visual verification. Hovering over a data row highlights the exact coordinate boundaries on the raw blueprint, ensuring total transparency and trust.
-*   **Intelligent Layout Replication:** Front-end setup wizard allows engineers to map identical typical floors (e.g., copy First Floor specs to Second & Third) without redundant AI processing, seamlessly managed by the backend intake parser.
-*   **Instant BOQ Generation:** Automatically deduces concrete volumes, excavation depths, plastering schedules, and material finishes from the extracted footprints and exports them to industry-standard formats.
+- **Automated Blueprint Analysis**: Upload PDF schedules and floor plans. Our multi-agent AI pipeline (powered by OpenRouter VLMs) scans the blueprints to extract room dimensions, beams, columns, doors, windows, and footings.
+- **Intelligent Schedule Parsing**: The backend dynamically parses complex, multi-page schedules (e.g., Door & Window schedules) using a unified, dynamic Pydantic extraction schema.
+- **Human-in-the-Loop QA**: A modern, glassmorphic UI presents the extracted data to the user before final calculations. A dedicated `ReviewQueueModal` flags unresolved items (like OCR consensus failures) for human verification.
+- **AI Swarm Copilot**: Interact directly with your project data using an integrated AI chat sidebar. Instruct the copilot to modify dimensions or add missing parameters seamlessly.
+- **Dynamic Excel Export**: The finalized data is compiled into a professional, multi-sheet Excel BOQ. Users can preview this spreadsheet directly in the browser (via Wijmo FlexSheet) and download the `.xlsx` file.
+- **Plan Annotation**: The system automatically generates and provides a downloadable version of the original floor plan, with all detected marks (like doors and windows) color-coded and highlighted.
 
-## 🛠️ Technology Stack
+## 🏗️ Architecture & Pipeline
 
-### Backend
-*   **Framework:** FastAPI (Python 3.10+)
-*   **AI / Orchestration:** LangChain, LangGraph (Multi-Agent framework)
-*   **LLM Provider:** OpenRouter (Qwen & Llama Vision Models)
-*   **Database:** PostgreSQL with SQLAlchemy & Alembic (Asyncpg)
-*   **Storage:** Cloudinary (Dynamic URL image transformations to optimize AI ingestion)
+Costmate uses a sophisticated orchestration engine using **LangGraph**. The workflow relies on swarm consensus to guarantee high accuracy.
 
-### Frontend
-*   **Framework:** React / Next.js
-*   **Styling:** Tailwind CSS / Custom Vanilla CSS (Modern, dark-mode, glassmorphism aesthetics)
-*   **State Management:** React Hooks
-*   **API Client:** Axios / Fetch
+**For a detailed look at the core AI extraction and consensus pipeline, please view:**
+👉 [Pipeline Architecture Diagram](pipeline_architecture.md)
 
-## ⚙️ Architecture & Data Flow
+### Tech Stack
 
-1.  **Ingestion:** User uploads a PDF/PNG floor plan via the Setup Wizard. The image is instantly uploaded to Cloudinary, and a `quick-scan` detects boundaries.
-2.  **Swarm Orchestration:** Upon finalization, the backend triggers the `CostmateState` Graph.
-3.  **Parallel Execution:** The Dimension Extractor, Element Detector, and Floor Plan Reader analyze the Cloudinary URLs concurrently, leveraging GPU-accelerated endpoints via OpenRouter.
-4.  **Consolidation:** The `prefill_qa_node` meticulously maps the AI-extracted data against the user-defined `intake_floors` configuration, filtering out duplicates and resolving missing floors via intelligent inheritance.
-5.  **Human-in-the-Loop:** The engineer reviews the extracted parameters, edits values via the UI or the Conversational Copilot, and finalizes the BOQ.
+#### Frontend
+- **Framework:** Next.js (React)
+- **Styling:** Tailwind CSS (featuring premium dark-mode aesthetics and glassmorphism)
+- **Key Components:** Interactive `TabEditor` (for schedules), `ReviewQueueModal` (for human QA), and a real-time `CopilotPanel`.
 
-## 💻 Local Development Setup
+#### Backend
+- **Framework:** Python / FastAPI
+- **Database:** PostgreSQL (for saving sessions, drafts, and LangGraph checkpoints)
+- **AI Orchestration:** LangGraph + OpenRouter API (using massive reasoning models)
+- **Processing:** PyMuPDF for document ingestion, Pandas for Excel generation.
+
+## 🛠️ Getting Started
 
 ### Prerequisites
-*   Python 3.10+
-*   Node.js 18+
-*   PostgreSQL
-*   OpenRouter API Key
-*   Cloudinary API Credentials
+- Node.js (v18+)
+- Python 3.10+
+- PostgreSQL
+- OpenRouter API Key
 
-### Backend Setup
-```bash
-# Navigate to the backend directory
-cd Backend
+### Installation
 
-# Create and activate a virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/khushalbairariyasam/costmate_v3.git
+   cd costmate_v3
+   ```
 
-# Install dependencies
-pip install -r requirements.txt
+2. **Setup the Backend:**
+   ```bash
+   cd Backend
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+   *Create a `.env` file in the Backend directory and add your `OPENROUTER_API_KEY` and `DATABASE_URL`.*
+   ```bash
+   uvicorn app.main:app --reload
+   ```
 
-# Set up your environment variables
-# Create a .env file and add: DATABASE_URL, OPENROUTER_API_KEY, CLOUDINARY_URL, etc.
+3. **Setup the Frontend:**
+   ```bash
+   cd ../Frontend
+   npm install
+   npm run dev
+   ```
 
-# Initialize the database schema
-alembic upgrade head
+4. **Open the Application:**
+   Navigate to `http://localhost:3000` in your browser.
 
-# Run the development server
-uvicorn app.main:app --reload
-```
+## 🤝 Contributing
+This project is actively being developed. If you encounter bugs, especially related to the AI parser schemas or the Review Queue, please open an issue!
 
-### Frontend Setup
-```bash
-# Navigate to the frontend directory
-cd Frontend
-
-# Install dependencies
-npm install
-
-# Start the development server
-npm run dev
-```
-*The frontend will typically run on `http://localhost:3000` and communicate with the FastAPI backend on `http://localhost:8000`.*
-
-## 🐛 Troubleshooting
-*   **OpenRouter CUDA OOM (Out of Memory):** Costmate uses dynamic Cloudinary URL transformations (e.g., `c_limit,w_2000`) before sending images to OpenRouter. If you change storage providers, ensure you compress high-resolution architectural PDFs before sending them to the Vision LLM to prevent remote VRAM crashes.
-*   **Missing Floors in Final Output:** Ensure you do not skip naming your floors in the Setup Wizard. The `interrupt_node.py` heavily relies on the `intake_data` to properly sequence and assign rooms.
-
----
-*Built for the future of construction engineering.*
+## 📄 License
+Costmate is proprietary software. All rights reserved.

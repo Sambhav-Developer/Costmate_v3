@@ -18,8 +18,7 @@ class DraftEstimationSession(Base):
     id = Column(String(255), primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     project_name = Column(String(255), nullable=False)
-    swarm_goal = Column(String(100), nullable=False)
-    rate_schedule = Column(String(100), nullable=False)
+    # File paths for multi-agent architecture will be stored here
     uploaded_file_path = Column(String(500), nullable=True)
     original_filename = Column(String(255), nullable=True)
     uploaded_page_paths = Column(ARRAY(String), nullable=True)

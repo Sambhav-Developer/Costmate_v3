@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     # LLM Settings (OpenRouter)
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_API_KEY: str = ""
-    MODEL_NAME: str = "qwen/qwen3.5-397b-a17b"
+    MODEL_NAME: str = "qwen/qwen3-vl-235b-a22b-instruct"
 
     # App settings
     APP_ENV: str = "development"

@@ -18,8 +18,6 @@ class EstimationRepository:
         stmt = (
             select(
                 DraftEstimationSession.project_name, 
-                DraftEstimationSession.swarm_goal, 
-                DraftEstimationSession.rate_schedule, 
                 DraftEstimationSession.uploaded_file_path, 
                 DraftEstimationSession.original_filename, 
                 DraftEstimationSession.uploaded_page_paths, 
@@ -31,8 +29,6 @@ class EstimationRepository:
         if result:
             return (
                 result.project_name, 
-                result.swarm_goal, 
-                result.rate_schedule, 
                 result.uploaded_file_path, 
                 result.original_filename, 
                 result.uploaded_page_paths, 
@@ -44,9 +40,7 @@ class EstimationRepository:
         new_draft = DraftEstimationSession(
             id=session_id,
             user_id=user_id,
-            project_name=req.project_name,
-            swarm_goal=req.swarm_goal,
-            rate_schedule=req.rate_schedule
+            project_name=req.project_name
         )
         db.add(new_draft)
         db.commit()

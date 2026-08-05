@@ -122,7 +122,6 @@ export default function Page() {
 
   // Workspace States
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'drawing' | 'qa' | 'result'>('drawing');
   const [sessionState, setSessionState] = useState<any>(null);
   const [sessionsList, setSessionsList] = useState<EstimationSession[]>([]);
   // File viewer: which file sub-item is active (plan / excel / readme / parameters)
@@ -173,13 +172,11 @@ export default function Page() {
       const data = await api.getSession(sessionId);
       setSessionState(data);
       
-      // Select appropriate tab based on status
+      // Select appropriate file view based on status
       if (data.status === 'completed') {
-        setActiveTab('result');
-      } else if (data.current_step === 'qa_prefilled' || data.current_step === 'paused_qa') {
-        setActiveTab('qa');
+        setActiveFile({ sessionId, fileType: 'excel' });
       } else {
-        setActiveTab('drawing');
+        setActiveFile(null); // Shows Parameters form (TabEditor)
       }
       
       // Update session status in sidebar history list
@@ -210,19 +207,14 @@ export default function Page() {
 
   // SSE Callbacks
   const handleQAWaiting = () => {
-    if (sessionState?.current_step !== 'paused_qa' && sessionState?.current_step !== 'qa_prefilled') {
-      setActiveTab('qa');
-    }
+    setActiveFile(null); // Force show parameters form
     if (activeSessionId) loadSessionState(activeSessionId);
   };
 
   const handleCompleted = () => {
-    if (sessionState?.status !== 'completed') {
-      setActiveTab('result');
-    }
     if (activeSessionId) {
       loadSessionState(activeSessionId);
-      
+      setActiveFile({ sessionId: activeSessionId, fileType: 'excel' });
       // Update session status in sidebar history list
       setSessionsList((prev) => prev.map(s => s.id === activeSessionId ? { ...s, status: 'completed' } : s));
     }
@@ -244,9 +236,6 @@ export default function Page() {
 
   const handleSelectFile = (sessionId: string, fileType: 'plan' | 'excel' | 'readme' | 'parameters', sessionName: string) => {
     setActiveFile({ sessionId, fileType });
-    if (fileType === 'parameters') {
-      setActiveTab('qa');
-    }
     // Also ensure this session is selected
     if (activeSessionId !== sessionId) {
       setSessionState(null); // Prevent stale state leak
@@ -265,7 +254,7 @@ export default function Page() {
     setSessionsList((prev) => [newSession, ...prev]);
     
     setActiveSessionId(sessionId);
-    setActiveTab('drawing');
+    setActiveFile(null);
   };
 
   // Handle Login / Signup / OTP
@@ -584,11 +573,10 @@ export default function Page() {
                     sessionId={activeFile.sessionId}
                     fileType={activeFile.fileType as 'plan' | 'excel' | 'readme'}
                     sessionName={sessionsList.find(s => s.id === activeFile.sessionId)?.filename || ''}
+                    sessionState={sessionState}
                   />
                 ) : (
                   <TabEditor 
-                    activeTab={activeTab}
-                    setActiveTab={setActiveTab}
                     sessionId={activeSessionId}
                     sessionState={sessionState}
                     refreshSession={() => activeSessionId && loadSessionState(activeSessionId)}

@@ -120,8 +120,6 @@ class SessionManager:
         original_filename: str = "", 
         user_id: int = 1,
         project_name: str = "",
-        swarm_goal: str = "complete_estimate",
-        rate_schedule: str = "cpwd_2024",
         intake_data: dict = None
     ):
         """Starts the LangGraph execution in the background."""
@@ -136,8 +134,6 @@ class SessionManager:
             "original_filename": original_filename,
             "uploaded_page_paths": uploaded_page_paths,
             "project_name": project_name,
-            "swarm_goal": swarm_goal,
-            "rate_schedule": rate_schedule,
             "intake_data": intake_data,
             "status": "processing",
             "current_step": "upload_completed",
@@ -375,15 +371,9 @@ class SessionManager:
                 step = "completed"
                 status = "completed"
 
-            # Update the state values in LangGraph so they persist in database and checkpoints
-            await costmate_graph.aupdate_state(
-                {"configurable": {"thread_id": session_id}},
-                {
-                    "progress_pct": progress,
-                    "current_step": step,
-                    "status": status
-                }
-            )
+            # We removed aupdate_state here because modifying state during parallel execution 
+            # (excel_writer_node and plan_annotation_node) causes InvalidUpdateError in LangGraph.
+            # The progress updates will just be streamed to the frontend via the queue.
 
             await queue.put({
                 "step": step,

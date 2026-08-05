@@ -3,8 +3,6 @@ from typing import Optional
 
 class DraftSessionRequest(BaseModel):
     project_name: str
-    swarm_goal: str
-    rate_schedule: str
 
 class NotificationRequest(BaseModel):
     message: str

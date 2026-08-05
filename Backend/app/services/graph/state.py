@@ -5,43 +5,30 @@ class CostmateState(TypedDict):
     session_id: str
     uploaded_file_path: str
     original_filename: str
-    uploaded_page_paths: List[str]    # Paths to each rendered page image
-    status: str                       # "uploading", "processing", "paused_qa", "calculating", "completed", "failed"
+    uploaded_page_paths: List[str]    # Paths to floor plan images
+    status: str
     current_step: str
     progress_pct: int
     
-    # Project Onboarding Wizard Settings
+    # Project Settings
     project_name: Optional[str]
-    swarm_goal: Optional[str]         # "complete_estimate", "structural_only", "finishes_only"
-    rate_schedule: Optional[str]       # "cpwd_2024", "pwd_state", etc.
-    intake_data: Optional[Dict[str, Any]] # Floor-wise guided intake form answers
-
-    # OCR & Spatial Analysis
-    raw_ocr_text: str
-    parsed_image_data: Dict[str, Any]
+    intake_data: Optional[Dict[str, Any]]
     
-    # Layer 2 Vision Sub-Agents Output
-    floor_plan: Dict[str, Any]         # rooms, floors, layout footprint
-    dimensions: Dict[str, Any]         # L x W x H per room/element
-    elements: Dict[str, Any]           # columns, beams, doors, windows, stairs
+    # Layer 1 & 2: Track A, B, C Outputs
+    schedule_data: Optional[List[Dict[str, Any]]]    # JSON array of the extracted schedule
+    ocr_results: Optional[Dict[str, Any]]            # Results of OCR1, OCR2, OCR3 consensus
+    cv_results: Optional[Dict[str, Any]]             # Output of OpenCV / mark detection including auto-derived INT/EXT and OPENING MODE
     
-    # Human-in-the-Loop Q&A (18 Questions)
-    qa_prefilled: Dict[str, Any]       # AI-suggested answers
-    qa_verified: Dict[str, Any]        # User-submitted answers
+    # Reconciliation & Human-in-the-loop
+    unresolved_queue: Optional[List[Dict[str, Any]]] # Discrepancies between plan and schedule
+    human_resolutions: Optional[Dict[str, Any]]      # User's submitted answers
+    qa_prefilled: Optional[Dict[str, Any]]
+    qa_verified: Optional[Dict[str, Any]]
     
-    # Calculation Output
-    civil_quantities: Dict[str, Any]   # Civil quantity takeoff: Excavation, Concrete, Brickwork, Plaster, Tiles, etc.
+    # Final Processed Data
+    fused_schedule: Optional[List[Dict[str, Any]]]   # The final accurate list of doors/windows
     
-    # Validation & Artifact Generation
-    validation_results: Dict[str, Any]
-    validation_passed: bool
+    # Layer 5: Output Artifacts
     excel_file_path: Optional[str]
+    annotated_pdf_path: Optional[str]
     error: Optional[str]
-    chat_history: Optional[List[Dict[str, Any]]]
-
-
-
-    # V2.0 Doors & Windows Pipeline
-    schedule_registry: Optional[Dict[str, Any]]
-    plan_extractions: Optional[Dict[str, Any]] # Keyed by building_id
-    reconciliation_result: Optional[Dict[str, Any]]

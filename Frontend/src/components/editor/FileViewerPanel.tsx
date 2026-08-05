@@ -7,12 +7,15 @@ import * as wjcGridSheet from '@grapecity/wijmo.react.grid.sheet';
 import '@grapecity/wijmo.styles/wijmo.css';
 import { api } from '../../lib/api';
 
+import ResultPanel from './ResultPanel';
+
 type FileType = 'plan' | 'excel' | 'readme';
 
 interface FileViewerPanelProps {
   sessionId: string;
   fileType: FileType;
   sessionName: string;
+  sessionState?: any;
 }
 
 // ── Plan Image Viewer ─────────────────────────────────────────────
@@ -412,11 +415,17 @@ function ReadmeViewer({ sessionId }: { sessionId: string }) {
 }
 
 // ── Main FileViewerPanel ──────────────────────────────────────────
-export default function FileViewerPanel({ sessionId, fileType, sessionName }: FileViewerPanelProps) {
+export default function FileViewerPanel({ sessionId, fileType, sessionName, sessionState }: FileViewerPanelProps) {
   return (
     <div className="flex flex-col h-full w-full animate-fade-in">
       {fileType === 'plan' && <PlanViewer sessionId={sessionId} />}
-      {fileType === 'excel' && <ExcelViewer sessionId={sessionId} sessionName={sessionName} />}
+      {fileType === 'excel' && (
+        <ResultPanel 
+          sessionState={sessionState} 
+          sessionId={sessionId} 
+          downloadUrl={api.downloadUrl(sessionId)} 
+        />
+      )}
       {fileType === 'readme' && <ReadmeViewer sessionId={sessionId} />}
     </div>
   );

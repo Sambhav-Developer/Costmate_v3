@@ -21,6 +21,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   const [error, setError] = useState<string | null>(null);
   const [isUploadingDoor, setIsUploadingDoor] = useState(false);
   const [isUploadingWindow, setIsUploadingWindow] = useState(false);
+  const [uploadingFloorId, setUploadingFloorId] = useState<number | null>(null);
   const [draftSessionId, setDraftSessionId] = useState<string | null>(null);
 
   // --- Global Settings ---
@@ -93,6 +94,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     const file = e.target.files?.[0];
     if (!file) return;
     setLoading(true);
+    setUploadingFloorId(activeFloorId);
     try {
       let filename = file.name;
       let scannedRooms: any[] = [];
@@ -100,7 +102,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       
       let currentSid = draftSessionId;
       if (!currentSid) {
-        const data = await api.createDraftSession(globalSettings.projectName, 'complete_estimate', 'none');
+        const data = await api.createDraftSession(globalSettings.projectName);
         currentSid = data.session_id;
         setDraftSessionId(currentSid);
       }
@@ -152,6 +154,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       setError('Upload failed: ' + err.message);
     } finally {
       setLoading(false);
+      setUploadingFloorId(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -319,7 +322,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     if (step === 1 && !draftSessionId) {
       setLoading(true);
       try {
-        const data = await api.createDraftSession(globalSettings.projectName, 'complete_estimate', 'none');
+        const data = await api.createDraftSession(globalSettings.projectName);
         setDraftSessionId(data.session_id);
       } catch (err: any) {
         setError(err.message);
@@ -336,7 +339,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     try {
       let sid = draftSessionId;
       if (!sid) {
-        const data = await api.createDraftSession(globalSettings.projectName, 'complete_estimate', 'none');
+        const data = await api.createDraftSession(globalSettings.projectName);
         sid = data.session_id;
         setDraftSessionId(sid);
       }
@@ -469,7 +472,6 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                       {renderInput("Project Name", globalSettings.projectName, v => setGlobalSettings({...globalSettings, projectName: v}), "e.g. Skyline Towers")}
-                      {renderInput("Plot Dimensions", globalSettings.plotDimensions, v => setGlobalSettings({...globalSettings, plotDimensions: v}), "e.g. 30x40 ft or 1200 sq.ft")}
                     </div>
                     <div className={`grid grid-cols-3 gap-4`}>
                       {renderSelect("Building Type", globalSettings.buildingType, v => setGlobalSettings({...globalSettings, buildingType: v}), ['Residential', 'Commercial', 'Apartment', 'Industrial', 'Other'])}
@@ -502,38 +504,57 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       <input 
                         id="door-schedule-upload"
                         type="file" 
+                        multiple
                         className="hidden" 
                         onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
+                          const files = e.target.files;
+                          if (!files || files.length === 0) return;
                           setLoading(true);
                           setIsUploadingDoor(true);
                           try {
                             let sid = draftSessionId;
                             if (!sid) {
-                              const data = await api.createDraftSession(globalSettings.projectName, 'complete_estimate', 'none');
+                              const data = await api.createDraftSession(globalSettings.projectName);
                               sid = data.session_id;
                               setDraftSessionId(sid);
                             }
-                            const res = await api.uploadDraftSchedule(sid, file);
                             
-                            setGlobalSettings(prev => {
-                              const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-                              const newReg = res.schedule_registry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-                              return {
-                                ...prev, 
-                                doorScheduleFileName: file.name,
-                                scheduleRegistry: {
-                                  ...oldReg,
-                                  ...newReg,
-                                  type_registry: {
-                                    doors: [...(oldReg.type_registry?.doors || []), ...(newReg.type_registry?.doors || [])],
-                                    windows: [...(oldReg.type_registry?.windows || []), ...(newReg.type_registry?.windows || [])]
-                                  },
-                                  instance_schedule: [...(oldReg.instance_schedule || []), ...(newReg.instance_schedule || [])]
-                                }
-                              };
-                            });
+                            let uploadedNames: string[] = [];
+                            if (globalSettings.doorScheduleFileName) {
+                               uploadedNames = globalSettings.doorScheduleFileName.split(", ");
+                            }
+                            
+                            for (let i = 0; i < files.length; i++) {
+                              const file = files[i];
+                              uploadedNames.push(file.name);
+                              const res = await api.uploadDraftSchedule(sid, file);
+                              
+                                setGlobalSettings(prev => {
+                                  const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
+                                  const rawReg = res.schedule_registry;
+                                  let newReg: any = { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
+                                  if (Array.isArray(rawReg)) {
+                                      newReg.instance_schedule = rawReg.map((item: any) => ({ ...item, _schedule_type: 'door' }));
+                                  } else if (rawReg && Array.isArray(rawReg.instance_schedule)) {
+                                      newReg = rawReg;
+                                      newReg.instance_schedule = newReg.instance_schedule.map((item: any) => ({ ...item, _schedule_type: 'door' }));
+                                  }
+                                  
+                                  return {
+                                    ...prev, 
+                                    doorScheduleFileName: uploadedNames.join(", "),
+                                    scheduleRegistry: {
+                                      ...oldReg,
+                                      ...newReg,
+                                      type_registry: {
+                                        doors: [...(oldReg.type_registry?.doors || []), ...(newReg.type_registry?.doors || [])],
+                                        windows: [...(oldReg.type_registry?.windows || []), ...(newReg.type_registry?.windows || [])]
+                                      },
+                                      instance_schedule: [...(oldReg.instance_schedule || []), ...(newReg.instance_schedule || [])]
+                                    }
+                                  };
+                                });
+                            }
                           } catch (err: any) {
                             setError("Failed to upload door schedule: " + err.message);
                           } finally {
@@ -543,8 +564,8 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         }} 
                       />
                       {globalSettings.doorScheduleFileName && !isUploadingDoor && (
-                        <div className="text-sm text-emerald-400 flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20">
-                          <CheckCircle2 className="w-4 h-4" /> {globalSettings.doorScheduleFileName}
+                        <div className="text-sm text-emerald-400 flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20 truncate max-w-xs">
+                          <CheckCircle2 className="w-4 h-4 shrink-0" /> <span className="truncate">{globalSettings.doorScheduleFileName}</span>
                         </div>
                       )}
                     </div>
@@ -562,38 +583,56 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       <input 
                         id="window-schedule-upload"
                         type="file" 
+                        multiple
                         className="hidden" 
                         onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
+                          const files = e.target.files;
+                          if (!files || files.length === 0) return;
                           setLoading(true);
                           setIsUploadingWindow(true);
                           try {
                             let sid = draftSessionId;
                             if (!sid) {
-                              const data = await api.createDraftSession(globalSettings.projectName, 'complete_estimate', 'none');
+                              const data = await api.createDraftSession(globalSettings.projectName);
                               sid = data.session_id;
                               setDraftSessionId(sid);
                             }
-                            const res = await api.uploadDraftSchedule(sid, file);
                             
-                            setGlobalSettings(prev => {
-                              const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-                              const newReg = res.schedule_registry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-                              return {
-                                ...prev, 
-                                windowScheduleFileName: file.name,
-                                scheduleRegistry: {
-                                  ...oldReg,
-                                  ...newReg,
-                                  type_registry: {
-                                    doors: [...(oldReg.type_registry?.doors || []), ...(newReg.type_registry?.doors || [])],
-                                    windows: [...(oldReg.type_registry?.windows || []), ...(newReg.type_registry?.windows || [])]
-                                  },
-                                  instance_schedule: [...(oldReg.instance_schedule || []), ...(newReg.instance_schedule || [])]
+                            let uploadedNames: string[] = [];
+                            if (globalSettings.windowScheduleFileName) {
+                               uploadedNames = globalSettings.windowScheduleFileName.split(", ");
+                            }
+                            
+                            for (let i = 0; i < files.length; i++) {
+                              const file = files[i];
+                              uploadedNames.push(file.name);
+                              const res = await api.uploadDraftSchedule(sid, file);
+                              
+                              setGlobalSettings(prev => {
+                                const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
+                                const rawReg = res.schedule_registry;
+                                let newReg: any = { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
+                                if (Array.isArray(rawReg)) {
+                                    newReg.instance_schedule = rawReg.map((item: any) => ({ ...item, _schedule_type: 'window' }));
+                                } else if (rawReg && Array.isArray(rawReg.instance_schedule)) {
+                                    newReg = rawReg;
+                                    newReg.instance_schedule = newReg.instance_schedule.map((item: any) => ({ ...item, _schedule_type: 'window' }));
                                 }
-                              };
-                            });
+                                return {
+                                  ...prev, 
+                                  windowScheduleFileName: uploadedNames.join(", "),
+                                  scheduleRegistry: {
+                                    ...oldReg,
+                                    ...newReg,
+                                    type_registry: {
+                                      doors: [...(oldReg.type_registry?.doors || []), ...(newReg.type_registry?.doors || [])],
+                                      windows: [...(oldReg.type_registry?.windows || []), ...(newReg.type_registry?.windows || [])]
+                                    },
+                                    instance_schedule: [...(oldReg.instance_schedule || []), ...(newReg.instance_schedule || [])]
+                                  }
+                                };
+                              });
+                            }
                           } catch (err: any) {
                             setError("Failed to upload window schedule: " + err.message);
                           } finally {
@@ -603,8 +642,8 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         }} 
                       />
                       {globalSettings.windowScheduleFileName && !isUploadingWindow && (
-                        <div className="text-sm text-emerald-400 flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20">
-                          <CheckCircle2 className="w-4 h-4" /> {globalSettings.windowScheduleFileName}
+                        <div className="text-sm text-emerald-400 flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20 truncate max-w-xs">
+                          <CheckCircle2 className="w-4 h-4 shrink-0" /> <span className="truncate">{globalSettings.windowScheduleFileName}</span>
                         </div>
                       )}
                     </div>
@@ -612,6 +651,18 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                   <p className="text-xs text-zinc-500 mt-4">
                     Upload your schedules here. We will extract the door/window types and use them when scanning your floor plans.
                   </p>
+                  
+                  {/* Schedule Preview */}
+                  {globalSettings.scheduleRegistry && (
+                    <div className="mt-4 p-4 border border-white/10 rounded-lg bg-black overflow-auto max-h-64 custom-scrollbar">
+                      <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" /> Parsed Schedule Data (Preview)
+                      </h4>
+                      <pre className="text-xs text-zinc-400 whitespace-pre-wrap select-text" draggable="false" style={{ userSelect: 'text', WebkitUserDrag: 'none' }}>
+                        {JSON.stringify(globalSettings.scheduleRegistry, null, 2)}
+                      </pre>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -703,7 +754,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       </div>
                       <div className="h-[280px] bg-[#18181b] border-2 border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
                         <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.png,.jpg" className="hidden" />
-                        {loading || isScanning ? (
+                        {uploadingFloorId === activeFloor.id ? (
                           <div className="flex flex-col items-center">
                             <Loader2 className="w-8 h-8 animate-spin text-violet-500 mb-3" />
                             <span className="text-sm font-bold text-violet-400">

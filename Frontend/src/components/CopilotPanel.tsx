@@ -117,17 +117,17 @@ export default function CopilotPanel({
 
   const getAgentLogs = () => {
     const logs: { id: string; time: string; tag: string; text: string; type: string }[] = [];
-    if (progress >= 5)  logs.push({ id: 'l1', time: '—', tag: 'INGEST',       text: 'Drawing ingestion pipeline initialized.', type: 'info' });
-    if (progress >= 15) logs.push({ id: 'l2', time: '—', tag: 'OCR_AGENT',    text: 'Vision OCR scan complete. Title blocks cataloged.', type: 'success' });
-    if (progress >= 35) logs.push({ id: 'l3', time: '—', tag: 'VISION_SWARM', text: 'Spatial columns & rooms mapped.', type: 'success' });
-    if (progress >= 45) logs.push({ id: 'l4', time: '—', tag: 'ORCHESTRATOR', text: 'Parameters extracted. Form pre-filled.', type: 'info' });
+    if (progress >= 5)  logs.push({ id: 'l1', time: '—', tag: 'INGEST',       text: 'Schedule document uploaded.', type: 'info' });
+    if (progress >= 15) logs.push({ id: 'l2', time: '—', tag: 'VISION_SWARM', text: 'Extracting tabular data from schedule...', type: 'success' });
+    if (progress >= 35) logs.push({ id: 'l3', time: '—', tag: 'PARSER',       text: 'Parsing columns and mapping headers...', type: 'success' });
+    if (progress >= 45) logs.push({ id: 'l4', time: '—', tag: 'ORCHESTRATOR', text: 'Validating schedule entries...', type: 'info' });
     if (status === 'paused_qa')
-      logs.push({ id: 'lp', time: 'NOW', tag: 'HUMAN_GATE', text: 'HIL Gate active — waiting for parameter review...', type: 'warning' });
+      logs.push({ id: 'lp', time: 'NOW', tag: 'HUMAN_GATE', text: 'HIL Gate active — waiting for manual review...', type: 'warning' });
     if ((status === 'processing' || status === 'calculating') && progress >= 70)
-      logs.push({ id: 'lc', time: 'NOW', tag: 'CALC_SWARM', text: 'Computing civil quantities and volumes...', type: 'info' });
+      logs.push({ id: 'lc', time: 'NOW', tag: 'RECONCILIATION', text: 'Generating structured JSON...', type: 'info' });
     if (status === 'completed') {
-      logs.push({ id: 'ld1', time: '✓', tag: 'CALC_SWARM',   text: 'Quantities computed successfully.', type: 'success' });
-      logs.push({ id: 'ld2', time: '✓', tag: 'EXCEL_WRITER', text: 'BOQ Excel generated and ready.', type: 'success' });
+      logs.push({ id: 'ld1', time: '✓', tag: 'RECONCILIATION', text: 'Data compiled successfully.', type: 'success' });
+      logs.push({ id: 'ld2', time: '✓', tag: 'EXPORT', text: 'Schedule ready for review.', type: 'success' });
     }
     if (status === 'failed')
       logs.push({ id: 'le', time: '✕', tag: 'ERROR', text: sessionState?.error || 'Agent run failed.', type: 'error' });
@@ -141,7 +141,7 @@ export default function CopilotPanel({
   const headerBg   = 'var(--panel-header)';
 
   return (
-    <div className={`shrink-0 border-r flex flex-col h-full select-none transition-all duration-300`}
+    <div className={`shrink-0 border-r flex flex-col h-full transition-all duration-300`}
       style={{
         width: collapsed ? 44 : 360,
         background: panelBg,
@@ -297,8 +297,8 @@ export default function CopilotPanel({
           ) : (
             agentLogs.map(log => (
               <div key={log.id} className="flex gap-2 items-start leading-relaxed animate-slide-in">
-                <span style={{ color: 'var(--muted)' }} className="select-none">[{log.time}]</span>
-                <span className={`font-bold select-none ${!['success', 'warning', 'error'].includes(log.type) ? 'text-gradient-accent' : ''}`} style={{
+                <span style={{ color: 'var(--muted)' }}>[{log.time}]</span>
+                <span className={`font-bold ${!['success', 'warning', 'error'].includes(log.type) ? 'text-gradient-accent' : ''}`} style={{
                   color: log.type === 'success' ? '#10b981'
                     : log.type === 'warning' ? '#f59e0b'
                     : log.type === 'error' ? '#ef4444'

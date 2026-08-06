@@ -145,6 +145,53 @@ async def download_output(session_id: str, current_user: dict = Depends(get_curr
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
     )
 
+@router.get("/download/{session_id}/plan")
+async def download_annotated_plan(session_id: str, current_user: dict = Depends(get_current_user)):
+    restored = await session_manager.restore_session_if_needed(session_id, user_id=current_user["id"])
+    if not restored:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    config = {"configurable": {"thread_id": session_id}}
+    state_snapshot = await costmate_graph.aget_state(config)
+    if not state_snapshot.values:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    
+    annotated_path = state_snapshot.values.get("annotated_pdf_path")
+    if not annotated_path:
+        raise HTTPException(status_code=404, detail="Annotated plan PDF not ready or not found.")
+        
+    filename = f"Costmate_Annotated_Plan_{session_id}.pdf"
+    media_type = "application/pdf"
+    
+    if annotated_path.startswith("http"):
+        import httpx
+        from fastapi.responses import StreamingResponse
+        async def stream_external_file():
+            async with httpx.AsyncClient() as client:
+                async with client.stream("GET", annotated_path) as response:
+                    if response.status_code != 200:
+                        raise HTTPException(status_code=404, detail="Failed to fetch annotated plan from cloud storage")
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+        
+        return StreamingResponse(
+            stream_external_file(),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+            }
+        )
+        
+    if not os.path.exists(annotated_path):
+        raise HTTPException(status_code=404, detail="Annotated plan PDF not ready or not found.")
+        
+    return FileResponse(
+        path=annotated_path, 
+        media_type=media_type, 
+        filename=filename,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    )
+
 @router.get("/files/{session_id}/plan")
 async def get_plan_image(session_id: str, current_user: dict = Depends(get_current_user)):
     restored = await session_manager.restore_session_if_needed(session_id, user_id=current_user["id"])

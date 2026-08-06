@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Upload,
   CheckCircle2,
@@ -19,6 +19,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings2,
+  X,
+  AlertCircle,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import SetupWizardModal from './SetupWizardModal';
@@ -121,6 +123,20 @@ export default function Sidebar({
   // Track which sessions are expanded (showing sub-items)
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
 
+  // Toast state
+  type Toast = { id: string; type: 'confirm' | 'success' | 'error'; message: string; sessionId?: string; sessionName?: string; timer?: ReturnType<typeof setTimeout>; };
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  const showToast = useCallback((toast: Omit<Toast, 'id' | 'timer'>) => {
+    const id = Math.random().toString(36).slice(2);
+    const timer = toast.type !== 'confirm' ? setTimeout(() => dismissToast(id), 3000) : undefined;
+    setToasts(prev => [...prev.filter(t => t.type !== 'confirm'), { ...toast, id, timer }]);
+  }, [dismissToast]);
+
   const toggleExpand = (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setExpandedSessions(prev => {
@@ -146,7 +162,12 @@ export default function Sidebar({
 
   const handleDeleteSession = async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
-    if (!confirm('Delete this estimation and all its data?')) return;
+    const session = sessionsList.find(s => s.id === sessionId);
+    showToast({ type: 'confirm', message: `Delete "${session?.filename || 'this estimation'}" and all its data?`, sessionId, sessionName: session?.filename });
+  };
+
+  const confirmDelete = async (sessionId: string, toastId: string) => {
+    dismissToast(toastId);
     try { await api.deleteSession(sessionId); } catch { /* ignore */ }
     setSessionsList(prev => {
       const updated = prev.filter(s => s.id !== sessionId);
@@ -155,6 +176,7 @@ export default function Sidebar({
     });
     if (activeSessionId === sessionId) onSelectSession(null);
     setExpandedSessions(prev => { const n = new Set(prev); n.delete(sessionId); return n; });
+    showToast({ type: 'success', message: 'Estimation deleted successfully.' });
   };
 
   return (
@@ -327,6 +349,122 @@ export default function Sidebar({
         onClose={() => setIsWizardOpen(false)}
         onTakeoffStarted={onNewSessionCreated}
       />
+
+      {/* ── Toast Notifications ── */}
+      {toasts.length > 0 && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 72,
+            right: 24,
+            zIndex: 9999,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            width: 300,
+            pointerEvents: 'none',
+          }}
+        >
+          {toasts.map(toast => (
+            <div
+              key={toast.id}
+              style={{
+                pointerEvents: 'all',
+                background: toast.type === 'confirm'
+                  ? 'linear-gradient(135deg, #1e1a2e 0%, #241b36 100%)'
+                  : toast.type === 'success'
+                  ? 'linear-gradient(135deg, #0d2018 0%, #0f2920 100%)'
+                  : 'linear-gradient(135deg, #2a1010 0%, #2e1212 100%)',
+                border: `1px solid ${toast.type === 'confirm' ? '#7c3aed55' : toast.type === 'success' ? '#16a34a55' : '#dc262655'}`,
+                borderRadius: 14,
+                padding: '14px 16px',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+                animation: 'slideUpToast 0.25s cubic-bezier(0.16,1,0.3,1)',
+              }}
+            >
+              {toast.type === 'confirm' ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 12 }}>
+                    <div style={{
+                      width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                      background: 'rgba(239,68,68,0.15)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center'
+                    }}>
+                      <Trash2 style={{ width: 15, height: 15, color: '#f87171' }} />
+                    </div>
+                    <div>
+                      <p style={{ fontSize: 12, fontWeight: 700, color: '#f1f5f9', margin: 0 }}>Delete Estimation?</p>
+                      <p style={{ fontSize: 11, color: '#94a3b8', margin: '3px 0 0', lineHeight: 1.4 }}>{toast.message}</p>
+                    </div>
+                    <button
+                      onClick={() => dismissToast(toast.id)}
+                      style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', padding: 2 }}
+                    >
+                      <X style={{ width: 13, height: 13 }} />
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      onClick={() => toast.sessionId && confirmDelete(toast.sessionId, toast.id)}
+                      style={{
+                        flex: 1, padding: '7px 0', borderRadius: 8, border: 'none', cursor: 'pointer',
+                        background: 'linear-gradient(135deg, #dc2626, #b91c1c)',
+                        color: '#fff', fontSize: 12, fontWeight: 700,
+                        boxShadow: '0 2px 8px rgba(220,38,38,0.35)',
+                        transition: 'opacity 0.15s',
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.opacity = '0.85')}
+                      onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
+                    >
+                      Yes, Delete
+                    </button>
+                    <button
+                      onClick={() => dismissToast(toast.id)}
+                      style={{
+                        flex: 1, padding: '7px 0', borderRadius: 8, cursor: 'pointer',
+                        background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                        color: '#94a3b8', fontSize: 12, fontWeight: 600,
+                        transition: 'opacity 0.15s',
+                      }}
+                      onMouseEnter={e => (e.currentTarget.style.opacity = '0.7')}
+                      onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{
+                    width: 28, height: 28, borderRadius: 7, flexShrink: 0,
+                    background: toast.type === 'success' ? 'rgba(22,163,74,0.2)' : 'rgba(220,38,38,0.2)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center'
+                  }}>
+                    {toast.type === 'success'
+                      ? <CheckCircle2 style={{ width: 14, height: 14, color: '#4ade80' }} />
+                      : <AlertCircle style={{ width: 14, height: 14, color: '#f87171' }} />
+                    }
+                  </div>
+                  <p style={{ fontSize: 12, color: '#e2e8f0', margin: 0, flex: 1 }}>{toast.message}</p>
+                  <button
+                    onClick={() => dismissToast(toast.id)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', padding: 2, flexShrink: 0 }}
+                  >
+                    <X style={{ width: 12, height: 12 }} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <style>{`
+        @keyframes slideUpToast {
+          from { opacity: 0; transform: translateY(-16px) scale(0.97); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+      `}</style>
     </aside>
   );
 }

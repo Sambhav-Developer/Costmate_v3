@@ -52,7 +52,8 @@ class EstimationService:
                     cloud_png_path = upload_to_cloudinary_bytes(pix.tobytes("png"), png_filename, resource_type="image")
                     if cloud_png_path:
                         active_paths.append(cloud_png_path)
-                active_path = active_paths[0] if active_paths else active_path
+                # Keep active_path as the raw PDF URL instead of overwriting with page0.png
+                # active_path = active_paths[0] if active_paths else active_path
             except Exception as e:
                 logger.error(f"[{session_id}] Failed to convert PDF pages to images: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to process PDF pages: {str(e)}")
@@ -110,6 +111,8 @@ class EstimationService:
             "progress_pct": values.get("progress_pct"),
             "qa_prefilled": values.get("qa_prefilled"),
             "qa_verified": values.get("qa_verified"),
+            "cv_results": values.get("cv_results"),
+            "schedule_data": values.get("schedule_data"),
             "civil_quantities": values.get("civil_quantities"),
             "steel_quantities": values.get("steel_quantities"),
             "chat_history": values.get("chat_history")
@@ -149,7 +152,7 @@ class EstimationService:
         if ext not in [".png", ".jpg", ".jpeg", ".pdf"]:
             raise ValidationException("Invalid file format. Only PDF, PNG, and JPG/JPEG are supported.")
 
-        filename = f"{session_id}{ext}"
+        filename = f"{session_id}_{uuid.uuid4().hex[:8]}{ext}"
         
         try:
             content = await file.read()
@@ -176,12 +179,14 @@ class EstimationService:
                     zoom = max(3.5, min(8.0, target_pixels / longest_side))
                     mat = fitz.Matrix(zoom, zoom)
                     pix = page.get_pixmap(matrix=mat, alpha=False)
-                    png_filename = f"{session_id}_page{page_num}.png"
+                    base_name = os.path.splitext(filename)[0]
+                    png_filename = f"{base_name}_page{page_num}.png"
                     
                     cloud_png_path = upload_to_cloudinary_bytes(pix.tobytes("png"), png_filename, resource_type="image", project_name=project_name)
                     if cloud_png_path:
                         active_paths.append(cloud_png_path)
-                active_path = active_paths[0] if active_paths else active_path
+                # Keep active_path as the raw PDF URL instead of overwriting with page0.png
+                # active_path = active_paths[0] if active_paths else active_path
             except Exception as e:
                 logger.error(f"[{session_id}] Failed to convert PDF pages to images: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to process PDF pages: {str(e)}")
@@ -190,7 +195,7 @@ class EstimationService:
 
         estimation_repo.update_draft_session_file(conn, session_id, user_id, active_path, file.filename, active_paths)
         conn.commit()
-        return {"session_id": session_id, "filename": file.filename, "status": "file_uploaded", "page_paths": active_paths}
+        return {"session_id": session_id, "filename": file.filename, "status": "file_uploaded", "page_paths": active_paths, "raw_url": active_path}
 
     async def upload_draft_schedule(self, conn, session_id: str, user_id: int, file) -> dict:
         row = estimation_repo.get_draft_session(conn, session_id, user_id)

@@ -107,12 +107,15 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
         setDraftSessionId(currentSid);
       }
       
+
+      let rawUrl = '';
       if (currentSid) {
         const res = await api.uploadDraftFile(currentSid, file);
         filename = res.filename;
         if (res.page_paths && res.page_paths.length > 0) {
           pageUrls = res.page_paths;
         }
+        rawUrl = res.raw_url;
         
         try {
           setIsScanning(true);
@@ -145,6 +148,8 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       newFloors[activeFloorIndex].fileName = filename;
       newFloors[activeFloorIndex].file = file;
       newFloors[activeFloorIndex].pageUrls = pageUrls;
+      newFloors[activeFloorIndex].rawUrl = rawUrl;
+      
       if (scannedRooms.length > 0) {
         newFloors[activeFloorIndex].rooms = scannedRooms;
         setActiveTab('rooms');
@@ -354,6 +359,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
            if (res.page_paths && res.page_paths.length > 0) {
              newFloors[i].pageUrls = res.page_paths;
            }
+           newFloors[i].rawUrl = res.raw_url;
         }
       }
       setFloors(newFloors);
@@ -527,7 +533,11 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                             for (let i = 0; i < files.length; i++) {
                               const file = files[i];
                               uploadedNames.push(file.name);
-                              const res = await api.uploadDraftSchedule(sid, file);
+                              // 3-minute client timeout — shows error if OpenRouter hangs
+                              const timeoutPromise = new Promise<never>((_, reject) =>
+                                setTimeout(() => reject(new Error('Schedule parsing timed out. The AI service is busy — please try again in a moment.')), 180_000)
+                              );
+                              const res = await Promise.race([api.uploadDraftSchedule(sid, file), timeoutPromise]);
                               
                                 setGlobalSettings(prev => {
                                   const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
@@ -556,7 +566,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                                 });
                             }
                           } catch (err: any) {
-                            setError("Failed to upload door schedule: " + err.message);
+                            setError('⚠️ ' + (err.message || 'Failed to upload door schedule. Please try again.'));
                           } finally {
                             setLoading(false);
                             setIsUploadingDoor(false);
@@ -606,7 +616,11 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                             for (let i = 0; i < files.length; i++) {
                               const file = files[i];
                               uploadedNames.push(file.name);
-                              const res = await api.uploadDraftSchedule(sid, file);
+                              // 3-minute client timeout — shows error if OpenRouter hangs
+                              const timeoutPromise = new Promise<never>((_, reject) =>
+                                setTimeout(() => reject(new Error('Schedule parsing timed out. The AI service is busy — please try again in a moment.')), 180_000)
+                              );
+                              const res = await Promise.race([api.uploadDraftSchedule(sid, file), timeoutPromise]);
                               
                               setGlobalSettings(prev => {
                                 const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
@@ -634,7 +648,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                               });
                             }
                           } catch (err: any) {
-                            setError("Failed to upload window schedule: " + err.message);
+                            setError('⚠️ ' + (err.message || 'Failed to upload window schedule. Please try again.'));
                           } finally {
                             setLoading(false);
                             setIsUploadingWindow(false);

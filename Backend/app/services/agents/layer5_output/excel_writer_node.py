@@ -96,20 +96,67 @@ async def excel_writer_node(state: CostmateState) -> dict:
                 ws.column_dimensions[openpyxl.utils.get_column_letter(col_num)].width = 20
                 
             # Data
-            for row_idx, item in enumerate(sheet_items, 2):
+            row_idx = 2
+            for item in sheet_items:
                 mark = str(item.get("type", item.get("mark", ""))).strip().upper()
-                cv_info = cv_lookup.get(mark, {})
-
-                for col_idx, header in enumerate(final_headers, 1):
-                    val = ""
-                    if header == "QTY": val = item.get("count", "1")
-                    elif header == "MARKS": val = mark
-                    elif header in ["LOCATION", "ESTIMATOR NOTES", "FLOOR NO"]: val = ""
-                    elif header == "OPENING MODE": val = cv_info.get("opening_mode", "")
-                    elif header == "INT/EXT": val = cv_info.get("int_ext", "")
-                    else: val = item.get(header, "")
-
-                    ws.cell(row=row_idx, column=col_idx, value=str(val))
+                
+                # Find all detected instances for this mark
+                instances = [d for d in detections if str(d.get("mark", "")).strip().upper() == mark]
+                
+                # Determine material for Estimator Notes
+                material = ""
+                for k, v in item.items():
+                    if "material" in str(k).lower():
+                        material = str(v).upper()
+                        break
+                notes = ""
+                if any(kw in material for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM"]):
+                    notes = "Door is of Aluminium/Glass material."
+                
+                if instances:
+                    # Write one row for each detected instance
+                    for d in instances:
+                        floor_no = d.get("floor_no", "")
+                        if not floor_no:
+                            for char in mark:
+                                if char.isdigit():
+                                    floor_no = char
+                                    break
+                                    
+                        for col_idx, header in enumerate(final_headers, 1):
+                            val = ""
+                            if header == "QTY": val = "1"
+                            elif header == "MARKS": val = mark
+                            elif header == "LOCATION": val = d.get("location", "")
+                            elif header == "ESTIMATOR NOTES": val = notes
+                            elif header == "FLOOR NO": val = floor_no
+                            elif header == "OPENING MODE": val = d.get("opening_mode", "Single")
+                            elif header == "INT/EXT": val = d.get("int_ext", "Interior")
+                            else: val = item.get(header, "")
+                            
+                            ws.cell(row=row_idx, column=col_idx, value=str(val))
+                        row_idx += 1
+                else:
+                    # Write one placeholder row with QTY = 0 if not found in plan
+                    floor_no = ""
+                    for char in mark:
+                        if char.isdigit():
+                            floor_no = char
+                            break
+                            
+                    for col_idx, header in enumerate(final_headers, 1):
+                        val = ""
+                        if header == "QTY": val = "0"
+                        elif header == "MARKS": val = mark
+                        elif header == "LOCATION": val = ""
+                        elif header == "ESTIMATOR NOTES": val = notes
+                        elif header == "FLOOR NO": val = floor_no
+                        elif header == "OPENING MODE": val = ""
+                        elif header == "INT/EXT": val = ""
+                        else: val = item.get(header, "")
+                        
+                        ws.cell(row=row_idx, column=col_idx, value=str(val))
+                    row_idx += 1
 
         if doors: generate_raw_sheet(doors, "DOOR SCHEDULE")
         if windows: generate_raw_sheet(windows, "WINDOW SCHEDULE")

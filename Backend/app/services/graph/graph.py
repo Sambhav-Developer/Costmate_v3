@@ -26,14 +26,14 @@ def build_graph():
     builder.add_node("excel_writer_node", excel_writer_node)
     builder.add_node("plan_annotation_node", plan_annotation_node)
     
-    # 2. Add edges
-    # START -> Parallel Extraction Tracks (A, B, C)
+    # START -> Extraction Tracks
     builder.add_edge(START, "schedule_parser_node")
     builder.add_edge(START, "ocr_consensus_node")
-    builder.add_edge(START, "cv_detector_node")
     
-    # Parallel Tracks -> Reconciliation Join
-    builder.add_edge("schedule_parser_node", "reconciliation_node")
+    # Run CV detector after Schedule parser completes
+    builder.add_edge("schedule_parser_node", "cv_detector_node")
+    
+    # Tracks -> Reconciliation Join
     builder.add_edge("ocr_consensus_node", "reconciliation_node")
     builder.add_edge("cv_detector_node", "reconciliation_node")
     

@@ -261,6 +261,12 @@ export const api = {
     return `${BASE_URL}/api/download/${sessionId}?token=${token || ''}&t=${Date.now()}`;
   },
 
+  downloadPlanUrl(sessionId: string) {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('costmate_token') : '';
+    return `${BASE_URL}/api/download/${sessionId}/plan?token=${token || ''}&t=${Date.now()}`;
+  },
+
+
   planImageUrl(sessionId: string) {
     const token = typeof window !== 'undefined' ? localStorage.getItem('costmate_token') : '';
     return `${BASE_URL}/api/files/${sessionId}/plan?token=${token || ''}`;

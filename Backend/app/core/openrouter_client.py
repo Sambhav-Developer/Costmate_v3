@@ -92,8 +92,8 @@ class OpenRouterClient:
             
         logger.info(f"Sending request to OpenRouter: {url} (multimodal={bool(image_paths)}, json_mode={json_mode})")
         
-        # Configure an unlimited timeout for slow local LLM model runs
-        timeout = httpx.Timeout(None, connect=30.0)
+        # 90s read timeout so malformed/slow OpenRouter responses don't hang forever
+        timeout = httpx.Timeout(90.0, connect=30.0)
         
         # Acquire global semaphore before executing HTTP request
         async with self._get_semaphore():

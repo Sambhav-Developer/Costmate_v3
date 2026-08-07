@@ -5,6 +5,21 @@ from app.core.logging import logger
 from app.services.graph.state import CostmateState
 from app.config import settings
 
+def get_item_mark(item: dict) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for k, v in item.items():
+        kl = str(k).lower().strip()
+        if kl in ["mark", "type", "marks", "door mark", "door no", "door no.", "window mark", "window no", "window no.", "id", "mark / type", "mark/type"]:
+            if v and str(v).strip():
+                return str(v).strip().upper()
+    for k, v in item.items():
+        kl = str(k).lower().strip()
+        if ("mark" in kl or "type" in kl) and kl not in ["hardware group no", "door type", "frame type", "opening mode", "type of door", "type of frame"]:
+            if v and str(v).strip():
+                return str(v).strip().upper()
+    return ""
+
 async def excel_writer_node(state: CostmateState) -> dict:
     logger.info("Excel Writer: Generating Final Schedule (RAW + ESTIMATION)...")
     
@@ -20,6 +35,10 @@ async def excel_writer_node(state: CostmateState) -> dict:
         windows = schedule_raw.get("windows", [])
         
     items = doors + windows
+    if not items:
+        items = state.get("schedule_data", [])
+        if not doors and items:
+            doors = items
     
     cv_results = state.get("cv_results", {})
     detections = cv_results.get("detections", [])
@@ -53,7 +72,7 @@ async def excel_writer_node(state: CostmateState) -> dict:
             
             # Headers
             for col_num, header in enumerate(raw_headers, 1):
-                display_header = "MARK" if str(header).lower() in ["type", "mark"] else str(header).upper()
+                display_header = "MARK" if str(header).lower() in ["type", "mark", "marks"] else str(header).upper()
                 cell = ws.cell(row=1, column=col_num, value=display_header)
                 cell.font = Font(bold=True, color="FFFFFF")
                 cell.alignment = Alignment(horizontal="center")
@@ -79,7 +98,7 @@ async def excel_writer_node(state: CostmateState) -> dict:
             dynamic_headers = []
             for k in all_keys:
                 kl = str(k).lower().strip()
-                if kl not in ["mark", "type", "count", "qty", "needs_review", "needs review", "need_review", "need review"]:
+                if kl not in ["mark", "marks", "type", "count", "qty", "needs_review", "needs review", "need_review", "need review"]:
                     dynamic_headers.append(k)
                     
             final_headers = est_headers + dynamic_headers
@@ -98,7 +117,7 @@ async def excel_writer_node(state: CostmateState) -> dict:
             # Data
             row_idx = 2
             for item in sheet_items:
-                mark = str(item.get("type", item.get("mark", ""))).strip().upper()
+                mark = get_item_mark(item)
                 
                 # Find all detected instances for this mark
                 instances = [d for d in detections if str(d.get("mark", "")).strip().upper() == mark]

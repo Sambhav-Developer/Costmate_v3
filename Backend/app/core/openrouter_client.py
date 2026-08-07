@@ -16,8 +16,8 @@ class OpenRouterClient:
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         if self._semaphore is None:
-            # Limit global concurrency to 2 concurrent requests to avoid Ollama overloading / 429 errors
-            self._semaphore = asyncio.Semaphore(2)
+            # Allow up to 6 concurrent requests for fast parallel passes
+            self._semaphore = asyncio.Semaphore(6)
         return self._semaphore
 
     def _encode_image(self, image_path: str) -> str:
@@ -92,8 +92,8 @@ class OpenRouterClient:
             
         logger.info(f"Sending request to OpenRouter: {url} (multimodal={bool(image_paths)}, json_mode={json_mode})")
         
-        # 90s read timeout so malformed/slow OpenRouter responses don't hang forever
-        timeout = httpx.Timeout(90.0, connect=30.0)
+        # 180s read timeout for multimodal vision models
+        timeout = httpx.Timeout(180.0, connect=30.0)
         
         # Acquire global semaphore before executing HTTP request
         async with self._get_semaphore():

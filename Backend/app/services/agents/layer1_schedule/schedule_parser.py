@@ -1,4 +1,5 @@
 import json
+import asyncio
 from typing import List, Dict
 from app.core.openrouter_client import OpenRouterClient
 from app.core.logging import logger
@@ -39,29 +40,29 @@ class ScheduleParserAgent:
         prompt_1 = """
         You are a highly precise architectural data extraction engine.
         Extract the COMPLETE schedule table from this image (Door Schedule or Window Schedule).
-
         Output a JSON array where each element is one data row (NOT header rows).
 
         CRITICAL RULES FOR JSON KEYS:
         1. The FIRST column (Mark / Mark No / Door No / Window No) MUST always use the key "mark".
-        2. For ALL other columns, use the EXACT text from the column header as the JSON key.
-        3. If a column header is multi-line (e.g. "HARDWARE" on one line, "GROUP NO" below it), join with a single space: "HARDWARE GROUP NO".
-        4. DUPLICATE COLUMN NAMES: Schedules often repeat the same header word under different parent groups. You MUST add a prefix ONLY when a column header is directly underneath a named parent-group header AND the same word appears elsewhere in the table too. Rules:
-           - Column under "DOOR" parent  → prefix "DOOR "  → e.g. "DOOR MATERIAL", "DOOR TYPE", "DOOR FINISH", "DOOR GLAZING"
-           - Column under "FRAME" parent → prefix "FRAME " → e.g. "FRAME MATERIAL", "FRAME TYPE", "FRAME FINISH"
-           - Column under "DETAIL" parent → prefix "DETAIL " → e.g. "DETAIL HEAD", "DETAIL JAMB", "DETAIL SILL"
-           - Column under "FIRE RATING" parent → prefix "FIRE RATING " → e.g. "FIRE RATING LABEL", "FIRE RATING GLAZING" (only if those sub-columns actually exist under FIRE RATING in the image)
-           - Column under "HARDWARE" parent → prefix "HARDWARE " → e.g. "HARDWARE GROUP NO"
-        5. STANDALONE COLUMNS (not under any parent group, or only appear once) → use EXACT header text as-is with NO prefix.
-           - "GLAZING" that appears as a standalone column (not visually under DOOR or FIRE RATING parent header) → use exactly "GLAZING"
-           - "W", "H", "T", "COMMENTS" → use as-is
-        6. IMPORTANT — Read the table structure carefully top-to-bottom:
-           - A "GLAZING" column positioned between DETAIL (HEAD/JAMB/SILL) and FIRE RATING is a STANDALONE column → key is "GLAZING", NOT "FIRE RATING GLAZING"
-           - Only add "FIRE RATING " prefix to columns that are VISUALLY GROUPED under the "FIRE RATING" header row
-        7. Empty cells → use empty string "". Never omit a key from a row.
-        8. Preserve the left-to-right column order exactly as seen in the image.
+        2. Transcribe "mark" EXACTLY as printed — preserve every hyphen, space, letter, and digit character-for-character. Do NOT normalize, reformat, add, or remove any characters.
+        3. For ALL other columns, use the EXACT text from the column header as the JSON key.
+        4. If a column header is multi-line (e.g. "HARDWARE" on one line, "GROUP NO" below it), join with a single space: "HARDWARE GROUP NO".
+        5. DUPLICATE COLUMN NAMES: Schedules often repeat the same header word under different parent groups. Add a prefix ONLY when a column header is directly underneath a named parent-group header AND the same word appears elsewhere in the table too:
+           - Column under "DOOR" parent   -> prefix "DOOR "   e.g. "DOOR MATERIAL", "DOOR TYPE", "DOOR FINISH"
+           - Column under "FRAME" parent  -> prefix "FRAME "  e.g. "FRAME MATERIAL", "FRAME TYPE", "FRAME FINISH"
+           - Column under "DETAIL" parent -> prefix "DETAIL " e.g. "DETAIL HEAD", "DETAIL JAMB", "DETAIL SILL"
+           - Column under "FIRE RATING" parent -> prefix "FIRE RATING " (only if those sub-columns actually exist under FIRE RATING in the image)
+           - Column under "HARDWARE" parent -> prefix "HARDWARE " e.g. "HARDWARE GROUP NO"
+        6. STANDALONE COLUMNS (not under any parent group, or only appear once) -> use EXACT header text as-is with NO prefix.
+           - A "GLAZING" column standing alone (not visually under DOOR or FIRE RATING) -> "GLAZING"
+           - "W", "H", "T", "COMMENTS" -> use as-is
+        7. Read the table structure top-to-bottom carefully:
+           - A "GLAZING" column positioned between DETAIL and FIRE RATING is standalone -> key is "GLAZING", NOT "FIRE RATING GLAZING"
+           - Only add "FIRE RATING " prefix to columns visually grouped under the "FIRE RATING" header row
+        8. Empty cells -> use empty string "". Never omit a key from a row.
+        9. Preserve the left-to-right column order exactly as seen in the image.
 
-        EXAMPLE — a typical Door & Frame schedule row (note: GLAZING is standalone, FIRE RATING only covers LABEL):
+        EXAMPLE — a typical Door & Frame schedule row:
         {
           "mark": "D-1",
           "W": "3'-0\\"",
@@ -86,21 +87,22 @@ class ScheduleParserAgent:
         Do NOT output anything except the JSON array. No markdown fences, no explanations.
         """
 
-
-        # Read 2: Extract just the MARK column for consensus validation
+        # Read 2: Extract mark auditor consensus list
         prompt_2 = """
         You are a highly precise architectural auditor. Look at the schedule table in this image.
-        List EVERY single value in the first column (MARK / Door No / Window Mark) of the table, exactly as written.
-        Output MUST be a JSON array of strings, e.g. ["D-1", "D-2", "W-1", "W-2A"]
-        Do not output anything else.
+        List EVERY value in the first column (MARK / Door No / Window Mark), in the order they appear top to bottom. Do not skip rows, do not merge rows, do not invent rows.
+
+        Output MUST be a JSON array of strings, e.g.: ["D-1", "D-2", "W-1", "W-2A"]
+
+        Do not output anything else — no markdown fences, no explanations.
         """
         
-        # Run sequentially because some providers rate-limit concurrent requests
-        logger.info("ScheduleParser: Running Pass 1...")
-        res1_text = await self.llm.generate_chat(prompt=prompt_1, image_paths=image_paths, json_mode=True, temperature=0.1)
-        
-        logger.info("ScheduleParser: Running Pass 2...")
-        res2_text = await self.llm.generate_chat(prompt=prompt_2, image_paths=image_paths, json_mode=True, temperature=0.4)
+        # Run Pass 1 and Pass 2 concurrently to optimize response time
+        logger.info("ScheduleParser: Running Pass 1 & Pass 2 concurrently...")
+        res1_text, res2_text = await asyncio.gather(
+            self.llm.generate_chat(prompt=prompt_1, image_paths=image_paths, json_mode=True, temperature=0.1),
+            self.llm.generate_chat(prompt=prompt_2, image_paths=image_paths, json_mode=True, temperature=0.4)
+        )
         
         res1_data = self._parse_json_safe(res1_text)
         if isinstance(res1_data, dict) and "data" in res1_data:
@@ -110,19 +112,27 @@ class ScheduleParserAgent:
             res1_data = []
         
         res2_marks = self._parse_json_safe(res2_text)
-        if isinstance(res2_marks, dict) and "marks" in res2_marks:
-            res2_marks = res2_marks["marks"]
+        if isinstance(res2_marks, dict):
+            res2_marks = res2_marks.get("marks") or res2_marks.get("data") or []
             
         if not isinstance(res2_marks, list):
             res2_marks = []
             
-        # Consensus matching
-        mark_set_2 = set(str(m).strip().upper() for m in res2_marks)
+        # Extract normalized mark set in Python for robust consensus matching
+        import re
+        mark_set_2_norm = set()
+        for m in res2_marks:
+            if isinstance(m, dict):
+                norm = re.sub(r'[^A-Z0-9]', '', str(m.get("mark", "")).upper())
+            else:
+                norm = re.sub(r'[^A-Z0-9]', '', str(m).upper())
+            if norm:
+                mark_set_2_norm.add(norm)
         
-        # Exact mark-like key candidates — do NOT include "no" alone as it matches "HARDWARE GROUP NO"
+        # Exact mark-like key candidates
         MARK_KEY_CANDIDATES = {
-            "mark", "mark no", "mark no.", "door no", "door no.",
-            "window no", "window no.", "window mark", "door mark", "id"
+            "mark", "marks", "mark no", "mark no.", "door no", "door no.",
+            "window no", "window no.", "window mark", "door mark", "id", "mark / type", "mark/type"
         }
         
         final_schedule = []
@@ -130,12 +140,15 @@ class ScheduleParserAgent:
             if not isinstance(row, dict):
                 continue
             
-            # The prompt tells the LLM to use "mark" key always; try it first
+            # Clean internal helper keys if present
+            row.pop("mark_normalized", None)
+            row.pop("mark_norm", None)
+            
             mark = str(row.get("mark", "")).strip().upper()
             
             if not mark:
-                # Fallback: check for common mark-column key variants (exact match only)
-                for k in row.keys():
+                # Fallback: check for common mark-column key variants
+                for k in list(row.keys()):
                     if str(k).lower().strip() in MARK_KEY_CANDIDATES:
                         mark = str(row[k]).strip().upper()
                         if mark:
@@ -147,21 +160,27 @@ class ScheduleParserAgent:
             
             # Normalize: ensure the canonical "mark" key is always present
             row["mark"] = mark
+            
+            # Compute normalized mark for robust consensus matching in Python
+            mark_norm = re.sub(r'[^A-Z0-9]', '', mark)
                 
-            needs_review = mark not in mark_set_2
+            needs_review = mark_norm not in mark_set_2_norm
             if needs_review:
-                logger.warning(f"Consensus failure for MARK: {mark}")
+                logger.warning(f"Consensus failure for MARK: {mark} (norm: {mark_norm})")
                 
             row_data = {**row, "needs_review": needs_review}
             
             # Use Pydantic for validation and filling missing defaults
             try:
                 validated = ScheduleData(**row_data)
-                final_schedule.append(validated.model_dump(by_alias=True))
+                out_dict = validated.model_dump(by_alias=True)
+                out_dict.pop("mark_normalized", None)
+                final_schedule.append(out_dict)
             except Exception as e:
                 logger.error(f"Row validation failed for {mark}: {e}")
                 # Append anyway with review flag for fault tolerance
                 row_data["needs_review"] = True
+                row_data.pop("mark_normalized", None)
                 final_schedule.append(row_data)
                 
         return final_schedule

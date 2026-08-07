@@ -66,7 +66,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
             "needs_review": bool(item.get("needs_review", False))
         }
         
-        ignore_keys = {"mark", "_schedule_type", "type", "count", "needs_review"}
+        ignore_keys = {"mark", "mark_normalized", "mark_norm", "_schedule_type", "type", "count", "needs_review"}
         
         # Known hardware group key name variants (all lowercased for comparison)
         HARDWARE_GROUP_VARIANTS = {

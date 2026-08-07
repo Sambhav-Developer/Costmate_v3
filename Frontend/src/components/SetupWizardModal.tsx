@@ -354,7 +354,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       for (let i = 0; i < newFloors.length; i++) {
         const f = newFloors[i];
         if (f.file && (!f.pageUrls || f.pageUrls.length === 0)) {
-           const res = await api.uploadDraftFile(sid, f.file);
+           const res = await api.uploadDraftFile(sid!, f.file);
            newFloors[i].fileName = res.filename;
            if (res.page_paths && res.page_paths.length > 0) {
              newFloors[i].pageUrls = res.page_paths;
@@ -365,7 +365,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       setFloors(newFloors);
 
       const intakeData = { globalSettings, floors: newFloors };
-      const resData = await api.startDraftTakeoff(sid, intakeData);
+      const resData = await api.startDraftTakeoff(sid!, intakeData);
       onTakeoffStarted(resData.session_id, resData.project_name);
       onClose();
     } catch (err: any) {
@@ -537,7 +537,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                               const timeoutPromise = new Promise<never>((_, reject) =>
                                 setTimeout(() => reject(new Error('Schedule parsing timed out. The AI service is busy — please try again in a moment.')), 180_000)
                               );
-                              const res = await Promise.race([api.uploadDraftSchedule(sid, file), timeoutPromise]);
+                              const res = await Promise.race([api.uploadDraftSchedule(sid!, file), timeoutPromise]);
                               
                                 setGlobalSettings(prev => {
                                   const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
@@ -620,7 +620,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                               const timeoutPromise = new Promise<never>((_, reject) =>
                                 setTimeout(() => reject(new Error('Schedule parsing timed out. The AI service is busy — please try again in a moment.')), 180_000)
                               );
-                              const res = await Promise.race([api.uploadDraftSchedule(sid, file), timeoutPromise]);
+                              const res = await Promise.race([api.uploadDraftSchedule(sid!, file), timeoutPromise]);
                               
                               setGlobalSettings(prev => {
                                 const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };

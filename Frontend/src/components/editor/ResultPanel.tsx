@@ -12,6 +12,23 @@ interface ResultPanelProps {
   downloadUrl: string;
 }
 
+function getItemMark(item: any): string {
+  if (!item || typeof item !== 'object') return '';
+  for (const k of Object.keys(item)) {
+    const kl = k.toLowerCase().trim();
+    if (['mark', 'type', 'marks', 'door mark', 'door no', 'door no.', 'window mark', 'window no', 'window no.', 'id', 'mark / type', 'mark/type'].includes(kl)) {
+      if (item[k]) return String(item[k]).trim().toUpperCase();
+    }
+  }
+  for (const k of Object.keys(item)) {
+    const kl = k.toLowerCase().trim();
+    if ((kl.includes('mark') || kl.includes('type')) && !['hardware group no', 'door type', 'frame type', 'opening mode', 'type of door', 'type of frame'].includes(kl)) {
+      if (item[k]) return String(item[k]).trim().toUpperCase();
+    }
+  }
+  return '';
+}
+
 export default function ResultPanel({ sessionState, sessionId, downloadUrl }: ResultPanelProps) {
   let verified = sessionState?.qa_verified;
   let prefilled = sessionState?.qa_prefilled;
@@ -58,7 +75,7 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
 
       const celldata: any[] = [];
       rawHeaders.forEach((h, c) => {
-        const displayHeader = (h.toLowerCase() === 'type' || h.toLowerCase() === 'mark') ? 'MARK' : h;
+        const displayHeader = (h.toLowerCase() === 'type' || h.toLowerCase() === 'mark' || h.toLowerCase() === 'marks') ? 'MARK' : h;
         celldata.push({ r: 0, c, v: { v: displayHeader, m: displayHeader, bl: 1, bg: '#333333', fc: '#ffffff' } });
       });
 
@@ -91,7 +108,7 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
       const estimationHeaders = ['QTY', 'MARKS', 'LOCATION', 'ESTIMATOR NOTES', 'FLOOR NO', 'OPENING MODE', 'INT/EXT'];
       const dynamicHeaders = rawHeaders.filter(k => {
         const kl = k.toLowerCase().trim();
-        return kl !== 'mark' && kl !== 'type' &&
+        return kl !== 'mark' && kl !== 'marks' && kl !== 'type' &&
           kl !== 'count' && kl !== 'qty' &&
           kl !== 'needs_review' && kl !== 'needs review' &&
           kl !== 'need_review' && kl !== 'need review';
@@ -107,7 +124,7 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
       let rowIdx = 0;
 
       items.forEach((item) => {
-        const mark = String(item.type || item.mark || '').trim().toUpperCase();
+        const mark = getItemMark(item);
 
         // Find all detected instances for this mark
         const instances = detections.filter((d: any) => String(d.mark || '').trim().toUpperCase() === mark);

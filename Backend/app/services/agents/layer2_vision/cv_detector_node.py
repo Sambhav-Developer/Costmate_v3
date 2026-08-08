@@ -190,14 +190,17 @@ async def get_location_from_crop(crop_path: str, mark: str, floor_no: int, semap
         return "", "Interior"
     async with semaphore:
         prompt = f"""
-        Look at this cropped image from a floor plan around the door/window mark '{mark}' on Floor {floor_no}.
+        Look at this cropped floor plan image around the door/window mark '{mark}' on Floor {floor_no}.
 
-        Identify the name of the room or corridor where this door/window is located, using room labels printed in or near the space (e.g. "Shared Office", "Secure Holding", "Toilet", "Staff Lounge").
+        CRITICAL: The specific door/window mark being analyzed is highlighted by the BRIGHT RED TARGET ARROW AND RED CIRCLE drawn on the image.
+
+        Identify the name of the room or corridor where THIS specific door/window is located, using room labels printed in or near the space (e.g. "Shared Office", "Secure Holding", "Toilet", "Staff Lounge", "Command Center", "Stair C").
 
         IMPORTANT RULES FOR CLASSIFICATION:
         - "EX." or "EX " prefixed to a room label means "EXISTING" (a room that already exists in the building), NOT "Exterior". Example: "EX. NON-ADA STAFF TOILET" -> location is "Non-ADA Staff Toilet (Existing)", and this tells you nothing about int_ext by itself.
         - Set "int_ext" to "Interior" by default. Only set it to "Exterior" if the space is clearly outdoors or open-air — e.g. labeled "Roof", "Courtyard", "Patio", "Areaway", or the door/window opens directly onto an exterior wall with no enclosed room beyond it.
-        - If the room label is unclear, cut off, or not visible in the crop, set "location" to "Unknown" rather than guessing a room name.
+        - Focus strictly on the room connected to the door pointed to by the RED ARROW. Do NOT return the label of an adjacent room that belongs to a different door.
+        - If the room label for this door is unclear, cut off, or not visible in the crop, set "location" to "Unknown" rather than guessing a room name.
 
         Return ONLY a raw JSON block, no markdown fences, no explanation:
         {{
@@ -394,9 +397,11 @@ async def cv_detector_node(state: CostmateState) -> dict:
                         word_indices[word_text] = word_indices.get(word_text, 0) + 1
                         w_idx = word_indices[word_text]
                         
-                        # Bounding box of the mark word
+                        # Bounding box & center of the mark word
                         import fitz as fz
                         inst_rect = fz.Rect(w[0], w[1], w[2], w[3])
+                        mark_cx = (inst_rect.x0 + inst_rect.x1) / 2
+                        mark_cy = (inst_rect.y0 + inst_rect.y1) / 2
                         
                         # Search for PDF drawing paths near this mark (70pt radius)
                         # Prevents neighboring doors' arcs from bleeding into nearby marks
@@ -411,15 +416,40 @@ async def cv_detector_node(state: CostmateState) -> dict:
                         opening_mode = classify_opening_from_drawings(nearby_drawings, inst_rect, item=sched_item)
                         logger.info(f"CV Detector: Mark {word_text} programmatic opening mode = {opening_mode}")
                         
-                        # Generate crop image for LLM location/room name detection only
-                        clip_rect = inst_rect + (-80, -80, 80, 80)
+                        # Solution 1: Expand crop radius to 140pt to capture room labels in large rooms,
+                        # and draw a BRIGHT RED TARGET ARROW & CIRCLE pointing directly at (mark_cx, mark_cy)
+                        clip_rect = inst_rect + (-140, -140, 140, 140)
                         try:
                             pix = page.get_pixmap(clip=clip_rect, dpi=200)
                             import re, uuid
+                            from PIL import Image, ImageDraw
+                            
                             clean_mark_file = re.sub(r'[^a-zA-Z0-9_-]', '_', word_text)
                             crop_filename = f"crop_f{floor_no}_p{page_idx}_{clean_mark_file}_{w_idx}_{uuid.uuid4().hex[:6]}.png"
                             crop_path = os.path.join(settings.OUTPUT_DIR, crop_filename)
                             pix.save(crop_path)
+                            
+                            # Draw Red Target Pin on Crop
+                            try:
+                                img = Image.open(crop_path).convert("RGB")
+                                draw = ImageDraw.Draw(img)
+                                scale = 200.0 / 72.0
+                                px_x = (mark_cx - clip_rect.x0) * scale
+                                px_y = (mark_cy - clip_rect.y0) * scale
+                                
+                                # Red circle around target mark
+                                r = 30
+                                draw.ellipse([px_x - r, px_y - r, px_x + r, px_y + r], outline=(255, 0, 0), width=5)
+                                
+                                # Red pointer arrow pointing down-right at circle
+                                draw.line([(px_x - 70, px_y - 70), (px_x - 25, px_y - 25)], fill=(255, 0, 0), width=6)
+                                arrow_head = [(px_x - 20, px_y - 20), (px_x - 45, px_y - 22), (px_x - 22, px_y - 45)]
+                                draw.polygon(arrow_head, fill=(255, 0, 0))
+                                
+                                img.save(crop_path)
+                            except Exception as pin_err:
+                                logger.warning(f"Could not draw red target pin on crop: {pin_err}")
+                                
                             all_temp_crops.append(crop_path)
                             
                             # Queue LLM task for location/room name only

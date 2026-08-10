@@ -113,6 +113,7 @@ class EstimationService:
             "qa_verified": values.get("qa_verified"),
             "cv_results": values.get("cv_results"),
             "schedule_data": values.get("schedule_data"),
+            "specifications_insights": values.get("specifications_insights"),
             "civil_quantities": values.get("civil_quantities"),
             "steel_quantities": values.get("steel_quantities"),
             "chat_history": values.get("chat_history")
@@ -355,6 +356,44 @@ class EstimationService:
             logger.error(f"Quick scan failed: {e}")
             raise HTTPException(status_code=500, detail="Quick scan failed")
 
+    async def upload_draft_specification(self, conn, session_id: str, user_id: int, file) -> dict:
+        row = estimation_repo.get_draft_session(conn, session_id, user_id)
+        if not row:
+            raise NotFoundException("Draft session not found")
+        project_name = row[0]
+        
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in [".docx", ".txt"]:
+            raise ValidationException("Invalid specifications file format. Only .docx and .txt are supported.")
+            
+        filename = f"{session_id}_spec{ext}"
+        file_path = os.path.join(settings.UPLOAD_DIR, filename)
+        os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+        
+        try:
+            content = await file.read()
+            with open(file_path, "wb") as f:
+                f.write(content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save specifications file: {str(e)}")
+            
+        spec_text = ""
+        if ext == ".docx":
+            from app.services.agents.layer1_schedule.docx_parser import extract_docx_text
+            spec_text = extract_docx_text(file_path)
+        else:
+            try:
+                spec_text = content.decode("utf-8", errors="ignore")
+            except Exception as e:
+                logger.error(f"Failed to decode TXT spec: {e}")
+                
+        try:
+            os.remove(file_path)
+        except:
+            pass
+            
+        return {"status": "success", "specifications_text": spec_text, "filename": file.filename}
+
     def complete_draft_session(self, conn, session_id: str, user_id: int, intake_data: dict = None) -> dict:
         row = estimation_repo.get_draft_session(conn, session_id, user_id)
         if not row:
@@ -377,6 +416,15 @@ class EstimationService:
         if not all_page_paths:
             all_page_paths = page_paths or []
 
+        # Get specifications_text if passed in the intake_data
+        specifications_text = ""
+        if intake_data and isinstance(intake_data, dict):
+            specifications_text = intake_data.get("specifications_text", "")
+            if not specifications_text:
+                specifications_text = intake_data.get("globalSettings", {}).get("specificationsText", "")
+                if not specifications_text:
+                    specifications_text = intake_data.get("globalSettings", {}).get("specifications_text", "")
+
         session_manager.start_session(
             session_id=session_id,
             uploaded_file_path=file_path,
@@ -384,7 +432,8 @@ class EstimationService:
             original_filename=original_filename,
             user_id=user_id,
             project_name=project_name,
-            intake_data=intake_data
+            intake_data=intake_data,
+            specifications_text=specifications_text
         )
         return {
             "session_id": session_id,

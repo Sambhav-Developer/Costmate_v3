@@ -43,6 +43,10 @@ async def upload_draft_file(session_id: str, file: UploadFile = File(...), conn 
 async def upload_draft_schedule(session_id: str, file: UploadFile = File(...), conn = Depends(get_db), current_user: dict = Depends(get_current_user)):
     return await estimation_service.upload_draft_schedule(conn, session_id, current_user["id"], file)
 
+@router.post("/session/draft/{session_id}/specification")
+async def upload_draft_specification(session_id: str, file: UploadFile = File(...), conn = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    return await estimation_service.upload_draft_specification(conn, session_id, current_user["id"], file)
+
 @router.post("/session/draft/{session_id}/quick-scan")
 async def quick_scan_draft(session_id: str, conn = Depends(get_db), current_user: dict = Depends(get_current_user)):
     return await estimation_service.quick_scan_draft(conn, session_id, current_user["id"])

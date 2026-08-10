@@ -3,6 +3,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from app.services.graph.state import CostmateState
 
 from app.services.agents.layer1_schedule.schedule_parser_node import schedule_parser_node
+from app.services.agents.layer1_schedule.specifications_analyzer_node import specifications_analyzer_node
 from app.services.agents.layer2_vision.ocr_consensus_node import ocr_consensus_node
 from app.services.agents.layer2_vision.cv_detector_node import cv_detector_node
 
@@ -16,6 +17,7 @@ def build_graph():
     builder = StateGraph(CostmateState)
     
     # 1. Add all nodes
+    builder.add_node("specifications_analyzer_node", specifications_analyzer_node)
     builder.add_node("schedule_parser_node", schedule_parser_node)
     builder.add_node("ocr_consensus_node", ocr_consensus_node)
     builder.add_node("cv_detector_node", cv_detector_node)
@@ -26,9 +28,10 @@ def build_graph():
     builder.add_node("excel_writer_node", excel_writer_node)
     builder.add_node("plan_annotation_node", plan_annotation_node)
     
-    # START -> Extraction Tracks
-    builder.add_edge(START, "schedule_parser_node")
-    builder.add_edge(START, "ocr_consensus_node")
+    # START -> Specifications Analysis -> Extraction Tracks
+    builder.add_edge(START, "specifications_analyzer_node")
+    builder.add_edge("specifications_analyzer_node", "schedule_parser_node")
+    builder.add_edge("specifications_analyzer_node", "ocr_consensus_node")
     
     # Run CV detector after Schedule parser completes
     builder.add_edge("schedule_parser_node", "cv_detector_node")

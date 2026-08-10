@@ -32,3 +32,7 @@ class CostmateState(TypedDict):
     excel_file_path: Optional[str]
     annotated_pdf_path: Optional[str]
     error: Optional[str]
+    specifications_text: Optional[str] # Extracted specifications/scope text from DOCX/Word files
+    specifications_insights: Optional[Dict[str, Any]] # Structured specifications/scope insights
+
+

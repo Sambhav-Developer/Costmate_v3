@@ -205,6 +205,16 @@ export const api = {
     return res.json();
   },
 
+  async uploadDraftSpecification(draftId: string, file: File) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await request(`/api/session/draft/${draftId}/specification`, {
+      method: 'POST',
+      body: formData,
+    });
+    return res.json();
+  },
+
   async quickScanDraft(draftId: string) {
     const res = await request(`/api/session/draft/${draftId}/quick-scan`, {
       method: 'POST'

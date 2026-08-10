@@ -48,6 +48,24 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 "context": "Detected by CV but missed by OCR Consensus."
             })
             
+    # 4. Cross-check against specifications exclusions (e.g. Aluminium door exclusions)
+    specifications_insights = state.get("specifications_insights") or {}
+    exclusions = specifications_insights.get("exclusions", [])
+    for exclusion in exclusions:
+        if any(kw in exclusion.lower() for kw in ["aluminium", "aluminum", "alum"]):
+            for item in schedule_data:
+                material = ""
+                for k, v in item.items():
+                    if "material" in str(k).lower():
+                        material = str(v).upper()
+                        break
+                if any(kw in material for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM"]):
+                    unresolved_queue.append({
+                        "type": "aluminium_exclusion_flag",
+                        "mark": str(item.get("mark", "")).upper(),
+                        "context": f"Specification Exclusion Audit: '{exclusion}'. Verify if this opening should be removed from scope."
+                    })
+
     logger.info(f"Reconciliation complete. Found {len(unresolved_queue)} unresolved items.")
     
     # Map schedule data to V1 qa_prefilled format so the frontend unlocks the Parameters tab
@@ -66,7 +84,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
             "needs_review": bool(item.get("needs_review", False))
         }
         
-        ignore_keys = {"mark", "mark_normalized", "mark_norm", "_schedule_type", "type", "count", "needs_review"}
+        ignore_keys = {"mark", "mark_normalized", "mark_norm", "_schedule_type", "count", "needs_review"}
         
         # Known hardware group key name variants (all lowercased for comparison)
         HARDWARE_GROUP_VARIANTS = {
@@ -74,14 +92,22 @@ async def reconciliation_node(state: CostmateState) -> dict:
             "group number", "hardware group"
         }
         
+        schedule_type = item.get("_schedule_type", "")
+
         # Single pass: iterate original item key order to preserve sequence exactly
         for k, v in item.items():
             kl = str(k).lower()
             if kl in ignore_keys:
                 continue
             
-            # Normalize hardware group key name variants to the canonical form
-            if kl in HARDWARE_GROUP_VARIANTS:
+            # Map columns to prevent key collision and ensure duplicate/overlapping headers are visible
+            if kl == "type":
+                canonical_key = "WINDOW TYPE" if schedule_type == "window" else "DOOR TYPE"
+            elif kl == "material":
+                canonical_key = "DOOR MATERIAL" if schedule_type == "door" else "WINDOW MATERIAL"
+            elif kl in ["material_1", "material 1"]:
+                canonical_key = "FRAME MATERIAL"
+            elif kl in HARDWARE_GROUP_VARIANTS:
                 canonical_key = "HARDWARE GROUP NO"
             else:
                 canonical_key = str(k).upper()

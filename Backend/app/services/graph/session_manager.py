@@ -120,7 +120,8 @@ class SessionManager:
         original_filename: str = "", 
         user_id: int = 1,
         project_name: str = "",
-        intake_data: dict = None
+        intake_data: dict = None,
+        specifications_text: str = ""
     ):
         """Starts the LangGraph execution in the background."""
         queue = self.get_queue(session_id)
@@ -135,6 +136,7 @@ class SessionManager:
             "uploaded_page_paths": uploaded_page_paths,
             "project_name": project_name,
             "intake_data": intake_data,
+            "specifications_text": specifications_text,
             "status": "processing",
             "current_step": "upload_completed",
             "progress_pct": 5,

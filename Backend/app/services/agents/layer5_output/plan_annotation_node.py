@@ -10,27 +10,61 @@ ROOM_KEYWORDS = {
     "ex", "existing", "lounge", "lobby", "corridor", "hall", "stair", "storage", 
     "mech", "electrical", "elec", "janitor", "closet", "bath", "shower", "wc", 
     "vestibule", "entry", "exit", "classroom", "kitchen", "conf", "conference", 
-    "shared", "hvac", "elevator", "utility", "laundry", "nourse", "care", "station"
+    "shared", "hvac", "elevator", "utility", "laundry", "nourse", "care", "station",
+    "exam", "examination", "it", "pantry", "waiting", "reception", "soiled", "clean", 
+    "nurse", "nook", "dictation", "physician", "touchdown", "med", "meds", "unisex", 
+    "vest", "clos", "lrd", "sub", "wait", "consult", "consultation", "work", "lockers", 
+    "triage", "harrison", "mamaroneck"
 }
 
+def find_closest_schedule_mark(word_text, sched_marks):
+    if word_text in sched_marks:
+        return word_text
+    # Common OCR digit-to-letter confusion fixes
+    normalized_variants = []
+    # Variant A: replace all '0' and 'O' with 'C' (for 3C03/3C06A type marks read as 3003/3O03)
+    v_c = word_text.replace('0', 'C').replace('O', 'C')
+    normalized_variants.append(v_c)
+    # Variant B: replace 'C' with '0'
+    v_0 = word_text.replace('C', '0')
+    normalized_variants.append(v_0)
+    # Variant C: replace 'O' with '0'
+    v_o2 = word_text.replace('O', '0')
+    normalized_variants.append(v_o2)
+    # Variant D: replace '8' with 'B' or 'B' with '8'
+    normalized_variants.append(word_text.replace('8', 'B'))
+    normalized_variants.append(word_text.replace('B', '8'))
+    
+    for v in normalized_variants:
+        if v != word_text and v in sched_marks:
+            return v
+    return None
+
+def get_schedule_table_rects(page):
+    import fitz
+    rects = []
+    for term in ["DOOR AND FRAME SCHEDULE", "DOOR SCHEDULE", "WINDOW SCHEDULE", "FRAME SCHEDULE"]:
+        rects_found = page.search_for(term)
+        for r in rects_found:
+            page_rect = page.rect
+            table_rect = fitz.Rect(r.x0 - 20, r.y0 - 50, page_rect.x1, page_rect.y1)
+            rects.append(table_rect)
+    return rects
+
 def is_block_room_label(blocks, block_no, clean_mark) -> bool:
-    """
-    Returns True if the block corresponding to the block_no is a room name label.
-    """
     if block_no < 0 or block_no >= len(blocks):
         return False
     try:
         b = blocks[block_no]
-        block_text = b[4].lower()
-        words = [w.strip(".,()[]{}-_#*") for w in block_text.split()]
-        # If there are multiple words, check if it's a room label containing typical room name keywords
-        if len(words) > 1:
-            if any(kw in words for kw in ROOM_KEYWORDS):
-                logger.info(f"Skipping room label block [{block_no}]: '{b[4].strip()}' for mark '{clean_mark}'")
-                return True
+        block_text = b[4].strip().upper()
+        block_words = [w.strip(".,()[]{}-_#*") for w in block_text.split()]
+        block_words = [w for w in block_words if w]
+        
+        words_lower = [w.lower() for w in block_words]
+        if any(kw in words_lower for kw in ROOM_KEYWORDS):
+            return True
         return False
-    except Exception as e:
-        logger.warning(f"Error checking block room label: {e}")
+    except:
         return False
 
 async def plan_annotation_node(state: CostmateState) -> dict:
@@ -148,16 +182,32 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                 
             highlighted_count = 0
             
-            # Run text highlighting using exact word token matching
+            sched_marks = list(sched_lookup.keys())
             for page in doc:
                 blocks = page.get_text("blocks")
                 words_on_page = page.get_text("words")
+                table_rects = get_schedule_table_rects(page)
                 
                 for w in words_on_page:
                     # w format: (x0, y0, x1, y1, "word", block_no, line_no, word_no)
-                    word_text = w[4].strip(".,()[]{}-_#*").upper()
+                    raw_word = w[4].strip(".,()[]{}-_#*").upper()
                     
-                    if word_text in sched_lookup:
+                    matched_mark = find_closest_schedule_mark(raw_word, sched_marks)
+                    if matched_mark:
+                        word_text = matched_mark
+                        w_x = (w[0] + w[2]) / 2
+                        w_y = (w[1] + w[3]) / 2
+                        
+                        # Skip if the match falls inside a masked schedule table area
+                        is_inside_table = False
+                        for tr in table_rects:
+                            if w_x >= tr.x0 and w_x <= tr.x1 and w_y >= tr.y0 and w_y <= tr.y1:
+                                is_inside_table = True
+                                break
+                        if is_inside_table:
+                            logger.info(f"Plan Annotation: Skipping match {word_text} inside schedule table area")
+                            continue
+                            
                         sched_info = sched_lookup[word_text]
                         cv_info = cv_lookup.get(word_text, {})
                         
@@ -170,9 +220,10 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                         
                         int_ext = str(cv_info.get("int_ext", "")).upper()
                         
-                        if any(kw in material for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM"]):
+                        mat_words = [w.strip() for w in material.split()]
+                        if any(kw in material for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM", "STOREFRONT"]) or "AL" in mat_words:
                             highlight_color = color_storefront
-                        elif int_ext == "EXT":
+                        elif int_ext in ["EXT", "EXTERNAL", "EXTERIOR"]:
                             highlight_color = color_exterior
                         else:
                             highlight_color = color_interior
@@ -180,11 +231,6 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                         # Get bounding box of the word
                         import fitz as fz
                         inst_rect = fz.Rect(w[0], w[1], w[2], w[3])
-                        
-                        # Smart filter: skip highlighting room name labels
-                        block_no = w[5]
-                        if is_block_room_label(blocks, block_no, word_text):
-                            continue
                             
                         annot = page.add_rect_annot(inst_rect)
                         annot.set_colors(stroke=highlight_color, fill=highlight_color)

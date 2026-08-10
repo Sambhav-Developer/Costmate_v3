@@ -13,19 +13,59 @@ ROOM_KEYWORDS = {
     "ex", "existing", "lounge", "lobby", "corridor", "hall", "stair", "storage", 
     "mech", "electrical", "elec", "janitor", "closet", "bath", "shower", "wc", 
     "vestibule", "entry", "exit", "classroom", "kitchen", "conf", "conference", 
-    "shared", "hvac", "elevator", "utility", "laundry", "nourse", "care", "station"
+    "shared", "hvac", "elevator", "utility", "laundry", "nourse", "care", "station",
+    "exam", "examination", "it", "pantry", "waiting", "reception", "soiled", "clean", 
+    "nurse", "nook", "dictation", "physician", "touchdown", "med", "meds", "unisex", 
+    "vest", "clos", "lrd", "sub", "wait", "consult", "consultation", "work", "lockers", 
+    "triage", "harrison", "mamaroneck"
 }
+
+def find_closest_schedule_mark(word_text, sched_marks):
+    if word_text in sched_marks:
+        return word_text
+    # Common OCR digit-to-letter confusion fixes
+    normalized_variants = []
+    # Variant A: replace all '0' and 'O' with 'C' (for 3C03/3C06A type marks read as 3003/3O03)
+    v_c = word_text.replace('0', 'C').replace('O', 'C')
+    normalized_variants.append(v_c)
+    # Variant B: replace 'C' with '0'
+    v_0 = word_text.replace('C', '0')
+    normalized_variants.append(v_0)
+    # Variant C: replace 'O' with '0'
+    v_o2 = word_text.replace('O', '0')
+    normalized_variants.append(v_o2)
+    # Variant D: replace '8' with 'B' or 'B' with '8'
+    normalized_variants.append(word_text.replace('8', 'B'))
+    normalized_variants.append(word_text.replace('B', '8'))
+    
+    for v in normalized_variants:
+        if v != word_text and v in sched_marks:
+            return v
+    return None
+
+def get_schedule_table_rects(page):
+    import fitz
+    rects = []
+    for term in ["DOOR AND FRAME SCHEDULE", "DOOR SCHEDULE", "WINDOW SCHEDULE", "FRAME SCHEDULE"]:
+        rects_found = page.search_for(term)
+        for r in rects_found:
+            page_rect = page.rect
+            table_rect = fitz.Rect(r.x0 - 20, r.y0 - 50, page_rect.x1, page_rect.y1)
+            rects.append(table_rect)
+    return rects
 
 def is_block_room_label(blocks, block_no, clean_mark) -> bool:
     if block_no < 0 or block_no >= len(blocks):
         return False
     try:
         b = blocks[block_no]
-        block_text = b[4].lower()
-        words = [w.strip(".,()[]{}-_#*") for w in block_text.split()]
-        if len(words) > 1:
-            if any(kw in words for kw in ROOM_KEYWORDS):
-                return True
+        block_text = b[4].strip().upper()
+        block_words = [w.strip(".,()[]{}-_#*") for w in block_text.split()]
+        block_words = [w for w in block_words if w]
+        
+        words_lower = [w.lower() for w in block_words]
+        if any(kw in words_lower for kw in ROOM_KEYWORDS):
+            return True
         return False
     except:
         return False
@@ -36,7 +76,9 @@ def normalize_opening_mode(val: str) -> str:
         return "SGL"
     if val_clean in ["DA", "DOUBLE ACTING", "DOUBLE-ACTING", "DOUBLE_ACTING"]:
         return "DA"
-    if val_clean in ["CO", "DOUBLE-LEAF", "DOUBLE LEAF", "TWO-LEAF", "TWO LEAF", "2"]:
+    if val_clean in ["PR", "PAIR", "PAIRED", "DOUBLE SGL", "PR.", "PRS", "P"]:
+        return "PR"
+    if val_clean in ["CO", "DOUBLE-LEAF", "DOUBLE LEAF", "TWO-LEAF", "TWO LEAF", "2", "CASED", "CASED OPENING"]:
         return "CO"
     if val_clean in ["ELEV", "ELEVATOR"]:
         return "ELEV"
@@ -73,6 +115,8 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
         dtype = ""
         ftype = ""
         comments = ""
+        w_a = ""
+        w_b = ""
         for k, v in item.items():
             kl = str(k).lower().strip()
             val_str = str(v).strip().upper()
@@ -84,6 +128,19 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
                 ftype = val_str
             elif kl in ["comments", "remarks", "estimator notes", "description"]:
                 comments = val_str
+            elif kl in ["width a", "width_a", "w_a", "wa"]:
+                w_a = str(v).strip()
+            elif kl in ["width b", "width_b", "w_b", "wb"]:
+                w_b = str(v).strip()
+
+        # If both Width A and Width B are populated in the schedule, it is a Pair door (PR)
+        if w_a and w_b and w_a not in ["-", ""] and w_b not in ["-", ""]:
+            logger.info(f"CV Drawing Analysis: Schedule indicates both Width A ({w_a!r}) and Width B ({w_b!r}) -> PR")
+            return "PR"
+        # If Width A is populated and Width B is empty/dash, it is a single-leaf door (SGL)
+        if w_a and w_a not in ["-", ""] and (not w_b or w_b in ["-", ""]):
+            logger.info(f"CV Drawing Analysis: Schedule indicates single Width A -> SGL")
+            return "SGL"
 
         # Check for Cased Opening (CO) in schedule (no door panel)
         if mat in ["-", "", "NONE", "N/A", "CASED OPENING"] and dtype in ["-", "", "CO", "NONE", "N/A", "CASED OPENING", "CASED"]:
@@ -99,8 +156,9 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
         if any(t in dtype_tokens for t in ["AB", "DA"]) or any(t in dtype for t in ["DOUBLE ACTING", "ANTI-BARRICADE", "ANTI - BARRICADE"]):
             logger.info(f"CV Drawing Analysis: Schedule indicates Anti-Barricade / Double-Acting (type={dtype!r}) -> DA")
             return "DA"
-        if any(t in ftype for t in ["AB", "DA"]) or any(t in comments for t in ["ANTI-BARRICADE", "ANTI - BARRICADE", "DOUBLE ACTING", "DOUBLE-ACTING"]):
-            logger.info(f"CV Drawing Analysis: Schedule comments/frame indicate Anti-Barricade / Double-Acting -> DA")
+        comments_upper = comments.upper()
+        if any(t in comments_upper for t in ["DBL ACT", "DA", "DOUBLE ACTING", "DOUBLE-ACTING", "ANTI-BARRICADE", "ANTI - BARRICADE", "AB"]):
+            logger.info(f"CV Drawing Analysis: Schedule comments indicate Anti-Barricade / Double-Acting -> DA")
             return "DA"
 
     mark_cx = (mark_rect.x0 + mark_rect.x1) / 2
@@ -130,8 +188,18 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
                     is_dashed = True
 
             if is_dashed:
-                logger.info(f"CV Drawing Analysis: Found dashed stroke path near mark (dist={dist:.1f}) -> DA")
-                return "DA"
+                # To distinguish dashed walls from dashed swings, ensure it's not a long straight wall line
+                is_straight_long = False
+                items = d.get("items", [])
+                has_curves = any(it[0] in ("c", "qu") for it in items)
+                
+                # If it's a straight segment and has a large span, it's a wall line, not a door swing
+                if not has_curves and (d_rect.width > 80 or d_rect.height > 80):
+                    is_straight_long = True
+                    
+                if not is_straight_long:
+                    logger.info(f"CV Drawing Analysis: Found dashed stroke path near mark (dist={dist:.1f}) -> DA")
+                    return "DA"
 
     # 3. Rule 3: Collect arc curves for single vs double leaf counting (tight 65pt radius)
     arc_paths = []
@@ -146,7 +214,7 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
         arc_cy = (arc_rect.y0 + arc_rect.y1) / 2
         dist = ((arc_cx - mark_cx) ** 2 + (arc_cy - mark_cy) ** 2) ** 0.5
 
-        if dist > 65:
+        if dist > 50:
             continue
 
         # Skip tiny mark-label annotation bubble arcs
@@ -174,10 +242,10 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
             groups.append([arc])
 
     distinct_leaves = len(groups)
-    logger.info(f"CV Drawing Analysis: {distinct_leaves} distinct door leaf group(s) -> {'CO' if distinct_leaves >= 2 else 'SGL'}")
+    logger.info(f"CV Drawing Analysis: {distinct_leaves} distinct door leaf group(s) -> {'PR' if distinct_leaves >= 2 else 'SGL'}")
 
     if distinct_leaves >= 2:
-        return "CO"
+        return "PR"
     return "SGL"
 
 
@@ -373,25 +441,35 @@ async def cv_detector_node(state: CostmateState) -> dict:
                 
                 word_indices = {}
                 page_matched_positions = []  # Deduplicate nearby matches for same mark on page
+                table_rects = get_schedule_table_rects(page)
                 
                 for w in words_on_page:
-                    word_text = w[4].strip(".,()[]{}-_#*").upper()
+                    raw_word = w[4].strip(".,()[]{}-_#*").upper()
                     
-                    if word_text in sched_marks:
+                    matched_mark = find_closest_schedule_mark(raw_word, sched_marks)
+                    if matched_mark:
+                        word_text = matched_mark
                         w_x, w_y = w[0], w[1]
+                        w_cx = (w[0] + w[2]) / 2
+                        w_cy = (w[1] + w[3]) / 2
                         
-                        # Deduplicate: skip if this exact mark text was matched within 30pt on this page
-                        if any(p_text == word_text and abs(p_x - w_x) < 30 and abs(p_y - w_y) < 30 for p_text, p_x, p_y in page_matched_positions):
+                        # Skip if the match falls inside a masked schedule table area
+                        is_inside_table = False
+                        for tr in table_rects:
+                            if w_cx >= tr.x0 and w_cx <= tr.x1 and w_cy >= tr.y0 and w_cy <= tr.y1:
+                                is_inside_table = True
+                                break
+                        if is_inside_table:
+                            logger.info(f"CV Detector: Skipping match {word_text} at ({w_x:.1f},{w_y:.1f}) inside schedule table area")
+                            continue
+                        
+                        # Deduplicate: skip if this exact mark text was matched within 60pt on this page
+                        if any(p_text == word_text and abs(p_x - w_x) < 60 and abs(p_y - w_y) < 60 for p_text, p_x, p_y in page_matched_positions):
                             logger.info(f"CV Detector: Skipping duplicate match for {word_text} at ({w_x:.1f},{w_y:.1f})")
                             continue
                         page_matched_positions.append((word_text, w_x, w_y))
 
                         logger.info(f"CV Detector DEBUG: MATCH FOUND word={word_text!r} at ({w[0]:.1f},{w[1]:.1f})")
-                        # Skip room label blocks
-                        block_no = w[5]
-                        if is_block_room_label(blocks, block_no, word_text):
-                            logger.info(f"CV Detector DEBUG: Skipping {word_text!r} - room label")
-                            continue
                             
                         # Increment index of this word on the page for unique crop filename
                         word_indices[word_text] = word_indices.get(word_text, 0) + 1

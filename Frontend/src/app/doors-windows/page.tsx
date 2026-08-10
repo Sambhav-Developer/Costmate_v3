@@ -6,16 +6,18 @@ import { Upload, FileText, CheckCircle, Activity, LayoutTemplate, Play, FileUp, 
 export default function DoorsWindowsPipeline() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   
-  // Step state: 0=Init, 1=Schedule, 2=Plan, 3=Processing, 4=Completed
+  // Step state: 0=Init, 1=Schedule, 2=Specification, 3=Plan, 4=Processing, 5=Completed
   const [currentStep, setCurrentStep] = useState<number>(0);
   
   const [scheduleFiles, setScheduleFiles] = useState<File[]>([]);
+  const [specFiles, setSpecFiles] = useState<File[]>([]);
   const [planFiles, setPlanFiles] = useState<File[]>([]);
   
   const [isUploading, setIsUploading] = useState(false);
   const [statusData, setStatusData] = useState<any>(null);
 
   const scheduleInputRef = useRef<HTMLInputElement>(null);
+  const specInputRef = useRef<HTMLInputElement>(null);
   const planInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -42,7 +44,7 @@ export default function DoorsWindowsPipeline() {
 
   // Poll for status when processing
   useEffect(() => {
-    if (currentStep !== 3 || !sessionId) return;
+    if (currentStep !== 4 || !sessionId) return;
     
     const interval = setInterval(async () => {
       try {
@@ -53,7 +55,7 @@ export default function DoorsWindowsPipeline() {
         setStatusData(data);
         
         if (data.status === "completed" || data.status === "error") {
-          setCurrentStep(4);
+          setCurrentStep(5);
           clearInterval(interval);
         }
       } catch (e) {
@@ -64,7 +66,7 @@ export default function DoorsWindowsPipeline() {
     return () => clearInterval(interval);
   }, [currentStep, sessionId]);
 
-  const handleFileUpload = async (file: File, type: "schedule" | "plan") => {
+  const handleFileUpload = async (file: File, type: "schedule" | "plan" | "specification") => {
     if (!sessionId) return;
     
     setIsUploading(true);
@@ -82,7 +84,10 @@ export default function DoorsWindowsPipeline() {
       
       if (type === "schedule") {
         setScheduleFiles(prev => [...prev, file]);
-        setCurrentStep(2); // Move to plan upload
+        setCurrentStep(2); // Move to specification upload
+      } else if (type === "specification") {
+        setSpecFiles(prev => [...prev, file]);
+        setCurrentStep(3); // Move to plan upload
       } else {
         setPlanFiles(prev => [...prev, file]);
       }
@@ -105,7 +110,7 @@ export default function DoorsWindowsPipeline() {
           "Authorization": `Bearer ${localStorage.getItem("token") || ""}`
         }
       });
-      setCurrentStep(3);
+      setCurrentStep(4);
     } catch (e) {
       console.error("Failed to start processing", e);
     } finally {
@@ -115,7 +120,7 @@ export default function DoorsWindowsPipeline() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-white p-8 font-sans selection:bg-indigo-500/30">
-      <div className="max-w-4xl mx-auto space-y-8">
+      <div className="max-w-6xl mx-auto space-y-8">
         
         {/* Header */}
         <div className="border-b border-white/10 pb-6">
@@ -124,12 +129,12 @@ export default function DoorsWindowsPipeline() {
             Doors & Windows <span className="font-semibold text-indigo-400">Pipeline V2</span>
           </h1>
           <p className="text-neutral-400 text-lg font-light">
-            Specialized 2-stage extraction using schedule ingestion and plan reconciliation.
+            Specialized multi-stage extraction using specifications ingestion, schedule analysis, and plan reconciliation.
           </p>
         </div>
 
         {/* Pipeline Steps */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
           {/* Step 1: Schedule */}
           <div className={`p-6 rounded-2xl border transition-all duration-500 ${currentStep >= 1 ? 'border-indigo-500/30 bg-indigo-500/5 shadow-[0_0_30px_-5px_rgba(99,102,241,0.1)]' : 'border-white/5 bg-neutral-900/50 opacity-50'}`}>
             <div className="flex items-center justify-between mb-4">
@@ -143,7 +148,7 @@ export default function DoorsWindowsPipeline() {
             
             <button 
               onClick={() => scheduleInputRef.current?.click()}
-              disabled={isUploading || currentStep === 3}
+              disabled={isUploading || currentStep === 4}
               className="w-full py-3 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center gap-2 text-sm font-medium transition-colors disabled:opacity-50"
             >
               <FileUp className="w-4 h-4" />
@@ -167,11 +172,59 @@ export default function DoorsWindowsPipeline() {
             )}
           </div>
 
-          {/* Step 2: Plan */}
+          {/* Step 2: Specifications (DOCX/TXT) */}
           <div className={`p-6 rounded-2xl border transition-all duration-500 ${currentStep >= 2 ? 'border-indigo-500/30 bg-indigo-500/5 shadow-[0_0_30px_-5px_rgba(99,102,241,0.1)]' : 'border-white/5 bg-neutral-900/50 opacity-50'}`}>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-medium text-white flex items-center gap-2">
                 <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-sm">2</span>
+                Specs (Optional)
+              </h2>
+              {specFiles.length > 0 && <CheckCircle className="w-5 h-5 text-emerald-400" />}
+            </div>
+            <p className="text-sm text-neutral-400 mb-6">Upload Word / text specifications.</p>
+            
+            <div className="flex gap-2">
+              <button 
+                onClick={() => specInputRef.current?.click()}
+                disabled={isUploading || currentStep < 2 || currentStep === 4}
+                className="flex-1 py-3 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center gap-2 text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                <FileUp className="w-4 h-4" />
+                Upload Spec
+              </button>
+              {currentStep === 2 && (
+                <button 
+                  onClick={() => setCurrentStep(3)}
+                  className="py-3 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-medium text-neutral-400 hover:text-white transition-colors"
+                >
+                  Skip
+                </button>
+              )}
+            </div>
+            <input 
+              type="file" 
+              ref={specInputRef} 
+              className="hidden" 
+              accept=".docx,.txt"
+              onChange={(e) => e.target.files && handleFileUpload(e.target.files[0], "specification")} 
+            />
+            
+            {specFiles.length > 0 && (
+              <div className="mt-4 space-y-2">
+                {specFiles.map((f, i) => (
+                  <div key={i} className="text-xs text-indigo-300 flex items-center gap-1 bg-indigo-500/10 py-1.5 px-3 rounded-lg">
+                    <FileText className="w-3 h-3" /> {f.name}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Step 3: Floor Plan */}
+          <div className={`p-6 rounded-2xl border transition-all duration-500 ${currentStep >= 3 ? 'border-indigo-500/30 bg-indigo-500/5 shadow-[0_0_30px_-5px_rgba(99,102,241,0.1)]' : 'border-white/5 bg-neutral-900/50 opacity-50'}`}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-medium text-white flex items-center gap-2">
+                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-sm">3</span>
                 Floor Plan
               </h2>
               {planFiles.length > 0 && <CheckCircle className="w-5 h-5 text-emerald-400" />}
@@ -180,7 +233,7 @@ export default function DoorsWindowsPipeline() {
             
             <button 
               onClick={() => planInputRef.current?.click()}
-              disabled={isUploading || currentStep < 2 || currentStep === 3}
+              disabled={isUploading || currentStep < 3 || currentStep === 4}
               className="w-full py-3 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center gap-2 text-sm font-medium transition-colors disabled:opacity-50"
             >
               <FileUp className="w-4 h-4" />
@@ -204,23 +257,23 @@ export default function DoorsWindowsPipeline() {
             )}
           </div>
 
-          {/* Step 3: Process */}
-          <div className={`p-6 rounded-2xl border transition-all duration-500 ${planFiles.length > 0 || currentStep >= 3 ? 'border-indigo-500/30 bg-indigo-500/5 shadow-[0_0_30px_-5px_rgba(99,102,241,0.1)]' : 'border-white/5 bg-neutral-900/50 opacity-50'}`}>
+          {/* Step 4: Process */}
+          <div className={`p-6 rounded-2xl border transition-all duration-500 ${planFiles.length > 0 || currentStep >= 4 ? 'border-indigo-500/30 bg-indigo-500/5 shadow-[0_0_30px_-5px_rgba(99,102,241,0.1)]' : 'border-white/5 bg-neutral-900/50 opacity-50'}`}>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-medium text-white flex items-center gap-2">
-                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-sm">3</span>
+                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-sm">4</span>
                 Extract
               </h2>
-              {currentStep === 4 && <CheckCircle className="w-5 h-5 text-emerald-400" />}
+              {currentStep === 5 && <CheckCircle className="w-5 h-5 text-emerald-400" />}
             </div>
             <p className="text-sm text-neutral-400 mb-6">Run AI ingestion and reconciliation.</p>
             
             <button 
               onClick={startProcessing}
-              disabled={planFiles.length === 0 || currentStep >= 3}
+              disabled={planFiles.length === 0 || currentStep >= 4}
               className="w-full py-3 px-4 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white flex items-center justify-center gap-2 text-sm font-medium transition-all disabled:opacity-50 disabled:bg-neutral-800 disabled:text-neutral-500"
             >
-              {currentStep === 3 ? (
+              {currentStep === 4 ? (
                 <><Activity className="w-4 h-4 animate-spin" /> Processing...</>
               ) : (
                 <><Play className="w-4 h-4 fill-current" /> Start Processing</>

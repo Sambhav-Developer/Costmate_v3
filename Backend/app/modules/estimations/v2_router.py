@@ -85,6 +85,46 @@ async def upload_plan(session_id: str, file: UploadFile = File(...), current_use
     
     return {"status": "success", "file_url": cloud_url}
 
+@v2_router.post("/{session_id}/specification")
+async def upload_specification(session_id: str, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+    """Stage 1.5: Optional upload and parse specifications/general notes file (.docx/.txt)."""
+    restored = await session_manager.restore_session_if_needed(session_id, user_id=current_user["id"])
+    if not restored:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in [".docx", ".txt"]:
+        raise HTTPException(status_code=400, detail="Invalid format. Only .docx and .txt are supported.")
+        
+    filename = f"{session_id}_spec{ext}"
+    file_path = os.path.join(settings.UPLOAD_DIR, filename)
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    
+    try:
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save spec file: {str(e)}")
+        
+    spec_text = ""
+    if ext == ".docx":
+        from app.services.agents.layer1_schedule.docx_parser import extract_docx_text
+        spec_text = extract_docx_text(file_path)
+    else:
+        try:
+            spec_text = content.decode("utf-8", errors="ignore")
+        except Exception as e:
+            logger.error(f"Failed to decode TXT spec: {e}")
+            
+    try:
+        os.remove(file_path)
+    except:
+        pass
+        
+    session_manager.update_state(session_id, {"specifications_text": spec_text})
+    return {"status": "success", "specifications_text": spec_text, "filename": file.filename}
+
 
 async def _run_v2_pipeline(session_id: str):
     """Background task to run the full V2 pipeline."""
@@ -93,13 +133,18 @@ async def _run_v2_pipeline(session_id: str):
         state = session_manager.get_state(session_id)
         schedule_files = state.get("schedule_files", [])
         plan_files = state.get("plan_files", [])
+        specifications_text = state.get("specifications_text", "")
         
         # 1. Schedule Ingestion
         registry = None
         if schedule_files:
             logger.info(f"[{session_id}] Running Schedule Ingestion...")
+            ingest_prompt = SCHEDULE_INGESTION_PROMPT
+            if specifications_text:
+                ingest_prompt = f"PROJECT SPECIFICATIONS AND GENERAL NOTES (Extracted from specifications document):\n{specifications_text}\n\n{SCHEDULE_INGESTION_PROMPT}"
+                
             res_text = await openrouter_client.generate_chat(
-                prompt=SCHEDULE_INGESTION_PROMPT,
+                prompt=ingest_prompt,
                 image_paths=schedule_files, # Note: if multiple, pass all to LLM
                 json_mode=True
             )
@@ -123,6 +168,8 @@ async def _run_v2_pipeline(session_id: str):
                 context_prompt = DOORS_WINDOWS_EXTRACTOR_PROMPT
                 if registry:
                     context_prompt = f"SCHEDULE REGISTRY INGESTED FROM STAGE 1:\n{json.dumps(registry, indent=2)}\n\n{DOORS_WINDOWS_EXTRACTOR_PROMPT}"
+                if specifications_text:
+                    context_prompt = f"PROJECT SPECIFICATIONS / SCOPE OF WORK:\n{specifications_text}\n\n{context_prompt}"
                 
                 extract_text = await openrouter_client.generate_chat(
                     prompt=context_prompt,
@@ -140,7 +187,11 @@ async def _run_v2_pipeline(session_id: str):
         # 3. Reconciliation
         logger.info(f"[{session_id}] Running Reconciliation...")
         recon_prompt = RECONCILIATION_PROMPT
-        recon_context = f"SCHEDULE REGISTRY:\n{json.dumps(registry)}\n\nPLAN EXTRACTIONS:\n{json.dumps(plan_extractions)}\n\n{recon_prompt}"
+        recon_context = f"SCHEDULE REGISTRY:\n{json.dumps(registry)}\n\nPLAN EXTRACTIONS:\n{json.dumps(plan_extractions)}\n\n"
+        if specifications_text:
+            recon_context = f"PROJECT SPECIFICATIONS / SCOPE OF WORK (Use to apply exclusions, material filters, and project scopes):\n{specifications_text}\n\n{recon_context}"
+        
+        recon_context += recon_prompt
         
         recon_text = await openrouter_client.generate_chat(
             prompt=recon_context,

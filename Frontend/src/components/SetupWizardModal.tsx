@@ -21,6 +21,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   const [error, setError] = useState<string | null>(null);
   const [isUploadingDoor, setIsUploadingDoor] = useState(false);
   const [isUploadingWindow, setIsUploadingWindow] = useState(false);
+  const [isUploadingSpec, setIsUploadingSpec] = useState(false);
   const [uploadingFloorId, setUploadingFloorId] = useState<number | null>(null);
   const [draftSessionId, setDraftSessionId] = useState<string | null>(null);
 
@@ -39,6 +40,8 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     
     doorScheduleFileName: '' as string,
     windowScheduleFileName: '' as string,
+    specificationFileName: '' as string,
+    specificationsText: '' as string,
     scheduleRegistry: null as any
   });
 
@@ -493,7 +496,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                 {/* GLOBAL SCHEDULES */}
                 <div className="bg-[#18181b] border border-white/5 rounded-xl p-6">
                   <h3 className="text-sm font-bold text-white mb-5 uppercase tracking-widest text-zinc-400 flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-violet-400"/> Door & Window Schedules (Optional)
+                    <FileText className="w-4 h-4 text-violet-400"/> Schedules & Specifications (Optional)
                   </h3>
                   
                   <div className="flex flex-col gap-4">
@@ -661,9 +664,58 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         </div>
                       )}
                     </div>
+
+                    {/* Specifications Document */}
+                    <div className="flex items-center gap-4 border-t border-white/5 pt-4">
+                      <button 
+                        type="button"
+                        onClick={() => document.getElementById('specification-upload')?.click()}
+                        disabled={isUploadingSpec || loading}
+                        className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-2 text-sm font-medium transition-colors w-52 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isUploadingSpec ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                        {isUploadingSpec ? "Processing..." : "Upload Specifications (Word)"}
+                      </button>
+                      <input 
+                        id="specification-upload"
+                        type="file" 
+                        accept=".docx,.txt"
+                        className="hidden" 
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          setLoading(true);
+                          setIsUploadingSpec(true);
+                          try {
+                            let sid = draftSessionId;
+                            if (!sid) {
+                              const data = await api.createDraftSession(globalSettings.projectName);
+                              sid = data.session_id;
+                              setDraftSessionId(sid);
+                            }
+                            const res = await api.uploadDraftSpecification(sid!, file);
+                            setGlobalSettings(prev => ({
+                              ...prev,
+                              specificationFileName: file.name,
+                              specificationsText: res.specifications_text
+                            }));
+                          } catch (err: any) {
+                            setError('⚠️ ' + (err.message || 'Failed to upload specifications.'));
+                          } finally {
+                            setLoading(false);
+                            setIsUploadingSpec(false);
+                          }
+                        }} 
+                      />
+                      {globalSettings.specificationFileName && !isUploadingSpec && (
+                        <div className="text-sm text-emerald-400 flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20 truncate max-w-xs">
+                          <CheckCircle2 className="w-4 h-4 shrink-0" /> <span className="truncate">{globalSettings.specificationFileName}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <p className="text-xs text-zinc-500 mt-4">
-                    Upload your schedules here. We will extract the door/window types and use them when scanning your floor plans.
+                    Upload schedules and specifications here. The system will ingest schedules and align estimations with your project specifications.
                   </p>
                   
                   {/* Schedule Preview */}

@@ -129,6 +129,31 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
         // Find all detected instances for this mark
         const instances = detections.filter((d: any) => String(d.mark || '').trim().toUpperCase() === mark);
 
+        // Construct concise spec notes summary from structured insights
+        const specificationsInsights = sessionState?.specifications_insights || {};
+        let specNotes = '';
+        if (specificationsInsights && Object.keys(specificationsInsights).length > 0) {
+          const notesList: string[] = [];
+          const exclusions = specificationsInsights.exclusions || [];
+          if (exclusions && exclusions.length > 0) {
+            notesList.push(`Exclusions: ${exclusions.join(', ')}`);
+          }
+          const defaults = specificationsInsights.door_defaults || {};
+          if (defaults && Object.keys(defaults).length > 0) {
+            const defParts = Object.entries(defaults)
+              .filter(([_, v]) => v)
+              .map(([k, v]) => `${k}: ${v}`);
+            if (defParts.length > 0) {
+              notesList.push(`Defaults: ${defParts.join(', ')}`);
+            }
+          }
+          const features = specificationsInsights.special_features || [];
+          if (features && features.length > 0) {
+            notesList.push(`Spec Rules: ${features.join('; ')}`);
+          }
+          specNotes = notesList.join(' | ');
+        }
+
         // Determine material for Estimator Notes
         let material = '';
         for (const k of Object.keys(item)) {
@@ -137,10 +162,17 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
             break;
           }
         }
-        let notes = '';
-        if (material.includes('ALUMINUM') || material.includes('GLASS') || material.includes('ALUMINIUM') || material.includes('ALUM')) {
-          notes = 'Door is of Aluminium/Glass material.';
+        const notesParts: string[] = [];
+        const matWords = material.split(/\s+/).map(w => w.trim());
+        const isAlumGlass = material.includes('ALUMINUM') || material.includes('GLASS') || material.includes('ALUMINIUM') || material.includes('ALUM') || matWords.includes('AL');
+        if (isAlumGlass) {
+          notesParts.push('Door is of Aluminium/Glass material.');
+          if (specNotes && (specNotes.toUpperCase().includes('EXCLUDE') || specNotes.toUpperCase().includes('EXCLUDED'))) {
+            notesParts.push('EXCLUDED per specifications (Aluminium door exclusion).');
+          }
         }
+        const notes = notesParts.join(' | ');
+        const isStorefront = isAlumGlass;
 
         if (instances.length > 0) {
           // Write one row for each detected instance
@@ -162,8 +194,8 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
               else if (h === 'LOCATION') val = d.location || '';
               else if (h === 'ESTIMATOR NOTES') val = notes;
               else if (h === 'FLOOR NO') val = floorNo;
-              else if (h === 'OPENING MODE') val = d.opening_mode || 'Single';
-              else if (h === 'INT/EXT') val = d.int_ext || 'Interior';
+              else if (h === 'OPENING MODE') val = isStorefront ? '' : (d.opening_mode || 'Single');
+              else if (h === 'INT/EXT') val = isStorefront ? '' : (d.int_ext || 'Interior');
               else val = item[h] || '';
 
               celldata.push({ r: rowIdx + 1, c: cIdx, v: { v: val, m: String(val) } });

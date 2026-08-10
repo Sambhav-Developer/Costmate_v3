@@ -47,15 +47,13 @@ class ScheduleParserAgent:
         2. Transcribe "mark" EXACTLY as printed — preserve every hyphen, space, letter, and digit character-for-character. Do NOT normalize, reformat, add, or remove any characters.
         3. For ALL other columns, use the EXACT text from the column header as the JSON key.
         4. If a column header is multi-line (e.g. "HARDWARE" on one line, "GROUP NO" below it), join with a single space: "HARDWARE GROUP NO".
-        5. DUPLICATE COLUMN NAMES: Schedules often repeat the same header word under different parent groups. Add a prefix ONLY when a column header is directly underneath a named parent-group header AND the same word appears elsewhere in the table too:
-           - Column under "DOOR" parent   -> prefix "DOOR "   e.g. "DOOR MATERIAL", "DOOR TYPE", "DOOR FINISH"
-           - Column under "FRAME" parent  -> prefix "FRAME "  e.g. "FRAME MATERIAL", "FRAME TYPE", "FRAME FINISH"
-           - Column under "DETAIL" parent -> prefix "DETAIL " e.g. "DETAIL HEAD", "DETAIL JAMB", "DETAIL SILL"
-           - Column under "FIRE RATING" parent -> prefix "FIRE RATING " (only if those sub-columns actually exist under FIRE RATING in the image)
-           - Column under "HARDWARE" parent -> prefix "HARDWARE " e.g. "HARDWARE GROUP NO"
+        5. DUPLICATE & OVERLAPPING COLUMN NAMES: Schedules often repeat the same header word under different parent groups (e.g. "Material" under both DOOR and FRAME, or "Type"). You MUST prefix these columns to prevent duplicate/overwritten keys in the JSON output:
+           - Columns under "DOOR" parent (e.g. Type, Material) -> ALWAYS prefix with "DOOR " -> e.g. "DOOR TYPE", "DOOR MATERIAL"
+           - Columns under "FRAME" parent (e.g. Type, Material) -> ALWAYS prefix with "FRAME " -> e.g. "FRAME TYPE", "FRAME MATERIAL"
+           - Columns under "DETAIL" parent (e.g. Head, Jamb) -> ALWAYS prefix with "DETAIL " -> e.g. "DETAIL HEAD", "DETAIL JAMB"
         6. STANDALONE COLUMNS (not under any parent group, or only appear once) -> use EXACT header text as-is with NO prefix.
            - A "GLAZING" column standing alone (not visually under DOOR or FIRE RATING) -> "GLAZING"
-           - "W", "H", "T", "COMMENTS" -> use as-is
+           - "Width A", "Width B", "Height", "Thickness", "Comments" -> use as-is as they appear in the image.
         7. Read the table structure top-to-bottom carefully:
            - A "GLAZING" column positioned between DETAIL and FIRE RATING is standalone -> key is "GLAZING", NOT "FIRE RATING GLAZING"
            - Only add "FIRE RATING " prefix to columns visually grouped under the "FIRE RATING" header row
@@ -65,9 +63,10 @@ class ScheduleParserAgent:
         EXAMPLE — a typical Door & Frame schedule row:
         {
           "mark": "D-1",
-          "W": "3'-0\\"",
-          "H": "7'-0\\"",
-          "T": "1 3/4\\"",
+          "Width A": "3'-0\\"",
+          "Width B": "",
+          "Height": "7'-0\\"",
+          "Thickness": "1 3/4\\"",
           "DOOR MATERIAL": "WD",
           "DOOR TYPE": "F",
           "DOOR FINISH": "IRWC-1",

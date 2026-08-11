@@ -440,9 +440,10 @@ async def cv_detector_node(state: CostmateState) -> dict:
                 logger.info(f"CV Detector DEBUG: floor[{idx}] page[{page_idx}] has {len(words_on_page)} words, {len(drawings_on_page)} drawing paths, looking for {len(sched_marks)} marks")
                 
                 word_indices = {}
-                page_matched_positions = []  # Deduplicate nearby matches for same mark on page
                 table_rects = get_schedule_table_rects(page)
                 
+                # 1. Collect candidates by mark
+                candidates_by_mark = {}
                 for w in words_on_page:
                     raw_word = w[4].strip(".,()[]{}-_#*").upper()
                     
@@ -460,36 +461,85 @@ async def cv_detector_node(state: CostmateState) -> dict:
                                 is_inside_table = True
                                 break
                         if is_inside_table:
-                            logger.info(f"CV Detector: Skipping match {word_text} at ({w_x:.1f},{w_y:.1f}) inside schedule table area")
                             continue
-                        
-                        # Deduplicate: skip if this exact mark text was matched within 60pt on this page
-                        if any(p_text == word_text and abs(p_x - w_x) < 60 and abs(p_y - w_y) < 60 for p_text, p_x, p_y in page_matched_positions):
-                            logger.info(f"CV Detector: Skipping duplicate match for {word_text} at ({w_x:.1f},{w_y:.1f})")
-                            continue
-                        page_matched_positions.append((word_text, w_x, w_y))
-
-                        logger.info(f"CV Detector DEBUG: MATCH FOUND word={word_text!r} at ({w[0]:.1f},{w[1]:.1f})")
                             
-                        # Increment index of this word on the page for unique crop filename
-                        word_indices[word_text] = word_indices.get(word_text, 0) + 1
-                        w_idx = word_indices[word_text]
-                        
-                        # Bounding box & center of the mark word
+                        # Skip if block is room label block
+                        block_no = w[5]
+                        if is_block_room_label(blocks, block_no, word_text):
+                            logger.info(f"CV Detector: Skipping block {block_no} for mark {word_text} (room label keyword)")
+                            continue
+                            
                         import fitz as fz
                         inst_rect = fz.Rect(w[0], w[1], w[2], w[3])
-                        mark_cx = (inst_rect.x0 + inst_rect.x1) / 2
-                        mark_cy = (inst_rect.y0 + inst_rect.y1) / 2
-                        
-                        # Search for PDF drawing paths near this mark (70pt radius)
-                        # Prevents neighboring doors' arcs from bleeding into nearby marks
                         search_rect = inst_rect + (-70, -70, 70, 70)
                         nearby_drawings = [
                             d for d in drawings_on_page
                             if d.get("rect") and fz.Rect(d["rect"]).intersects(search_rect)
                         ]
                         
-                        # Programmatic opening mode classification from PDF path data + schedule facts
+                        # Count nearby arc curves
+                        arc_paths = []
+                        for d in nearby_drawings:
+                            items = d.get("items", [])
+                            has_curve = any(it[0] in ("c", "qu") for it in items)
+                            if not has_curve:
+                                continue
+                            arc_rect = fz.Rect(d.get("rect"))
+                            arc_cx = (arc_rect.x0 + arc_rect.x1) / 2
+                            arc_cy = (arc_rect.y0 + arc_rect.y1) / 2
+                            dist = ((arc_cx - w_cx) ** 2 + (arc_cy - w_cy) ** 2) ** 0.5
+                            if dist <= 50:
+                                # Skip tiny label circle arcs
+                                arc_area = arc_rect.width * arc_rect.height
+                                if dist < 15 and arc_area < 200:
+                                    continue
+                                arc_paths.append(d)
+                                
+                        candidates_by_mark.setdefault(word_text, []).append({
+                            "word": w,
+                            "w_x": w_x,
+                            "w_y": w_y,
+                            "w_cx": w_cx,
+                            "w_cy": w_cy,
+                            "inst_rect": inst_rect,
+                            "nearby_drawings": nearby_drawings,
+                            "arc_count": len(arc_paths)
+                        })
+                        
+                for word_text, matches in candidates_by_mark.items():
+                    # Deduplicate: if any match has nearby door arcs, only keep matches that have arcs
+                    has_arcs = any(m["arc_count"] > 0 for m in matches)
+                    if has_arcs:
+                        filtered_matches = [m for m in matches if m["arc_count"] > 0]
+                    else:
+                        filtered_matches = matches
+                        
+                    # Also apply simple spatial deduplication: within 60pt
+                    final_matches = []
+                    for m in filtered_matches:
+                        if any(abs(fm["w_cx"] - m["w_cx"]) < 60 and abs(fm["w_cy"] - m["w_cy"]) < 60 for fm in final_matches):
+                            continue
+                        final_matches.append(m)
+                        
+                    for m in final_matches:
+                        w = m["word"]
+                        w_x, w_y = m["w_x"], m["w_y"]
+                        w_cx, w_cy = m["w_cx"], m["w_cy"]
+                        inst_rect = m["inst_rect"]
+                        nearby_drawings = m["nearby_drawings"]
+                        
+                        logger.info(f"CV Detector DEBUG: MATCH FOUND word={word_text!r} at ({w_cx:.1f},{w_cy:.1f})")
+                        
+                        # Increment index of this word on the page for unique crop filename
+                        word_indices[word_text] = word_indices.get(word_text, 0) + 1
+                        w_idx = word_indices[word_text]
+                        
+                        # Bounding box & center of the mark word
+                        import fitz as fz
+                        mark_cx = w_cx
+                        mark_cy = w_cy
+                        
+                        # Programmatic opening mode classification
                         sched_item = sched_items_by_mark.get(word_text)
                         opening_mode = classify_opening_from_drawings(nearby_drawings, inst_rect, item=sched_item)
                         logger.info(f"CV Detector: Mark {word_text} programmatic opening mode = {opening_mode}")

@@ -186,10 +186,12 @@ async def plan_annotation_node(state: CostmateState) -> dict:
             for page in doc:
                 blocks = page.get_text("blocks")
                 words_on_page = page.get_text("words")
+                drawings_on_page = page.get_drawings()
                 table_rects = get_schedule_table_rects(page)
                 
+                # 1. Collect candidates by mark
+                candidates_by_mark = {}
                 for w in words_on_page:
-                    # w format: (x0, y0, x1, y1, "word", block_no, line_no, word_no)
                     raw_word = w[4].strip(".,()[]{}-_#*").upper()
                     
                     matched_mark = find_closest_schedule_mark(raw_word, sched_marks)
@@ -205,9 +207,66 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                                 is_inside_table = True
                                 break
                         if is_inside_table:
-                            logger.info(f"Plan Annotation: Skipping match {word_text} inside schedule table area")
                             continue
                             
+                        # Skip if block is room label block
+                        block_no = w[5]
+                        if is_block_room_label(blocks, block_no, word_text):
+                            continue
+                            
+                        import fitz as fz
+                        inst_rect = fz.Rect(w[0], w[1], w[2], w[3])
+                        search_rect = inst_rect + (-70, -70, 70, 70)
+                        nearby_drawings = [
+                            d for d in drawings_on_page
+                            if d.get("rect") and fz.Rect(d["rect"]).intersects(search_rect)
+                        ]
+                        
+                        # Count nearby arc curves
+                        arc_paths = []
+                        for d in nearby_drawings:
+                            items = d.get("items", [])
+                            has_curve = any(it[0] in ("c", "qu") for it in items)
+                            if not has_curve:
+                                continue
+                            arc_rect = fz.Rect(d.get("rect"))
+                            arc_cx = (arc_rect.x0 + arc_rect.x1) / 2
+                            arc_cy = (arc_rect.y0 + arc_rect.y1) / 2
+                            dist = ((arc_cx - w_x) ** 2 + (arc_cy - w_y) ** 2) ** 0.5
+                            if dist <= 50:
+                                # Skip tiny label circle arcs
+                                arc_area = arc_rect.width * arc_rect.height
+                                if dist < 15 and arc_area < 200:
+                                    continue
+                                arc_paths.append(d)
+                                
+                        candidates_by_mark.setdefault(word_text, []).append({
+                            "word": w,
+                            "w_x": w_x,
+                            "w_y": w_y,
+                            "inst_rect": inst_rect,
+                            "arc_count": len(arc_paths)
+                        })
+                        
+                for word_text, matches in candidates_by_mark.items():
+                    # Deduplicate: if any match has nearby door arcs, only keep matches that have arcs
+                    has_arcs = any(m["arc_count"] > 0 for m in matches)
+                    if has_arcs:
+                        filtered_matches = [m for m in matches if m["arc_count"] > 0]
+                    else:
+                        filtered_matches = matches
+                        
+                    # Also apply simple spatial deduplication: within 60pt
+                    final_matches = []
+                    for m in filtered_matches:
+                        if any(abs(fm["w_x"] - m["w_x"]) < 60 and abs(fm["w_y"] - m["w_y"]) < 60 for fm in final_matches):
+                            continue
+                        final_matches.append(m)
+                        
+                    for m in final_matches:
+                        w = m["word"]
+                        inst_rect = m["inst_rect"]
+                        
                         sched_info = sched_lookup[word_text]
                         cv_info = cv_lookup.get(word_text, {})
                         
@@ -220,17 +279,13 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                         
                         int_ext = str(cv_info.get("int_ext", "")).upper()
                         
-                        mat_words = [w.strip() for w in material.split()]
+                        mat_words = [t.strip() for t in material.split()]
                         if any(kw in material for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM", "STOREFRONT"]) or "AL" in mat_words:
                             highlight_color = color_storefront
                         elif int_ext in ["EXT", "EXTERNAL", "EXTERIOR"]:
                             highlight_color = color_exterior
                         else:
                             highlight_color = color_interior
-                            
-                        # Get bounding box of the word
-                        import fitz as fz
-                        inst_rect = fz.Rect(w[0], w[1], w[2], w[3])
                             
                         annot = page.add_rect_annot(inst_rect)
                         annot.set_colors(stroke=highlight_color, fill=highlight_color)

@@ -363,8 +363,8 @@ class EstimationService:
         project_name = row[0]
         
         ext = os.path.splitext(file.filename)[1].lower()
-        if ext not in [".docx", ".txt"]:
-            raise ValidationException("Invalid specifications file format. Only .docx and .txt are supported.")
+        if ext not in [".docx", ".dotx", ".doc", ".dot", ".txt"]:
+            raise ValidationException("Invalid specifications file format. Only .docx, .dotx, .doc, .dot, and .txt are supported.")
             
         filename = f"{session_id}_spec{ext}"
         file_path = os.path.join(settings.UPLOAD_DIR, filename)
@@ -378,7 +378,7 @@ class EstimationService:
             raise HTTPException(status_code=500, detail=f"Failed to save specifications file: {str(e)}")
             
         spec_text = ""
-        if ext == ".docx":
+        if ext in [".docx", ".dotx"]:
             from app.services.agents.layer1_schedule.docx_parser import extract_docx_text
             spec_text = extract_docx_text(file_path)
         else:

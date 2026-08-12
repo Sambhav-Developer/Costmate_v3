@@ -53,7 +53,7 @@ class ScheduleParserAgent:
            - Columns under "DETAIL" parent (e.g. Head, Jamb) -> ALWAYS prefix with "DETAIL " -> e.g. "DETAIL HEAD", "DETAIL JAMB"
         6. STANDALONE COLUMNS (not under any parent group, or only appear once) -> use EXACT header text as-is with NO prefix.
            - A "GLAZING" column standing alone (not visually under DOOR or FIRE RATING) -> "GLAZING"
-           - "Width A", "Width B", "Height", "Thickness", "Comments" -> use as-is as they appear in the image.
+           - "WIDTH", "HEIGHT", "THICKNESS", "COMMENTS" -> use the exact header name as-is as they appear in the image. If the image has a single column named "WIDTH", use "WIDTH" (do NOT use "Width A" or "Width B" unless those are explicitly printed as separate columns in the image).
         7. Read the table structure top-to-bottom carefully:
            - A "GLAZING" column positioned between DETAIL and FIRE RATING is standalone -> key is "GLAZING", NOT "FIRE RATING GLAZING"
            - Only add "FIRE RATING " prefix to columns visually grouped under the "FIRE RATING" header row
@@ -63,10 +63,9 @@ class ScheduleParserAgent:
         EXAMPLE — a typical Door & Frame schedule row:
         {
           "mark": "D-1",
-          "Width A": "3'-0\\"",
-          "Width B": "",
-          "Height": "7'-0\\"",
-          "Thickness": "1 3/4\\"",
+          "WIDTH": "3'-0\\"",
+          "HEIGHT": "7'-0\\"",
+          "THICKNESS": "1 3/4\\"",
           "DOOR MATERIAL": "WD",
           "DOOR TYPE": "F",
           "DOOR FINISH": "IRWC-1",

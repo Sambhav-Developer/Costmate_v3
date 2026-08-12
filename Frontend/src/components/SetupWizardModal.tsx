@@ -679,7 +679,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       <input 
                         id="specification-upload"
                         type="file" 
-                        accept=".docx,.txt"
+                        accept=".docx,.doc,.dotx,.dot,.txt"
                         className="hidden" 
                         onChange={async (e) => {
                           const file = e.target.files?.[0];

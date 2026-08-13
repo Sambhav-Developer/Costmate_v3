@@ -10,7 +10,6 @@ from app.modules.estimations.service import estimation_service
 from app.modules.estimations.repository import estimation_repo
 from app.services.graph.session_manager import session_manager
 from app.services.graph.graph import costmate_graph
-from app.services.agents.layer3_human.qa_schema import QASchema
 from app.config import settings
 
 router = APIRouter(prefix="/api", tags=["Estimations"])
@@ -83,13 +82,11 @@ async def delete_session(session_id: str, conn = Depends(get_db), current_user: 
     return {"status": "success"}
 
 @router.post("/qa/{session_id}/submit")
-async def submit_qa(session_id: str, payload: Union[EncryptedPayloadSchema, QASchema, dict], current_user: dict = Depends(get_current_user)):
+async def submit_qa(session_id: str, payload: Union[EncryptedPayloadSchema, dict], current_user: dict = Depends(get_current_user)):
     if isinstance(payload, EncryptedPayloadSchema):
         aes_key = decrypt_aes_key_with_rsa(payload.rsa_encrypted_aes_key)
         decrypted_json = decrypt_payload_with_aes_gcm(payload.aes_encrypted_payload, aes_key)
         verified_qa = decrypted_json
-    elif isinstance(payload, QASchema):
-        verified_qa = payload.model_dump()
     else:
         verified_qa = payload
     return await estimation_service.submit_qa(session_id, verified_qa, current_user["id"])

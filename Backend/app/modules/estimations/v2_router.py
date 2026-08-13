@@ -47,11 +47,19 @@ async def _save_and_upload(session_id: str, file: UploadFile) -> str:
     filename = f"{session_id}_{uuid.uuid4().hex[:6]}{ext}"
     file_path = os.path.join(settings.UPLOAD_DIR, filename)
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    with open(file_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
-    cloud_url = upload_to_cloudinary(file_path, resource_type="raw" if ext == ".pdf" else "image") or file_path
-    return cloud_url
+    try:
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        cloud_url = upload_to_cloudinary(file_path, resource_type="raw" if ext == ".pdf" else "image") or file_path
+        return cloud_url
+    finally:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info(f"Cleaned up local file: {file_path}")
+            except Exception as cleanup_err:
+                logger.error(f"Failed to remove local file {file_path}: {cleanup_err}")
 
 @v2_router.post("/{session_id}/schedule")
 async def upload_schedule(session_id: str, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):

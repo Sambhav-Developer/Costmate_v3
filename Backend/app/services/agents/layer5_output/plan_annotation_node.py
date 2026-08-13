@@ -306,6 +306,18 @@ async def plan_annotation_node(state: CostmateState) -> dict:
         
         logger.info(f"Consolidated annotated PDF successfully saved at {out_path}")
         
+        # Upload generated PDF to Cloudinary
+        from app.core.cloud import upload_to_cloudinary
+        cloud_url = upload_to_cloudinary(out_path, resource_type="raw") or out_path
+        
+        # Delete local copy from disk
+        if os.path.exists(out_path):
+            try:
+                os.remove(out_path)
+                logger.info(f"Cleaned up local annotated PDF: {out_path}")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to remove local annotated PDF: {cleanup_err}")
+                
         # Cleanup temporary files
         for temp_file in downloaded_temps:
             if os.path.exists(temp_file):
@@ -313,7 +325,7 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to delete temp file {temp_file}: {cleanup_err}")
                     
-        return {"annotated_pdf_path": out_path}
+        return {"annotated_pdf_path": cloud_url}
         
     except Exception as e:
         logger.error(f"Error during PDF annotation: {e}")

@@ -32,7 +32,8 @@ class OpenRouterClient:
         prompt: str,
         image_paths: Optional[List[str]] = None,
         json_mode: bool = False,
-        temperature: float = 0.2
+        temperature: float = 0.2,
+        model_name: Optional[str] = None
     ) -> str:
         """
         Sends a query to OpenRouter chat completions endpoint.
@@ -52,20 +53,23 @@ class OpenRouterClient:
                 try:
                     if path.startswith("http://") or path.startswith("https://"):
                         # If it's a Cloudinary URL, inject transformations to prevent OpenRouter OOM (CUDA Out Of Memory)
-                        # We limit width/height to 2000px and auto-compress quality/format.
+                        # We limit width/height to 1400px and auto-compress quality/format.
                         optimized_url = path
                         if "res.cloudinary.com" in path and "/upload/" in path:
-                            optimized_url = path.replace("/upload/", "/upload/c_limit,w_2000,h_2000,q_auto,f_auto/")
+                            optimized_url = path.replace("/upload/", "/upload/c_limit,w_1400,h_1400,q_auto,f_auto/")
                         content_parts.append({"type": "image_url", "image_url": {"url": optimized_url}})
+                    elif path.startswith("data:image/"):
+                        # Direct base64 data URL, append as-is
+                        content_parts.append({"type": "image_url", "image_url": {"url": path}})
                     else:
                         b64 = self._encode_image(path)
                         content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
                 except Exception as e:
-                    logger.error(f"Failed to encode image {path}: {e}")
+                    logger.error(f"Failed to encode image {path[:100]}...: {e}")
                     raise e
                     
         payload = {
-            "model": self.model_name,
+            "model": model_name or self.model_name,
             "messages": [
                 {
                     "role": "user",

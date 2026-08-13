@@ -223,4 +223,17 @@ async def excel_writer_node(state: CostmateState) -> dict:
     wb.save(file_path)
     
     logger.info(f"Excel file saved at {file_path}")
-    return {"excel_file_path": file_path, "status": "completed", "current_step": "completed"}
+    
+    # Upload generated Excel to Cloudinary
+    from app.core.cloud import upload_to_cloudinary
+    cloud_url = upload_to_cloudinary(file_path, resource_type="raw") or file_path
+    
+    # Delete local copy from disk
+    if os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+            logger.info(f"Cleaned up local Excel: {file_path}")
+        except Exception as cleanup_err:
+            logger.warning(f"Failed to remove local Excel: {cleanup_err}")
+            
+    return {"excel_file_path": cloud_url, "status": "completed", "current_step": "completed"}

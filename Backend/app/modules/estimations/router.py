@@ -120,7 +120,7 @@ async def download_output(session_id: str, current_user: dict = Depends(get_curr
         from fastapi.responses import StreamingResponse
         # Proxy the Cloudinary URL to bypass frontend CORS issues for fetch()
         async def stream_external_file():
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream("GET", excel_path) as response:
                     if response.status_code != 200:
                         raise HTTPException(status_code=404, detail="Failed to fetch Excel from cloud storage")
@@ -167,7 +167,7 @@ async def download_annotated_plan(session_id: str, current_user: dict = Depends(
         import httpx
         from fastapi.responses import StreamingResponse
         async def stream_external_file():
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream("GET", annotated_path) as response:
                     if response.status_code != 200:
                         raise HTTPException(status_code=404, detail="Failed to fetch annotated plan from cloud storage")

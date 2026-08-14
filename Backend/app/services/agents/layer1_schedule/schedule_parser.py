@@ -73,22 +73,10 @@ CRITICAL RULES FOR JSON KEYS:
    lines with a single space (e.g. "Hardware Set", "Fire Rating (Mins)").
    Keep any parenthetical units exactly as printed.
 
-5. DUPLICATE HEADERS UNDER NAMED PARENTS: Prefix a column key ONLY when its
-   LITERAL PRINTED HEADER TEXT is identical to another column's literal
-   printed header text somewhere else in the same table (e.g. two columns
-   both literally printed "Material" — one under a DOOR group, one under a
-   FRAME group). In that case prefix both with their parent category in ALL
-   CAPS: "DOOR MATERIAL", "FRAME MATERIAL".
-
-   Do NOT prefix a column just because it visually sits inside a DOOR/FRAME/
-   DETAIL group box. Visual grouping alone is not a collision. If the
-   printed text is already distinct — e.g. "Type" under DOOR vs "Frame Type"
-   under FRAME, or "Jamb"/"Head" under DETAIL with no other "Jamb"/"Head"
-   column anywhere else in the table — leave it exactly as printed, with NO
-   prefix, per Rule 7. Getting this wrong in either direction (prefixing
-   something unique, or failing to prefix something that collides) is a
-   common failure mode — check literal text equality, not box membership,
-   before adding any prefix.
+5. GROUP DISAMBIGUATION (DOOR / FRAME GROUPS): When columns sit under parent group headers like "DOOR" and "FRAME":
+   - If a column under the "DOOR" group header is labeled "Type" or "Material", prefix it with "Door " using Title Case: "Door Type", "Door Material".
+   - If a column under the "FRAME" group header is labeled "Material", prefix it with "Frame " using Title Case: "Frame Material". If it is printed as "Frame Type", transcribe it as "Frame Type".
+   - For all other columns under group headers (e.g. "Jamb", "Head" under "DETAIL"), use the printed column header directly unless an exact text collision occurs elsewhere in the table.
 
 6. DUPLICATE HEADERS WITH NO NAMED PARENT: If a header word/phrase repeats
    in the same table but at least one occurrence has NO distinguishing
@@ -177,10 +165,10 @@ ROW-LEVEL STRUCTURE RULES:
       "Width B": "",
       "Height": "7'-0\"",
       "Thickness": "1 3/4\"",
-      "Type": "F",
-      "DOOR Material": "WD",
+      "Door Type": "F",
+      "Door Material": "WD",
       "Frame Type": "A",
-      "FRAME Material": "HM",
+      "Frame Material": "HM",
       "Jamb": "5C/A611",
       "Head": "5C/A611",
       "Glazing": "-",
@@ -197,10 +185,10 @@ ROW-LEVEL STRUCTURE RULES:
       "Width B": "",
       "Height": "",
       "Thickness": "",
-      "Type": "",
-      "DOOR Material": "AL",
+      "Door Type": "",
+      "Door Material": "AL",
       "Frame Type": "",
-      "FRAME Material": "AL",
+      "Frame Material": "AL",
       "Jamb": "2D/A611",
       "Head": "2B&3B/A611",
       "Glazing": "TS",
@@ -217,10 +205,10 @@ ROW-LEVEL STRUCTURE RULES:
       "Width B": "3'-0\"",
       "Height": "6'-8\"",
       "Thickness": "1 3/4\"",
-      "Type": "EXIST",
-      "DOOR Material": "EXIST",
+      "Door Type": "EXIST",
+      "Door Material": "EXIST",
       "Frame Type": "EXIST",
-      "FRAME Material": "EXIST",
+      "Frame Material": "EXIST",
       "Jamb": "EXIST",
       "Head": "EXIST",
       "Glazing": "-",
@@ -257,12 +245,9 @@ ROW-LEVEL STRUCTURE RULES:
     KNOWN SCHEDULE LAYOUTS SEEN ACROSS PROJECTS:
 
     Layout 1 — mark: "Door No"
-      Door No, Width A, Width B, Height, Thickness, Door Type,
+      Door No, Width A, Width B, Height, Thickness,Door Type,
       Door Material, Frame Type, Frame Material, Jamb, Head, Glazing,
-      Hardware Set, Fire Rating, Comments
-      Notes: Door Type/Frame Type and Door Material/Frame Material are
-      ALREADY distinct printed text in this layout — no synthesized prefix
-      needed. Jamb/Head are unique, printed bare, no "Detail" prefix here.
+      Hardware Set, Fire Rating (Mins), Comments
 
     Layout 2 — mark: "Door Number"
       Door Number, Door Type, Width, Height, Door Material, Frame Type,

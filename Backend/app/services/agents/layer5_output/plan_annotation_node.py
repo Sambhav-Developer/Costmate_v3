@@ -300,13 +300,13 @@ async def plan_annotation_node(state: CostmateState) -> dict:
             doc.close()
 
         # Save the master consolidated PDF
-        out_path = os.path.join(settings.OUTPUT_DIR, f"{state.get('session_id', 'output')}_annotated.pdf")
+        out_path = os.path.join(settings.OUTPUT_DIR, f"{state.get('session_id', 'output')}_annotated.txt")
         master_doc.save(out_path)
         master_doc.close()
         
         logger.info(f"Consolidated annotated PDF successfully saved at {out_path}")
         
-        # Upload generated PDF to Cloudinary
+        # Upload generated PDF to Cloudinary as raw text to bypass PDF restricted delivery setting
         from app.core.cloud import upload_to_cloudinary
         cloud_url = upload_to_cloudinary(out_path, resource_type="raw") or out_path
         

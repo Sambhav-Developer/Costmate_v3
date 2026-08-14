@@ -120,31 +120,8 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
         }
         rawUrl = res.raw_url;
         
-        try {
-          setIsScanning(true);
-          const scanRes = await api.quickScanDraft(currentSid);
-          if (scanRes.data && scanRes.data.rooms) {
-            scannedRooms = scanRes.data.rooms.map((r: any, idx: number) => ({
-              id: Date.now() + idx,
-              name: r.name || 'Room',
-              dimensions: r.dimensions || '',
-              boundingBox: r.bounding_box || null,
-              tiles: 'Vitrified',
-              pop: 'No',
-              skirting: '4 inch',
-              dado: 'None',
-              hasBalconyRailing: 'No',
-              balconyRailingDim: '',
-              balconyRailingMaterial: 'MS (Mild Steel)',
-              doors: [],
-              windows: []
-            }));
-          }
-        } catch (scanErr) {
-          console.warn('Quick scan failed:', scanErr);
-        } finally {
-          setIsScanning(false);
-        }
+        // Skip AI room detection scanning at upload stage to save API cost and latency
+        scannedRooms = [];
       }
       
       const newFloors = [...floors];

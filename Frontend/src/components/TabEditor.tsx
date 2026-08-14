@@ -6,14 +6,16 @@ import ResultPanel from './editor/ResultPanel';
 import { Door, Window } from './editor/types';
 import { DoorsSchedule, WindowsSchedule } from './editor/ScheduleTables';
 
-// ─── Props ─────────────────────────────────────────────────────
 interface TabEditorProps {
-  activeTab: 'qa' | 'result';
-  setActiveTab: (tab: 'qa' | 'result') => void;
+  activeTab?: 'qa' | 'result';
+  setActiveTab?: (tab: 'qa' | 'result') => void;
   sessionId: string | null;
   sessionState: any;
   refreshSession: () => void;
   displayName?: string;
+  progress?: number;
+  status?: string;
+  step?: string;
 }
 
 // ─── Tab Button ────────────────────────────────────────────────
@@ -42,55 +44,17 @@ function TabBtn({ active, disabled, onClick, icon, label, badge }: {
 
 // ─── Processing Screen ─────────────────────────────────────────
 function ProcessingScreen({ step, pct }: { step: string; pct: number }) {
-  const [localPct, setLocalPct] = React.useState(pct);
-
-  React.useEffect(() => {
-    setLocalPct(prev => Math.max(prev, pct));
-  }, [pct]);
-
-  React.useEffect(() => {
-    const interval = setInterval(() => {
-      setLocalPct(prev => {
-        let targetMax = 99;
-        let increment = 0.2;
-
-        if (pct < 15) {
-          targetMax = 14;
-          increment = 0.3;
-        } else if (pct < 35) {
-          targetMax = 34;
-          increment = 0.4;
-        } else if (pct < 45) {
-          targetMax = 44;
-          increment = 0.3;
-        } else if (pct < 70) {
-          targetMax = 69;
-          increment = 0.2;
-        } else if (pct < 90) {
-          targetMax = 89;
-          increment = 0.3;
-        } else {
-          targetMax = 99;
-          increment = 0.2;
-        }
-
-        if (prev < targetMax) {
-          return Math.min(prev + increment, targetMax);
-        }
-        return prev;
-      });
-    }, 800);
-
-    return () => clearInterval(interval);
-  }, [pct]);
-
   const desc: Record<string, string> = {
-    upload_completed: 'Analyzing floor plan boundaries and scales...',
-    ocr_completed: 'Reading annotations...',
-    vision_agents_completed: 'Extracting doors and windows...',
-    quantities_calculated: 'Formatting schedules...',
-    validation_completed: 'Running validation...',
+    upload_completed: 'Initializing Civil Work Estimator pipeline...',
+    specs_analyzed: 'Analyzing project specifications...',
+    schedule_parsed: 'Parsing door & window schedules...',
+    ocr_completed: 'Reading annotations & layout marks...',
+    cv_detector_completed: 'Detecting callout elements on drawings...',
+    reconciliation_completed: 'Reconciling schedule items...',
+    quantities_calculated: 'Formatting schedules & calculating quantities...',
+    validation_completed: 'Running final validation check...',
   };
+
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8 select-none"
       style={{ background: 'var(--background)' }}>
@@ -113,11 +77,11 @@ function ProcessingScreen({ step, pct }: { step: string; pct: number }) {
           <div className="w-full h-2 rounded-full overflow-hidden"
             style={{ background: 'var(--background)', border: '1px solid var(--panel-border)' }}>
             <div className="h-full bg-gradient-accent rounded-full transition-all duration-300 ease-out"
-               style={{ width: `${Math.round(localPct)}%` }} />
+               style={{ width: `${Math.round(pct)}%` }} />
           </div>
           <div className="flex justify-between text-[10px] font-semibold">
             <span style={{ color: 'var(--muted)' }}>Takeoff Pipeline</span>
-            <span className="font-bold text-gradient-accent">{Math.round(localPct)}%</span>
+            <span className="font-bold text-gradient-accent">{Math.round(pct)}%</span>
           </div>
         </div>
       </div>
@@ -283,11 +247,21 @@ function StatusChip({ status }: { status: string }) {
 
 // ─── Main TabEditor ────────────────────────────────────────────
 export default function TabEditor({
-  sessionId, sessionState, refreshSession, displayName,
+  sessionId,
+  sessionState,
+  refreshSession,
+  displayName,
+  progress = 0,
+  status = 'idle',
+  step = ''
 }: TabEditorProps) {
   const [qaForm, setQaForm] = useState<any>(null);
   const [submittingQA, setSubmittingQA] = useState(false);
   const [qaError, setQaError] = useState<string | null>(null);
+
+  const getFilename = () =>
+    displayName || sessionState?.original_filename ||
+    (sessionState?.uploaded_file_path || '').split(/[/\\]/).pop() || 'drawing.png';
 
   // Add forms
   const [newDoor, setNewDoor] = useState<Door>({ type: 'D1', width_m: 0.9, height_m: 2.1, material: 'Teak Wood', count: 1 });
@@ -350,7 +324,6 @@ export default function TabEditor({
       if (hasVerified) {
         const parsedVerified = JSON.parse(JSON.stringify(verified));
         finalForm = { ...finalForm, ...parsedVerified };
-        // Ensure doors/windows don't get wiped out if verified has them as empty arrays
         if (!parsedVerified.doors || parsedVerified.doors.length === 0) {
           finalForm.doors = prefilled?.doors || [];
         }
@@ -358,10 +331,6 @@ export default function TabEditor({
           finalForm.windows = prefilled?.windows || [];
         }
       }
-      console.log("DEBUG setting qaForm:");
-      console.log("DEBUG prefilled.doors:", prefilled?.doors);
-      console.log("DEBUG parsedVerified:", hasVerified ? JSON.parse(JSON.stringify(verified)) : null);
-      console.log("DEBUG finalForm.doors:", finalForm.doors);
       setQaForm(finalForm);
       lastLoadedSessionId.current = sessionId;
       lastLoadedStep.current = currentStep;
@@ -369,18 +338,19 @@ export default function TabEditor({
     }
   }, [sessionState, sessionId]);
 
-  const updateField = (key: string, value: any) => setQaForm((p: any) => ({ ...p, [key]: value }));
+  const handleFieldChange = (key: string, value: any) => {
+    setQaForm((prev: any) => ({ ...prev, [key]: value }));
+  };
 
-  const handleListChange = (parentKey: string, idx: number, key: string, value: any) =>
-    setQaForm((p: any) => {
-      const list = [...(p[parentKey] || [])];
-      list[idx] = { ...list[idx], [key]: value };
-      return { ...p, [parentKey]: list };
+  const handleListChange = (listKey: 'doors' | 'windows', index: number, key: string, value: any) => {
+    setQaForm((prev: any) => {
+      const list = [...(prev?.[listKey] || [])];
+      list[index] = { ...list[index], [key]: value };
+      return { ...prev, [listKey]: list };
     });
+  };
 
-  const getFilename = () =>
-    displayName || sessionState?.original_filename ||
-    (sessionState?.uploaded_file_path || '').split(/[/\\]/).pop() || 'drawing.png';
+  const updateField = (key: string, val: any) => setQaForm((prev: any) => ({ ...prev, [key]: val }));
 
   const handleAddDoor = () => {
     const list = [...(qaForm?.doors || [])];
@@ -414,12 +384,26 @@ export default function TabEditor({
     }
   };
 
-  const isQAStage =
-    sessionState?.current_step === 'qa_prefilled' ||
-    sessionState?.current_step === 'paused_qa' ||
-    sessionState?.current_step === 'reconciliation_complete' ||
+  const activeStatus = status !== 'idle' ? status : sessionState?.status;
+  const activeStep = step || sessionState?.current_step || 'upload_completed';
+  const activePct = progress > 0 ? progress : (sessionState?.progress_pct || 0);
+
+  const hasPrefilledData =
+    (sessionState?.qa_prefilled?.doors && sessionState.qa_prefilled.doors.length > 0) ||
+    (sessionState?.qa_prefilled?.windows && sessionState.qa_prefilled.windows.length > 0) ||
+    (sessionState?.qa_verified?.doors && sessionState.qa_verified.doors.length > 0) ||
+    (sessionState?.qa_verified?.windows && sessionState.qa_verified.windows.length > 0);
+
+  const isCompletedOrFailed =
     sessionState?.status === 'completed' ||
-    sessionState?.status === 'failed';
+    sessionState?.status === 'failed' ||
+    activeStatus === 'completed' ||
+    activeStatus === 'failed';
+
+  const isTrulyPausedQA =
+    (activeStatus === 'paused_qa' || sessionState?.status === 'paused_qa') && hasPrefilledData;
+
+  const isQAStage = isCompletedOrFailed || isTrulyPausedQA;
 
   if (!sessionId) {
     return (
@@ -436,8 +420,8 @@ export default function TabEditor({
     );
   }
 
-  if ((sessionState?.status === 'processing' || sessionState?.status === 'calculating') && !isQAStage) {
-    return <ProcessingScreen step={sessionState.current_step} pct={sessionState.progress_pct || 15} />;
+  if (!isQAStage && (activeStatus === 'processing' || activeStatus === 'calculating' || activePct < 100)) {
+    return <ProcessingScreen step={activeStep} pct={activePct} />;
   }
 
   return (

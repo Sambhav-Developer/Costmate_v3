@@ -254,12 +254,8 @@ class EstimationService:
             raise HTTPException(status_code=500, detail=f"Failed to parse schedule: {str(e)}")
 
     async def quick_scan_draft(self, conn, session_id: str, user_id: int) -> dict:
-        row = estimation_repo.get_draft_session(conn, session_id, user_id)
-        if not row:
-            raise NotFoundException("Draft session not found")
-        project_name, file_path, original_filename, page_paths, status = row
-        if status != "file_uploaded" or not file_path:
-            raise ValidationException("Cannot run quick scan without a file upload")
+        # Bypassed VLM room scanning during draft setup to save cost and latency
+        return {"rooms": []}
 
         from app.core.openrouter_client import openrouter_client, parse_json_response
         

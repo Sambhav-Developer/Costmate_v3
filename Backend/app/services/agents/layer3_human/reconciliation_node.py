@@ -68,6 +68,22 @@ async def reconciliation_node(state: CostmateState) -> dict:
 
     logger.info(f"Reconciliation complete. Found {len(unresolved_queue)} unresolved items.")
     
+    # Map floor plan names from intake and CV detections
+    intake = state.get("intake_data") or state.get("intake") or {}
+    floors = intake.get("floors", [])
+    mark_floors = {}
+    for det in cv_detections:
+        m = str(det.get("mark", "")).strip().upper()
+        fn = det.get("floor_name") or det.get("floor") or det.get("level")
+        if m and fn:
+            mark_floors[m] = fn
+
+    default_floor = ""
+    if floors and isinstance(floors, list):
+        valid_names = [f.get("name") for f in floors if f.get("name")]
+        if valid_names:
+            default_floor = ", ".join(valid_names)
+
     # Map schedule data to V1 qa_prefilled format so the frontend unlocks the Parameters tab
     doors_list = []
     windows_list = []
@@ -117,6 +133,12 @@ async def reconciliation_node(state: CostmateState) -> dict:
             else:
                 obj[canonical_key] = v
         
+        # Ensure Floor / Level column is present using plan upload floor names
+        has_floor_col = any(fk.lower() in ["floor", "level", "floor / level", "floor/level", "floor level"] for fk in obj.keys())
+        if not has_floor_col:
+            assigned_floor = mark_floors.get(mark) or default_floor or "Ground Floor"
+            obj["FLOOR / LEVEL"] = assigned_floor
+
         schedule_type = item.get("_schedule_type", "")
         if schedule_type == "window":
             windows_list.append(obj)

@@ -351,24 +351,22 @@ class SessionManager:
                 error = None
             
             # Map node updates to standard statuses if node doesn't specify
-            if node_name == "ocr_node":
-                progress = 15
-                step = "ocr_completed"
-            elif node_name in ["floor_plan_reader_node", "dimension_extractor_node", "element_detector_node"]:
-                progress = 35
-                step = "vision_agents_completed"
-            elif node_name == "prefill_qa_node":
+            if node_name == "specifications_analyzer_node":
+                progress = 10
+                step = "specs_analyzed"
+            elif node_name == "schedule_parser_node":
+                progress = 25
+                step = "schedule_parsed"
+            elif node_name == "ocr_consensus_node":
                 progress = 45
-                step = "qa_prefilled"
-            elif node_name == "civil_quantities_node":
-                progress = 70
-                step = "quantities_calculated"
-                status = "calculating"
-            elif node_name == "validator_node":
+                step = "ocr_completed"
+            elif node_name == "cv_detector_node":
+                progress = 75
+                step = "cv_detector_completed"
+            elif node_name == "reconciliation_node":
                 progress = 90
-                step = "validation_completed"
-                status = "calculating"
-            elif node_name == "excel_writer_node":
+                step = "reconciliation_completed"
+            elif node_name in ["excel_writer_node", "plan_annotation_node"]:
                 progress = 100
                 step = "completed"
                 status = "completed"

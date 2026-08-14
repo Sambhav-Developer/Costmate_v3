@@ -117,10 +117,15 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
         comments = ""
         w_a = ""
         w_b = ""
+        frame_mat = ""
         for k, v in item.items():
             kl = str(k).lower().strip()
             val_str = str(v).strip().upper()
             if "material" in kl and "door" in kl:
+                mat = val_str
+            elif "material" in kl and "frame" in kl:
+                frame_mat = val_str
+            elif "material" in kl and not mat:
                 mat = val_str
             elif kl in ["door type", "type"]:
                 dtype = val_str
@@ -132,6 +137,12 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
                 w_a = str(v).strip()
             elif kl in ["width b", "width_b", "w_b", "wb"]:
                 w_b = str(v).strip()
+
+        # Check for Storefront / Aluminum & Glass Opening
+        storefront_tokens = ["AL", "ALUM", "ALUMINUM", "GLASS", "GL", "STOREFRONT"]
+        if mat in storefront_tokens or frame_mat in storefront_tokens or any(tok in comments for tok in ["STOREFRONT", "AD SYSTEM", "ALUMINUM"]):
+            logger.info(f"CV Drawing Analysis: Schedule indicates Storefront / Aluminum Entry (mat={mat!r}, frame_mat={frame_mat!r}) -> STOREFRONT")
+            return "STOREFRONT"
 
         # If both Width A and Width B are populated in the schedule, it is a Pair door (PR)
         if w_a and w_b and w_a not in ["-", ""] and w_b not in ["-", ""]:
@@ -315,6 +326,139 @@ def get_item_mark(item: dict) -> str:
                 return str(v).strip().upper()
     return ""
 
+def run_opencv_geometric_detection(page, floor_no, page_idx, sched_marks, temp_dir):
+    """
+    Use OpenCV locally to detect circular, hexagonal, and rectangular callout tags.
+    Returns a list of fitz.Rect regions in PDF points coords.
+    """
+    import cv2
+    import numpy as np
+    import re
+    import uuid
+    import fitz as fz
+    
+    # Render page to high-res PNG for OpenCV
+    scale = 2.0  # 2x zoom for high-res details
+    mat = fz.Matrix(scale, scale)
+    pix = page.get_pixmap(matrix=mat, alpha=False)
+    
+    page_img_path = os.path.join(temp_dir, f"page_full_f{floor_no}_p{page_idx}.png")
+    pix.save(page_img_path)
+    
+    img = cv2.imread(page_img_path)
+    if img is None:
+        return []
+        
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    height, width = img.shape[:2]
+    page_width = page.rect.width
+    page_height = page.rect.height
+    
+    candidates = []
+    detected_boxes = []
+    
+    def is_duplicate(ymin, xmin, ymax, xmax):
+        for box in detected_boxes:
+            cy1 = (ymin + ymax) / 2
+            cx1 = (xmin + xmax) / 2
+            cy2 = (box[0] + box[2]) / 2
+            cx2 = (box[1] + box[3]) / 2
+            dist = ((cy1 - cy2)**2 + (cx1 - cx2)**2)**0.5
+            if dist < 0.03: # 3% of page dimension
+                return True
+        return False
+        
+    # Track A: Hough Circles (Circular tags)
+    circles = cv2.HoughCircles(
+        blurred, 
+        cv2.HOUGH_GRADIENT, 
+        dp=1.2, 
+        minDist=40, 
+        param1=50, 
+        param2=35, 
+        minRadius=15, 
+        maxRadius=65
+    )
+    
+    if circles is not None:
+        circles = np.round(circles[0, :]).astype("int")
+        for (x, y, r) in circles:
+            px_ymin = max(0, y - r - 8)
+            px_xmin = max(0, x - r - 8)
+            px_ymax = min(height, y + r + 8)
+            px_xmax = min(width, x + r + 8)
+            
+            ymin = px_ymin / scale
+            xmin = px_xmin / scale
+            ymax = px_ymax / scale
+            xmax = px_xmax / scale
+            
+            if not is_duplicate(ymin/page_height, xmin/page_width, ymax/page_height, xmax/page_width):
+                detected_boxes.append((ymin/page_height, xmin/page_width, ymax/page_height, xmax/page_width))
+                candidates.append(fz.Rect(xmin, ymin, xmax, ymax))
+                
+    # Track B: Contours (Hexagonal / Rectangular tags)
+    _, thresh = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY_INV)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    for c in contours:
+        area = cv2.contourArea(c)
+        if 800 <= area <= 15000:
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.04 * peri, True)
+            if len(approx) in [4, 5, 6, 8]:
+                x, y, w, h = cv2.boundingRect(c)
+                aspect_ratio = float(w)/h
+                if 0.7 <= aspect_ratio <= 1.4:
+                    px_ymin = max(0, y - 8)
+                    px_xmin = max(0, x - 8)
+                    px_ymax = min(height, y + h + 8)
+                    px_xmax = min(width, x + w + 8)
+                    
+                    ymin = px_ymin / scale
+                    xmin = px_xmin / scale
+                    ymax = px_ymax / scale
+                    xmax = px_xmax / scale
+                    
+                    if not is_duplicate(ymin/page_height, xmin/page_width, ymax/page_height, xmax/page_width):
+                        detected_boxes.append((ymin/page_height, xmin/page_width, ymax/page_height, xmax/page_width))
+                        candidates.append(fz.Rect(xmin, ymin, xmax, ymax))
+                        
+    try: os.remove(page_img_path)
+    except: pass
+    
+    return candidates
+
+async def extract_mark_from_tag_crop(crop_path: str, sched_marks: set, semaphore: asyncio.Semaphore) -> str:
+    """
+    Call VLM on a tight OpenCV-detected geometric crop to identify the door/window mark.
+    """
+    if not crop_path or not os.path.exists(crop_path):
+        return "NONE"
+    async with semaphore:
+        prompt = f"""
+        Identify the door or window mark (e.g. 3C03, D-1, W-2, RS012, or similar) printed inside this circle/box.
+        Select from this list of known project marks if there is a match: {sorted(list(sched_marks))}.
+        If no valid mark from this list is printed in the crop, return 'NONE'.
+        Return ONLY the matched mark string or 'NONE'. No other explanation, no markdown.
+        """
+        try:
+            res = await openrouter_client.generate_chat(prompt=prompt, image_paths=[crop_path], json_mode=True, temperature=0.1)
+            text = str(res).strip().upper()
+            if "{" in text:
+                data = parse_json_response(res)
+                text = str(data.get("mark", data.get("text", "NONE"))).strip().upper()
+            
+            for sm in sched_marks:
+                if sm == text or sm in text or text in sm:
+                    return sm
+            return "NONE"
+        except Exception as e:
+            logger.error(f"Failed to read mark from tag crop: {e}")
+            return "NONE"
+
 async def cv_detector_node(state: CostmateState) -> dict:
     logger.info("CV Detector: Starting crop-based door & window analysis node...")
     
@@ -391,6 +535,8 @@ async def cv_detector_node(state: CostmateState) -> dict:
             temp_local_file = None
             local_raw_path = None
             floor_no = idx + 1
+            floor_info = floors[idx] if (isinstance(floors, list) and idx < len(floors)) else {}
+            floor_name = floor_info.get("name") or f"Level {floor_no}"
             
             # Download the file if it's hosted in the cloud (Cloudinary URL)
             if file_source.startswith("http://") or file_source.startswith("https://"):
@@ -442,7 +588,52 @@ async def cv_detector_node(state: CostmateState) -> dict:
                 word_indices = {}
                 table_rects = get_schedule_table_rects(page)
                 
-                # 1. Collect candidates by mark
+                # --- SCANNED / RASTER DRAWING FALLBACK (OPENCV SEARCH) ---
+                if len(words_on_page) < 5:
+                    logger.info("CV Detector: Scanned/Raster drawing detected. Running OpenCV shape detection fallback...")
+                    tag_rects = run_opencv_geometric_detection(page, floor_no, page_idx, sched_marks, settings.OUTPUT_DIR)
+                    logger.info(f"CV Detector: OpenCV found {len(tag_rects)} candidate tags on page. Querying VLM for OCR...")
+                    
+                    for tag_idx, tr in enumerate(tag_rects):
+                        try:
+                            pix = page.get_pixmap(clip=tr, dpi=200)
+                            import uuid, fitz as fz
+                            crop_filename = f"opencv_crop_f{floor_no}_p{page_idx}_{tag_idx}_{uuid.uuid4().hex[:6]}.png"
+                            crop_path = os.path.join(settings.OUTPUT_DIR, crop_filename)
+                            pix.save(crop_path)
+                            all_temp_crops.append(crop_path)
+                            
+                            detected_mark = await extract_mark_from_tag_crop(crop_path, sched_marks, semaphore)
+                            if detected_mark != "NONE":
+                                logger.info(f"CV Detector: OpenCV + VLM matched mark {detected_mark} at crop {tag_idx}")
+                                
+                                # Draw Target Pin on Crop
+                                from PIL import Image, ImageDraw
+                                try:
+                                    img = Image.open(crop_path).convert("RGB")
+                                    draw = ImageDraw.Draw(img)
+                                    cx = img.width / 2
+                                    cy = img.height / 2
+                                    draw.ellipse([cx - 20, cy - 20, cx + 20, cy + 20], outline=(255, 0, 0), width=4)
+                                    img.save(crop_path)
+                                except Exception as pin_err:
+                                    logger.warning(f"Failed to draw target on OpenCV crop: {pin_err}")
+                                
+                                # Classify opening mode programmatically
+                                search_rect = tr + (-60, -60, 60, 60)
+                                nearby_drawings = [
+                                    d for d in drawings_on_page
+                                    if d.get("rect") and fz.Rect(d["rect"]).intersects(search_rect)
+                                ]
+                                sched_item = sched_items_by_mark.get(detected_mark)
+                                opening_mode = classify_opening_from_drawings(nearby_drawings, tr, item=sched_item)
+                                
+                                location_tasks.append((detected_mark, floor_no, crop_path, opening_mode))
+                        except Exception as tag_err:
+                            logger.error(f"Error processing OpenCV tag crop {tag_idx}: {tag_err}")
+                    continue
+                
+                # 1. Collect candidates by mark (Vector text track)
                 candidates_by_mark = {}
                 for w in words_on_page:
                     raw_word = w[4].strip(".,()[]{}-_#*").upper()

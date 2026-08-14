@@ -581,6 +581,9 @@ export default function Page() {
                     sessionState={sessionState}
                     refreshSession={() => activeSessionId && loadSessionState(activeSessionId)}
                     displayName={sessionsList.find(s => s.id === activeSessionId)?.filename}
+                    progress={progress}
+                    status={status}
+                    step={step}
                   />
                 )}
               </div>

@@ -126,6 +126,12 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 canonical_key = "FRAME MATERIAL"
             elif kl in HARDWARE_GROUP_VARIANTS:
                 canonical_key = "HARDWARE GROUP NO"
+            elif kl in ["head", "detail head", "detail_head"]:
+                canonical_key = "DETAIL HEAD"
+            elif kl in ["jamb", "detail jamb", "detail_jamb"]:
+                canonical_key = "DETAIL JAMB"
+            elif kl in ["sill", "detail sill", "detail_sill"]:
+                canonical_key = "DETAIL SILL"
             else:
                 canonical_key = str(k).upper()
             
@@ -133,6 +139,18 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 obj[canonical_key] = "True" if v else "False"
             else:
                 obj[canonical_key] = v
+        
+        # Shift detail values if they drifted into the FINISH or FRAME FINISH columns
+        import re
+        for finish_key in ["FINISH", "FRAME FINISH"]:
+            finish_val = str(obj.get(finish_key, "")).strip()
+            if finish_val and re.match(r'^[A-Z0-9]+/[A-Z]\d+', finish_val):
+                head_val = obj.get("DETAIL HEAD", "")
+                jamb_val = obj.get("DETAIL JAMB", "")
+                obj["DETAIL SILL"] = jamb_val
+                obj["DETAIL JAMB"] = head_val
+                obj["DETAIL HEAD"] = finish_val
+                obj[finish_key] = ""
         
         # Ensure Floor / Level column is present using plan upload floor names
         has_floor_col = any(fk.lower() in ["floor", "level", "floor / level", "floor/level", "floor level"] for fk in obj.keys())

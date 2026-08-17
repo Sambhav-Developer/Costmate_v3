@@ -153,7 +153,9 @@ ROW-LEVEL STRUCTURE RULES:
     neighboring column's value. Verify both values are present and came
     from their own column position, not copied from one into the other.
 
-17. WORKED EXAMPLES (anchor your output format on these — same table shape:
+17. PREVENT COLUMN SHIFTING / DRIFTING: If a column (such as "Frame Finish" or "Detail Sill") is empty/blank for a row, do NOT shift the values from neighboring columns (like "Detail Head" or "Detail Jamb") to the left to fill the empty column. Every cell value must remain strictly aligned under its correct printed header. If a column is visually blank, output empty string "" for that key. Double-check that you do not shift detail references (e.g. "E1/A700", "E2/A700") to the left into "Frame Finish" or "Finish" columns.
+
+18. WORKED EXAMPLES (anchor your output format on these — same table shape:
     Door No | Width A | Width B | Height | Thickness | Type | Material
     [DOOR] | Frame Type | Material [FRAME] | Jamb | Head | Glazing |
     Hardware Set | Fire Rating (Mins) | Comments):

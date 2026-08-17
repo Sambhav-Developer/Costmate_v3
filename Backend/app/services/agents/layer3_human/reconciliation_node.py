@@ -76,13 +76,14 @@ async def reconciliation_node(state: CostmateState) -> dict:
         m = str(det.get("mark", "")).strip().upper()
         fn = det.get("floor_name") or det.get("floor") or det.get("level")
         if m and fn:
-            mark_floors[m] = fn
+            if m not in mark_floors:
+                mark_floors[m] = []
+            if fn not in mark_floors[m]:
+                mark_floors[m].append(fn)
 
-    default_floor = ""
-    if floors and isinstance(floors, list):
-        valid_names = [f.get("name") for f in floors if f.get("name")]
-        if valid_names:
-            default_floor = ", ".join(valid_names)
+    fallback_floor = ""
+    if floors and isinstance(floors, list) and len(floors) > 0:
+        fallback_floor = floors[0].get("name") or "Level 1"
 
     # Map schedule data to V1 qa_prefilled format so the frontend unlocks the Parameters tab
     doors_list = []
@@ -136,7 +137,10 @@ async def reconciliation_node(state: CostmateState) -> dict:
         # Ensure Floor / Level column is present using plan upload floor names
         has_floor_col = any(fk.lower() in ["floor", "level", "floor / level", "floor/level", "floor level"] for fk in obj.keys())
         if not has_floor_col:
-            assigned_floor = mark_floors.get(mark) or default_floor or "Ground Floor"
+            if mark in mark_floors and len(mark_floors[mark]) > 0:
+                assigned_floor = ", ".join(mark_floors[mark])
+            else:
+                assigned_floor = fallback_floor
             obj["FLOOR / LEVEL"] = assigned_floor
 
         schedule_type = item.get("_schedule_type", "")

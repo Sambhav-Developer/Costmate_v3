@@ -257,6 +257,7 @@ export default function TabEditor({
 }: TabEditorProps) {
   const [qaForm, setQaForm] = useState<any>(null);
   const [submittingQA, setSubmittingQA] = useState(false);
+  const [hasSubmittedQA, setHasSubmittedQA] = useState(false);
   const [qaError, setQaError] = useState<string | null>(null);
 
   const getFilename = () =>
@@ -272,8 +273,15 @@ export default function TabEditor({
   const lastLoadedChatLen = React.useRef<number>(0);
 
   useEffect(() => {
+    if (sessionState?.status === 'completed' || sessionState?.status === 'failed') {
+      setHasSubmittedQA(false);
+    }
+  }, [sessionState?.status]);
+
+  useEffect(() => {
     if (!sessionId) {
       setQaForm(null);
+      setHasSubmittedQA(false);
       lastLoadedSessionId.current = null;
       lastLoadedStep.current = null;
       lastLoadedChatLen.current = 0;
@@ -373,12 +381,14 @@ export default function TabEditor({
   const handleQASubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmittingQA(true);
+    setHasSubmittedQA(true);
     setQaError(null);
     try {
       await api.submitQA(sessionId!, qaForm);
       refreshSession();
     } catch (err: any) {
       setQaError(err.message || 'Submission failed');
+      setHasSubmittedQA(false);
     } finally {
       setSubmittingQA(false);
     }
@@ -401,9 +411,12 @@ export default function TabEditor({
     activeStatus === 'failed';
 
   const isTrulyPausedQA =
-    (activeStatus === 'paused_qa' || sessionState?.status === 'paused_qa') && hasPrefilledData;
+    !submittingQA &&
+    !hasSubmittedQA &&
+    (activeStatus === 'paused_qa' || sessionState?.status === 'paused_qa') &&
+    hasPrefilledData;
 
-  const isQAStage = isCompletedOrFailed || isTrulyPausedQA;
+  const isQAStage = (isCompletedOrFailed || isTrulyPausedQA) && !submittingQA && !hasSubmittedQA;
 
   if (!sessionId) {
     return (
@@ -420,8 +433,11 @@ export default function TabEditor({
     );
   }
 
-  if (!isQAStage && (activeStatus === 'processing' || activeStatus === 'calculating' || activePct < 100)) {
-    return <ProcessingScreen step={activeStep} pct={activePct} />;
+  const isPhase2Active = submittingQA || hasSubmittedQA;
+  const displayPct = isPhase2Active ? Math.max(activePct, 75) : activePct;
+
+  if (isPhase2Active || (!isQAStage && (activeStatus === 'processing' || activeStatus === 'calculating' || displayPct < 100))) {
+    return <ProcessingScreen step={isPhase2Active ? 'quantities_calculated' : activeStep} pct={displayPct} />;
   }
 
   return (

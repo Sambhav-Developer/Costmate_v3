@@ -520,6 +520,19 @@ async def cv_detector_node(state: CostmateState) -> dict:
             if mark_val not in sched_items_by_mark:
                 sched_items_by_mark[mark_val] = item
 
+    # Build drawing/page to floor_name map
+    drawing_floor_map = {}
+    if isinstance(floors, list):
+        for i, floor in enumerate(floors):
+            fname = floor.get("name") or f"Level {i+1}"
+            raw_url = floor.get("rawUrl")
+            page_urls = floor.get("pageUrls", [])
+            if raw_url:
+                drawing_floor_map[raw_url] = fname
+            for p_url in page_urls:
+                drawing_floor_map[p_url] = fname
+            drawing_floor_map[i] = fname
+
     downloaded_temps = []
     location_tasks = []    # (mark, floor_no, crop_path) for LLM location extraction
     all_temp_crops = []
@@ -535,8 +548,6 @@ async def cv_detector_node(state: CostmateState) -> dict:
             temp_local_file = None
             local_raw_path = None
             floor_no = idx + 1
-            floor_info = floors[idx] if (isinstance(floors, list) and idx < len(floors)) else {}
-            floor_name = floor_info.get("name") or f"Level {floor_no}"
             
             # Download the file if it's hosted in the cloud (Cloudinary URL)
             if file_source.startswith("http://") or file_source.startswith("https://"):
@@ -580,6 +591,14 @@ async def cv_detector_node(state: CostmateState) -> dict:
                 
             # Scan pages for schedule marks
             for page_idx, page in enumerate(doc):
+                effective_floor_idx = page_idx if len(raw_drawings) == 1 and len(doc) > 1 else idx
+                floor_name = (
+                    drawing_floor_map.get(file_source) or 
+                    drawing_floor_map.get(effective_floor_idx) or 
+                    (floors[effective_floor_idx].get("name") if (isinstance(floors, list) and effective_floor_idx < len(floors) and floors[effective_floor_idx].get("name")) else None) or 
+                    f"Level {effective_floor_idx + 1}"
+                )
+                floor_no = effective_floor_idx + 1
                 blocks = page.get_text("blocks")
                 words_on_page = page.get_text("words")
                 drawings_on_page = page.get_drawings()
@@ -628,7 +647,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
                                 sched_item = sched_items_by_mark.get(detected_mark)
                                 opening_mode = classify_opening_from_drawings(nearby_drawings, tr, item=sched_item)
                                 
-                                location_tasks.append((detected_mark, floor_no, crop_path, opening_mode))
+                                location_tasks.append((detected_mark, floor_no, floor_name, crop_path, opening_mode))
                         except Exception as tag_err:
                             logger.error(f"Error processing OpenCV tag crop {tag_idx}: {tag_err}")
                     continue
@@ -772,7 +791,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             all_temp_crops.append(crop_path)
                             
                             # Queue LLM task for location/room name only
-                            location_tasks.append((word_text, floor_no, crop_path, opening_mode))
+                            location_tasks.append((word_text, floor_no, floor_name, crop_path, opening_mode))
                         except Exception as crop_err:
                             logger.error(f"Failed to create crop for mark {word_text}: {crop_err}")
                             # Still record the programmatic result without location
@@ -781,7 +800,8 @@ async def cv_detector_node(state: CostmateState) -> dict:
                                 "location": "",
                                 "opening_mode": opening_mode,
                                 "int_ext": "Interior",
-                                "floor_no": str(floor_no)
+                                "floor_no": str(floor_no),
+                                "floor_name": floor_name
                             })
                             
             doc.close()
@@ -789,18 +809,19 @@ async def cv_detector_node(state: CostmateState) -> dict:
         # Run location LLM tasks concurrently
         logger.info(f"CV Detector: Running {len(location_tasks)} location-detection LLM tasks...")
         
-        async def run_location_task(mark, floor_no, crop_path, opening_mode):
+        async def run_location_task(mark, floor_no, floor_name, crop_path, opening_mode):
             location, int_ext = await get_location_from_crop(crop_path, mark, floor_no, semaphore)
             return {
                 "mark": mark,
                 "location": location,
                 "opening_mode": opening_mode,  # programmatically determined
                 "int_ext": int_ext,
-                "floor_no": str(floor_no)
+                "floor_no": str(floor_no),
+                "floor_name": floor_name
             }
         
         location_results = await asyncio.gather(
-            *[run_location_task(m, f, cp, om) for m, f, cp, om in location_tasks]
+            *[run_location_task(m, f, fn, cp, om) for m, f, fn, cp, om in location_tasks]
         )
         detections.extend(location_results)
         

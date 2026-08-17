@@ -107,20 +107,30 @@ async def excel_writer_node(state: CostmateState) -> dict:
         def generate_estimation_sheet(sheet_items):
             if not sheet_items: return
             
-            all_keys = []
+            user_keys = []
             for item in sheet_items:
                 for k in item.keys():
-                    if k not in all_keys:
-                        all_keys.append(k)
+                    if k not in user_keys:
+                        user_keys.append(k)
                         
-            est_headers = ["QTY", "MARKS", "LOCATION", "ESTIMATOR NOTES", "FLOOR NO", "OPENING MODE", "INT/EXT"]
-            dynamic_headers = []
-            for k in all_keys:
-                kl = str(k).lower().strip()
-                if kl not in ["mark", "marks", "type", "count", "qty", "needs_review", "needs review", "need_review", "need review"]:
-                    dynamic_headers.append(k)
-                    
-            final_headers = est_headers + dynamic_headers
+            ignore_meta = {"mark", "marks", "type", "count", "qty", "needs_review", "needs review", "need_review", "need review"}
+            user_columns = [k for k in user_keys if str(k).lower().strip() not in ignore_meta]
+
+            base_prefix = ["QTY", "MARKS", "LOCATION", "ESTIMATOR NOTES"]
+            base_suffix = ["OPENING MODE", "INT/EXT"]
+
+            final_headers = []
+            for h in base_prefix:
+                if h not in final_headers:
+                    final_headers.append(h)
+
+            for k in user_columns:
+                if k not in final_headers:
+                    final_headers.append(k)
+
+            for h in base_suffix:
+                if h not in final_headers:
+                    final_headers.append(h)
             
             ws = wb.create_sheet(title="ESTIMATION SCHEDULE")
             wb.active = ws
@@ -159,12 +169,7 @@ async def excel_writer_node(state: CostmateState) -> dict:
                 if instances:
                     # Write one row for each detected instance
                     for d in instances:
-                        floor_no = d.get("floor_no", "")
-                        if not floor_no:
-                            for char in mark:
-                                if char.isdigit():
-                                    floor_no = char
-                                    break
+                        floor_val = d.get("floor_name") or d.get("floor") or d.get("level") or item.get("FLOOR / LEVEL") or item.get("FLOOR") or item.get("LEVEL") or (f"Level {d.get('floor_no')}" if d.get('floor_no') else "")
                                     
                         for col_idx, header in enumerate(final_headers, 1):
                             val = ""
@@ -172,7 +177,7 @@ async def excel_writer_node(state: CostmateState) -> dict:
                             elif header == "MARKS": val = mark
                             elif header == "LOCATION": val = d.get("location", "")
                             elif header == "ESTIMATOR NOTES": val = notes
-                            elif header == "FLOOR NO": val = floor_no
+                            elif header in ["FLOOR / LEVEL", "FLOOR NO"]: val = floor_val
                             elif header == "OPENING MODE": 
                                 if is_storefront:
                                     val = ""
@@ -194,11 +199,7 @@ async def excel_writer_node(state: CostmateState) -> dict:
                         row_idx += 1
                 else:
                     # Write one placeholder row with QTY = 0 if not found in plan
-                    floor_no = ""
-                    for char in mark:
-                        if char.isdigit():
-                            floor_no = char
-                            break
+                    floor_val = item.get("FLOOR / LEVEL") or item.get("FLOOR") or item.get("LEVEL") or ""
                             
                     for col_idx, header in enumerate(final_headers, 1):
                         val = ""
@@ -206,7 +207,7 @@ async def excel_writer_node(state: CostmateState) -> dict:
                         elif header == "MARKS": val = mark
                         elif header == "LOCATION": val = ""
                         elif header == "ESTIMATOR NOTES": val = notes
-                        elif header == "FLOOR NO": val = floor_no
+                        elif header in ["FLOOR / LEVEL", "FLOOR NO"]: val = floor_val
                         elif header == "OPENING MODE": val = ""
                         elif header == "INT/EXT": val = ""
                         else: val = item.get(header, "")

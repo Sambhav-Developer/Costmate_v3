@@ -26,18 +26,24 @@ export function useSSE(
 
   // Smooth progressive progress interpolator to target
   useEffect(() => {
-    if (status === 'processing' || status === 'calculating') {
-      const interval = setInterval(() => {
-        setProgress(prev => {
-          if (prev < targetProgress) {
-            // Increment by 1% at a time for smooth animation
-            return parseFloat(Math.min(prev + 1, targetProgress).toFixed(1));
-          }
-          return prev;
-        });
-      }, 100);
-      return () => clearInterval(interval);
-    }
+    if (status === 'idle') return;
+
+    const interval = setInterval(() => {
+      setProgress(prev => {
+        if (prev >= 100) return 100;
+        if (prev < targetProgress) {
+          // Accelerate towards target
+          return parseFloat(Math.min(prev + 1, targetProgress).toFixed(1));
+        } else if (prev < 70 && targetProgress < 75) {
+          return parseFloat(Math.min(prev + 0.3, 70).toFixed(1));
+        } else if (prev >= 70 && prev < 99) {
+          // After 70%, smoothly crawl forward up to 99% during post-QA generation
+          return parseFloat(Math.min(prev + 0.3, 99).toFixed(1));
+        }
+        return prev;
+      });
+    }, 150);
+    return () => clearInterval(interval);
   }, [status, targetProgress]);
 
   // Reset state when session ID changes
@@ -67,7 +73,7 @@ export function useSSE(
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        
+
         if (data.progress !== undefined) {
           setTargetProgress(data.progress);
         }

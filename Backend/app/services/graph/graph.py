@@ -28,16 +28,11 @@ def build_graph():
     builder.add_node("excel_writer_node", excel_writer_node)
     builder.add_node("plan_annotation_node", plan_annotation_node)
     
-    # START -> Specifications Analysis -> Extraction Tracks
+    # START -> Specifications Analysis -> Ingestion -> CV Detection -> Reconciliation
     builder.add_edge(START, "specifications_analyzer_node")
     builder.add_edge("specifications_analyzer_node", "schedule_parser_node")
-    builder.add_edge("specifications_analyzer_node", "ocr_consensus_node")
-    
-    # Run CV detector after Schedule parser completes
-    builder.add_edge("schedule_parser_node", "cv_detector_node")
-    
-    # Tracks -> Reconciliation Join
-    builder.add_edge("ocr_consensus_node", "reconciliation_node")
+    builder.add_edge("schedule_parser_node", "ocr_consensus_node")
+    builder.add_edge("ocr_consensus_node", "cv_detector_node")
     builder.add_edge("cv_detector_node", "reconciliation_node")
     
     # Reconciliation -> Human Review Interrupt

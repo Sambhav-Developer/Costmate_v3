@@ -197,6 +197,18 @@ export function DoorsSchedule({ doors, editable, onRemove, onChange, onAdd, newD
     newKeys.splice(targetIdx, 0, movedKey);
     setCustomKeys(newKeys);
     setDraggedIdx(null);
+
+    // Reorder underlying object keys for every door row so parent state sends updated key sequence
+    doors.forEach((d: any, idx: number) => {
+      const copy = { ...d };
+      Object.keys(d).forEach(k => {
+        if (!INTERNAL_KEYS.has(k)) delete d[k];
+      });
+      newKeys.forEach(k => {
+        d[k] = copy[k] !== undefined ? copy[k] : '';
+      });
+      onChange(idx, newKeys[0], d[newKeys[0]]);
+    });
   };
 
   const deleteColumn = (keyToDelete: string) => {
@@ -391,6 +403,18 @@ export function WindowsSchedule({ windows, editable, onRemove, onChange, onAdd, 
     newKeys.splice(targetIdx, 0, movedKey);
     setCustomKeys(newKeys);
     setDraggedIdx(null);
+
+    // Reorder underlying object keys for every window row so parent state sends updated key sequence
+    windows.forEach((w: any, idx: number) => {
+      const copy = { ...w };
+      Object.keys(w).forEach(k => {
+        if (!INTERNAL_KEYS.has(k)) delete w[k];
+      });
+      newKeys.forEach(k => {
+        w[k] = copy[k] !== undefined ? copy[k] : '';
+      });
+      onChange(idx, newKeys[0], w[newKeys[0]]);
+    });
   };
 
   const deleteColumn = (keyToDelete: string) => {

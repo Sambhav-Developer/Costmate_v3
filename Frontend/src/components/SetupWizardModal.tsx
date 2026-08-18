@@ -651,12 +651,12 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-2 text-sm font-medium transition-colors w-52 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {isUploadingSpec ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                        {isUploadingSpec ? "Processing..." : "Upload Specifications (Word)"}
+                        {isUploadingSpec ? "Processing..." : "Upload Specifications"}
                       </button>
                       <input 
                         id="specification-upload"
                         type="file" 
-                        accept=".docx,.doc,.dotx,.dot,.txt"
+                        accept=".docx,.doc,.dotx,.dot,.txt,.pdf"
                         className="hidden" 
                         onChange={async (e) => {
                           const file = e.target.files?.[0];

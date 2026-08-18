@@ -118,12 +118,18 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 continue
             
             # Map columns to prevent key collision and ensure duplicate/overlapping headers are visible
-            if kl == "type":
+            if kl in ["type", "door type", "door_type"]:
                 canonical_key = "WINDOW TYPE" if schedule_type == "window" else "DOOR TYPE"
-            elif kl == "material":
+            elif kl in ["frame type", "frame_type"]:
+                canonical_key = "FRAME TYPE"
+            elif kl in ["material", "door material", "door mat'l", "door_material", "door_mat'l"]:
                 canonical_key = "DOOR MATERIAL" if schedule_type == "door" else "WINDOW MATERIAL"
-            elif kl in ["material_1", "material 1"]:
+            elif kl in ["frame material", "frame mat'l", "frame_material", "frame_mat'l", "material_1", "material 1"]:
                 canonical_key = "FRAME MATERIAL"
+            elif kl in ["door finish", "door_finish"]:
+                canonical_key = "DOOR FINISH"
+            elif kl in ["frame finish", "frame_finish"]:
+                canonical_key = "FRAME FINISH"
             elif kl in HARDWARE_GROUP_VARIANTS:
                 canonical_key = "HARDWARE GROUP NO"
             elif kl in ["head", "detail head", "detail_head"]:

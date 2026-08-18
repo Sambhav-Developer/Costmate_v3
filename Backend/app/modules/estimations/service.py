@@ -359,8 +359,8 @@ class EstimationService:
         project_name = row[0]
         
         ext = os.path.splitext(file.filename)[1].lower()
-        if ext not in [".docx", ".dotx", ".doc", ".dot", ".txt"]:
-            raise ValidationException("Invalid specifications file format. Only .docx, .dotx, .doc, .dot, and .txt are supported.")
+        if ext not in [".docx", ".dotx", ".doc", ".dot", ".txt", ".pdf"]:
+            raise ValidationException("Invalid specifications file format. Only PDF, .docx, .dotx, .doc, .dot, and .txt are supported.")
             
         filename = f"{session_id}_spec{ext}"
         file_path = os.path.join(settings.UPLOAD_DIR, filename)
@@ -377,6 +377,14 @@ class EstimationService:
         if ext in [".docx", ".dotx"]:
             from app.services.agents.layer1_schedule.docx_parser import extract_docx_text
             spec_text = extract_docx_text(file_path)
+        elif ext == ".pdf":
+            try:
+                import fitz
+                doc = fitz.open(file_path)
+                text_list = [page.get_text() for page in doc]
+                spec_text = "\n".join(text_list)
+            except Exception as e:
+                logger.error(f"Failed to parse PDF spec: {e}")
         else:
             try:
                 spec_text = content.decode("utf-8", errors="ignore")

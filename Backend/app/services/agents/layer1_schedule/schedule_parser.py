@@ -74,8 +74,8 @@ CRITICAL RULES FOR JSON KEYS:
    Keep any parenthetical units exactly as printed.
 
 5. GROUP DISAMBIGUATION (DOOR / FRAME GROUPS): When columns sit under parent group headers like "DOOR" and "FRAME":
-   - If a column under the "DOOR" group header is labeled "Type" or "Material", prefix it with "Door " using Title Case: "Door Type", "Door Material".
-   - If a column under the "FRAME" group header is labeled "Material", prefix it with "Frame " using Title Case: "Frame Material". If it is printed as "Frame Type", transcribe it as "Frame Type".
+   - If a column under the "DOOR" group header is labeled "Type", "Material", "Mat'l", "Finish", or "Glazing", prefix it with "Door " using Title Case: e.g. "Door Type", "Door Mat'l", "Door Finish", "Door Glazing".
+   - If a column under the "FRAME" group header is labeled "Material", "Mat'l", "Finish", "Type", or "Glazing", prefix it with "Frame " using Title Case: e.g. "Frame Material", "Frame Mat'l", "Frame Finish", "Frame Type".
    - For all other columns under group headers (e.g. "Jamb", "Head" under "DETAIL"), use the printed column header directly unless an exact text collision occurs elsewhere in the table.
 
 6. DUPLICATE HEADERS WITH NO NAMED PARENT: If a header word/phrase repeats

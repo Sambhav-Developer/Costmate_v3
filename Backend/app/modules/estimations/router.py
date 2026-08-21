@@ -1,5 +1,5 @@
 import os
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
 from fastapi.responses import FileResponse, RedirectResponse
 from sse_starlette.sse import EventSourceResponse
 from app.dependencies import get_current_user, get_db
@@ -41,6 +41,20 @@ async def upload_draft_file(session_id: str, file: UploadFile = File(...), conn 
 @router.post("/session/draft/{session_id}/schedule")
 async def upload_draft_schedule(session_id: str, file: UploadFile = File(...), conn = Depends(get_db), current_user: dict = Depends(get_current_user)):
     return await estimation_service.upload_draft_schedule(conn, session_id, current_user["id"], file)
+
+@router.post("/session/draft/{session_id}/crop-schedule")
+async def crop_schedule(
+    session_id: str,
+    file: UploadFile = File(...),
+    x0: float = Form(...),
+    y0: float = Form(...),
+    x1: float = Form(...),
+    y1: float = Form(...),
+    page_num: int = Form(...),
+    conn = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    return await estimation_service.crop_schedule(conn, session_id, current_user["id"], file, x0, y0, x1, y1, page_num)
 
 @router.post("/session/draft/{session_id}/specification")
 async def upload_draft_specification(session_id: str, file: UploadFile = File(...), conn = Depends(get_db), current_user: dict = Depends(get_current_user)):

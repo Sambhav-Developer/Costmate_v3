@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   X, Upload, Check, Loader2, Plus, Building2, 
   ChevronRight, Layers, LayoutGrid, Hammer, 
@@ -24,6 +24,24 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   const [isUploadingSpec, setIsUploadingSpec] = useState(false);
   const [uploadingFloorId, setUploadingFloorId] = useState<number | null>(null);
   const [draftSessionId, setDraftSessionId] = useState<string | null>(null);
+  
+  // --- Interactive Crop States ---
+  const [isCropModalOpen, setIsCropModalOpen] = useState(false);
+  const [cropFile, setCropFile] = useState<File | null>(null);
+  const [cropType, setCropType] = useState<'door' | 'window'>('door');
+  const [cropRect, setCropRect] = useState<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [cropPdf, setCropPdf] = useState<any>(null);
+  const [cropPageNum, setCropPageNum] = useState(1);
+  const [cropTotalPages, setCropTotalPages] = useState(0);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [pdfScale, setPdfScale] = useState(1.0);
+  const [zoomText, setZoomText] = useState("100");
+  const renderTaskRef = useRef<any>(null);
+  const [pageWidth, setPageWidth] = useState(0);
+  const [pageHeight, setPageHeight] = useState(0);
 
   // --- Global Settings ---
   const [globalSettings, setGlobalSettings] = useState({
@@ -78,6 +96,244 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   const [expandedRoomId, setExpandedRoomId] = useState<number | null>(null);
   const [hoveredRoomId, setHoveredRoomId] = useState<number | null>(null);
   const [draggedFloorIdx, setDraggedFloorIdx] = useState<number | null>(null);
+
+  // --- Load pdf.js via CDN ---
+  const loadPdfJs = () => {
+    return new Promise<any>((resolve) => {
+      const win = window as any;
+      if (win.pdfjsLib) {
+        resolve(win.pdfjsLib);
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js';
+      script.onload = () => {
+        win.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+        resolve(win.pdfjsLib);
+      };
+      document.body.appendChild(script);
+    });
+  };
+
+  // Sync zoom input text with scale changes
+  useEffect(() => {
+    setZoomText(Math.round(pdfScale * 100).toString());
+  }, [pdfScale]);
+
+  // Initialize PDF document
+  useEffect(() => {
+    if (!isCropModalOpen || !cropFile) {
+      setCropPdf(null);
+      setCropTotalPages(0);
+      setCropPageNum(1);
+      return;
+    }
+
+    let active = true;
+    const initPdf = async () => {
+      setPdfLoading(true);
+      try {
+        const pdfjs = await loadPdfJs();
+        const reader = new FileReader();
+        reader.onload = async () => {
+          if (!active) return;
+          try {
+            const loadingTask = pdfjs.getDocument({ data: new Uint8Array(reader.result as ArrayBuffer) });
+            const pdfDoc = await loadingTask.promise;
+            if (!active) return;
+            setCropPdf(pdfDoc);
+            setCropTotalPages(pdfDoc.numPages);
+            setCropPageNum(1);
+          } catch (err) {
+            console.error("Failed to load PDF doc:", err);
+            setError("⚠️ Failed to load PDF file.");
+            setIsCropModalOpen(false);
+          }
+        };
+        reader.readAsArrayBuffer(cropFile);
+      } catch (err) {
+        console.error("Failed to initialize pdf.js:", err);
+        setError("⚠️ Failed to initialize PDF renderer library.");
+        setIsCropModalOpen(false);
+      } finally {
+        if (active) setPdfLoading(false);
+      }
+    };
+
+    initPdf();
+
+    return () => {
+      active = false;
+    };
+  }, [isCropModalOpen, cropFile]);
+
+  // Render PDF Page (with cancellation support)
+  useEffect(() => {
+    if (!cropPdf) return;
+
+    let active = true;
+    const render = async () => {
+      // Cancel any ongoing rendering task
+      if (renderTaskRef.current) {
+        try {
+          renderTaskRef.current.cancel();
+        } catch (e) {
+          // ignore cancel error
+        }
+      }
+
+      setPdfLoading(true);
+      try {
+        const page = await cropPdf.getPage(cropPageNum);
+        if (!active) return;
+
+        const originalViewport = page.getViewport({ scale: 1.0 });
+        if (active) {
+          setPageWidth(originalViewport.width);
+          setPageHeight(originalViewport.height);
+        }
+
+        // Render matching physical device pixels 1-to-1 for pixel-perfect sharpness
+        const dpr = window.devicePixelRatio || 1;
+        const renderViewport = page.getViewport({ scale: pdfScale * dpr });
+        const canvas = canvasRef.current;
+        if (!canvas || !active) return;
+        const context = canvas.getContext('2d');
+        if (!context || !active) return;
+
+        canvas.width = renderViewport.width;
+        canvas.height = renderViewport.height;
+
+        const renderTask = page.render({ canvasContext: context, viewport: renderViewport });
+        renderTaskRef.current = renderTask;
+
+        await renderTask.promise;
+        if (active) {
+          setCropRect(null); // Reset selection on page render completion
+        }
+      } catch (err: any) {
+        if (err.name === 'RenderingCancelledException') {
+          // Normal cancellation, ignore error
+          return;
+        }
+        console.error("Failed to render page:", err);
+      } finally {
+        if (active) setPdfLoading(false);
+      }
+    };
+
+    render();
+
+    return () => {
+      active = false;
+      if (renderTaskRef.current) {
+        try {
+          renderTaskRef.current.cancel();
+        } catch (e) {}
+      }
+    };
+  }, [cropPageNum, cropPdf, pdfScale]);
+
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (pdfLoading || extracting) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const startX = e.clientX - rect.left;
+    const startY = e.clientY - rect.top;
+    
+    setCropRect({
+      startX,
+      startY,
+      currentX: startX,
+      currentY: startY
+    });
+    setIsDrawing(true);
+  };
+
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDrawing || !cropRect) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const currentX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const currentY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+
+    setCropRect({
+      ...cropRect,
+      currentX,
+      currentY
+    });
+  };
+
+  const handleCanvasMouseUp = () => {
+    setIsDrawing(false);
+  };
+
+  const handleExtractCrop = async () => {
+    if (!cropRect || !cropFile || !draftSessionId) return;
+
+    setExtracting(true);
+    try {
+      const x0 = Math.min(cropRect.startX, cropRect.currentX) / pdfScale;
+      const y0 = Math.min(cropRect.startY, cropRect.currentY) / pdfScale;
+      const x1 = Math.max(cropRect.startX, cropRect.currentX) / pdfScale;
+      const y1 = Math.max(cropRect.startY, cropRect.currentY) / pdfScale;
+
+      const pageIdx = cropPageNum - 1;
+
+      const res = await api.cropDraftSchedule(
+        draftSessionId,
+        cropFile,
+        x0,
+        y0,
+        x1,
+        y1,
+        pageIdx
+      );
+
+      if (res && res.schedule_registry) {
+        const rawReg = res.schedule_registry;
+        let newReg: any = { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
+        
+        if (Array.isArray(rawReg)) {
+          newReg.instance_schedule = rawReg.map((item: any) => ({ ...item, _schedule_type: cropType }));
+        }
+        
+        setGlobalSettings(prev => {
+          const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
+          const scheduleNameField = cropType === 'door' ? ('doorScheduleFileName' as const) : ('windowScheduleFileName' as const);
+          
+          let prevNames: string[] = [];
+          if (prev[scheduleNameField]) {
+            prevNames = prev[scheduleNameField].split(", ");
+          }
+          if (!prevNames.includes(cropFile.name)) {
+            prevNames.push(cropFile.name);
+          }
+
+          return {
+            ...prev,
+            [scheduleNameField]: prevNames.join(", "),
+            scheduleRegistry: {
+              ...oldReg,
+              ...newReg,
+              type_registry: {
+                doors: [...(oldReg.type_registry?.doors || []), ...(newReg.type_registry?.doors || [])],
+                windows: [...(oldReg.type_registry?.windows || []), ...(newReg.type_registry?.windows || [])]
+              },
+              instance_schedule: [...(oldReg.instance_schedule || []), ...(newReg.instance_schedule || [])]
+            }
+          };
+        });
+      }
+
+      setIsCropModalOpen(false);
+      setCropFile(null);
+      setCropPdf(null);
+    } catch (err: any) {
+      console.error("Crop extraction failed:", err);
+      setError("⚠️ Failed to parse table from selection: " + (err.message || err));
+    } finally {
+      setExtracting(false);
+    }
+  };
 
   // Structural Temp States
   const [newFooting, setNewFooting] = useState({ code: 'F1', width: '', length: '', depth: '', excavDepth: '', count: '1' });
@@ -495,8 +751,14 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         onChange={async (e) => {
                           const files = e.target.files;
                           if (!files || files.length === 0) return;
+                          
+                          const file = files[0];
+                          if (!file.name.toLowerCase().endsWith(".pdf")) {
+                            setError("⚠️ Only PDF files are supported for table crop selection.");
+                            return;
+                          }
+                          
                           setLoading(true);
-                          setIsUploadingDoor(true);
                           try {
                             let sid = draftSessionId;
                             if (!sid) {
@@ -504,52 +766,13 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                               sid = data.session_id;
                               setDraftSessionId(sid);
                             }
-                            
-                            let uploadedNames: string[] = [];
-                            if (globalSettings.doorScheduleFileName) {
-                               uploadedNames = globalSettings.doorScheduleFileName.split(", ");
-                            }
-                            
-                            for (let i = 0; i < files.length; i++) {
-                              const file = files[i];
-                              uploadedNames.push(file.name);
-                              // 30-minute client timeout for large schedules processed sequentially
-                              const timeoutPromise = new Promise<never>((_, reject) =>
-                                setTimeout(() => reject(new Error('Schedule parsing timed out. The AI service is busy — please try again in a moment.')), 1_800_000)
-                              );
-                              const res = await Promise.race([api.uploadDraftSchedule(sid!, file), timeoutPromise]);
-                              
-                                setGlobalSettings(prev => {
-                                  const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-                                  const rawReg = res.schedule_registry;
-                                  let newReg: any = { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-                                  if (Array.isArray(rawReg)) {
-                                      newReg.instance_schedule = rawReg.map((item: any) => ({ ...item, _schedule_type: 'door' }));
-                                  } else if (rawReg && Array.isArray(rawReg.instance_schedule)) {
-                                      newReg = rawReg;
-                                      newReg.instance_schedule = newReg.instance_schedule.map((item: any) => ({ ...item, _schedule_type: 'door' }));
-                                  }
-                                  
-                                  return {
-                                    ...prev, 
-                                    doorScheduleFileName: uploadedNames.join(", "),
-                                    scheduleRegistry: {
-                                      ...oldReg,
-                                      ...newReg,
-                                      type_registry: {
-                                        doors: [...(oldReg.type_registry?.doors || []), ...(newReg.type_registry?.doors || [])],
-                                        windows: [...(oldReg.type_registry?.windows || []), ...(newReg.type_registry?.windows || [])]
-                                      },
-                                      instance_schedule: [...(oldReg.instance_schedule || []), ...(newReg.instance_schedule || [])]
-                                    }
-                                  };
-                                });
-                            }
+                            setCropFile(file);
+                            setCropType('door');
+                            setIsCropModalOpen(true);
                           } catch (err: any) {
-                            setError('⚠️ ' + (err.message || 'Failed to upload door schedule. Please try again.'));
+                            setError('⚠️ Failed to initialize session: ' + (err.message || err));
                           } finally {
                             setLoading(false);
-                            setIsUploadingDoor(false);
                           }
                         }} 
                       />
@@ -578,8 +801,14 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         onChange={async (e) => {
                           const files = e.target.files;
                           if (!files || files.length === 0) return;
+                          
+                          const file = files[0];
+                          if (!file.name.toLowerCase().endsWith(".pdf")) {
+                            setError("⚠️ Only PDF files are supported for table crop selection.");
+                            return;
+                          }
+                          
                           setLoading(true);
-                          setIsUploadingWindow(true);
                           try {
                             let sid = draftSessionId;
                             if (!sid) {
@@ -587,51 +816,13 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                               sid = data.session_id;
                               setDraftSessionId(sid);
                             }
-                            
-                            let uploadedNames: string[] = [];
-                            if (globalSettings.windowScheduleFileName) {
-                               uploadedNames = globalSettings.windowScheduleFileName.split(", ");
-                            }
-                            
-                            for (let i = 0; i < files.length; i++) {
-                              const file = files[i];
-                              uploadedNames.push(file.name);
-                              // 30-minute client timeout for large schedules processed sequentially
-                              const timeoutPromise = new Promise<never>((_, reject) =>
-                                setTimeout(() => reject(new Error('Schedule parsing timed out. The AI service is busy — please try again in a moment.')), 1_800_000)
-                              );
-                              const res = await Promise.race([api.uploadDraftSchedule(sid!, file), timeoutPromise]);
-                              
-                              setGlobalSettings(prev => {
-                                const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-                                const rawReg = res.schedule_registry;
-                                let newReg: any = { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-                                if (Array.isArray(rawReg)) {
-                                    newReg.instance_schedule = rawReg.map((item: any) => ({ ...item, _schedule_type: 'window' }));
-                                } else if (rawReg && Array.isArray(rawReg.instance_schedule)) {
-                                    newReg = rawReg;
-                                    newReg.instance_schedule = newReg.instance_schedule.map((item: any) => ({ ...item, _schedule_type: 'window' }));
-                                }
-                                return {
-                                  ...prev, 
-                                  windowScheduleFileName: uploadedNames.join(", "),
-                                  scheduleRegistry: {
-                                    ...oldReg,
-                                    ...newReg,
-                                    type_registry: {
-                                      doors: [...(oldReg.type_registry?.doors || []), ...(newReg.type_registry?.doors || [])],
-                                      windows: [...(oldReg.type_registry?.windows || []), ...(newReg.type_registry?.windows || [])]
-                                    },
-                                    instance_schedule: [...(oldReg.instance_schedule || []), ...(newReg.instance_schedule || [])]
-                                  }
-                                };
-                              });
-                            }
+                            setCropFile(file);
+                            setCropType('window');
+                            setIsCropModalOpen(true);
                           } catch (err: any) {
-                            setError('⚠️ ' + (err.message || 'Failed to upload window schedule. Please try again.'));
+                            setError('⚠️ Failed to initialize session: ' + (err.message || err));
                           } finally {
                             setLoading(false);
-                            setIsUploadingWindow(false);
                           }
                         }} 
                       />
@@ -1164,6 +1355,185 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
           )}
         </div>
       </div>
+
+      {/* PDF Interactive Crop Modal */}
+      {isCropModalOpen && cropFile && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-[#09090b] text-white">
+          {/* Header */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-zinc-900">
+            <div className="flex items-center gap-4">
+              <h2 className="text-lg font-bold">Crop Table Selection - {cropFile.name}</h2>
+              <span className="px-2.5 py-0.5 text-xs rounded bg-violet-600/30 text-violet-300 font-semibold uppercase tracking-wider">
+                {cropType} schedule
+              </span>
+            </div>
+            <button 
+              onClick={() => {
+                setIsCropModalOpen(false);
+                setCropFile(null);
+                setCropPdf(null);
+              }}
+              className="p-1.5 rounded-lg hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Main Body */}
+          <div className="flex-1 flex overflow-hidden">
+            {/* Left Control Panel */}
+            <div className="w-80 border-r border-white/10 bg-zinc-900 p-6 flex flex-col justify-between">
+              <div className="space-y-6">
+                <div>
+                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block mb-2">Instructions</label>
+                  <ol className="list-decimal pl-4 text-xs text-zinc-300 space-y-2">
+                    <li>Navigate to the page containing the schedule table using page controls.</li>
+                    <li>Click and drag your mouse over the schedule table area to draw a selection crop box.</li>
+                    <li>Verify the selection, then click <strong>"Extract Schedule"</strong>.</li>
+                  </ol>
+                </div>
+
+                {/* Page navigation */}
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block mb-2">Page Controls</label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={cropPageNum <= 1 || pdfLoading}
+                      onClick={() => setCropPageNum(prev => Math.max(1, prev - 1))}
+                      className="px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      Previous
+                    </button>
+                    <span className="text-xs font-semibold flex-1 text-center">
+                      Page {cropPageNum} / {cropTotalPages || '?'}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={cropPageNum >= (cropTotalPages || 1) || pdfLoading}
+                      onClick={() => setCropPageNum(prev => Math.min(cropTotalPages || 1, prev + 1))}
+                      className="px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+
+                {/* Zoom Controls */}
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block mb-2">Zoom Controls</label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={pdfScale <= 0.25 || pdfLoading}
+                      onClick={() => setPdfScale(prev => Math.max(0.25, prev - 0.25))}
+                      className="px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      Zoom Out
+                    </button>
+                    <div className="flex items-center gap-0.5 bg-white/5 border border-white/10 rounded px-1.5 py-1 w-16 shrink-0 justify-center">
+                      <input 
+                        type="text"
+                        value={zoomText}
+                        onChange={(e) => {
+                          const valStr = e.target.value;
+                          if (valStr === "" || /^\d+$/.test(valStr)) {
+                            setZoomText(valStr);
+                            const val = parseInt(valStr);
+                            if (!isNaN(val) && val >= 25 && val <= 500) {
+                              setPdfScale(val / 100);
+                            }
+                          }
+                        }}
+                        onBlur={() => {
+                          let val = parseInt(zoomText);
+                          if (isNaN(val) || val < 25) val = 25;
+                          if (val > 500) val = 500;
+                          setPdfScale(val / 100);
+                          setZoomText(val.toString());
+                        }}
+                        className="w-full bg-transparent text-xs font-semibold text-center focus:outline-none text-white"
+                      />
+                      <span className="text-xs text-zinc-400 font-semibold">%</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={pdfScale >= 5.0 || pdfLoading}
+                      onClick={() => setPdfScale(prev => Math.min(5.0, prev + 0.25))}
+                      className="px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      Zoom In
+                    </button>
+                  </div>
+                </div>
+
+                {/* Status info */}
+                {pdfLoading && (
+                  <div className="flex items-center gap-2 text-violet-400 text-xs">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Loading PDF renderer...</span>
+                  </div>
+                )}
+                {extracting && (
+                  <div className="flex items-center gap-2 text-yellow-400 text-xs">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Parsing table geometrically...</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  disabled={!cropRect || extracting || pdfLoading}
+                  onClick={handleExtractCrop}
+                  className="w-full py-3 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-sm font-bold transition-all shadow-lg flex items-center justify-center gap-2 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {extracting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  Extract Schedule
+                </button>
+              </div>
+            </div>
+
+            {/* Right PDF Canvas Workspace */}
+            <div className="flex-1 overflow-auto bg-[#09090b] p-8 flex items-start justify-start relative">
+              <div 
+                className="relative select-none border border-white/10 shadow-2xl bg-white shrink-0"
+                style={{ 
+                  cursor: 'crosshair',
+                  width: pageWidth ? pageWidth * pdfScale : 'auto',
+                  height: pageHeight ? pageHeight * pdfScale : 'auto'
+                }}
+                onMouseDown={handleCanvasMouseDown}
+                onMouseMove={handleCanvasMouseMove}
+                onMouseUp={handleCanvasMouseUp}
+              >
+                <canvas 
+                  ref={canvasRef} 
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    display: 'block'
+                  }}
+                />
+                {/* Crop Overlay Selection Box */}
+                {cropRect && (
+                  <div 
+                    className="absolute border-2 border-violet-500 bg-violet-500/20"
+                    style={{
+                      left: Math.min(cropRect.startX, cropRect.currentX),
+                      top: Math.min(cropRect.startY, cropRect.currentY),
+                      width: Math.abs(cropRect.startX - cropRect.currentX),
+                      height: Math.abs(cropRect.startY - cropRect.currentY),
+                      pointerEvents: 'none'
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -253,6 +253,258 @@ class EstimationService:
             from fastapi import HTTPException
             raise HTTPException(status_code=500, detail=f"Failed to parse schedule: {str(e)}")
 
+    async def crop_schedule(self, conn, session_id: str, user_id: int, file, x0: float, y0: float, x1: float, y1: float, page_num: int) -> dict:
+        row = estimation_repo.get_draft_session(conn, session_id, user_id)
+        if not row:
+            from app.core.exceptions import NotFoundException
+            raise NotFoundException("Draft session not found")
+            
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext != ".pdf":
+            from app.core.exceptions import ValidationException
+            raise ValidationException("Crop extraction is only supported for PDF files.")
+            
+        import tempfile
+        import uuid
+        temp_dir = tempfile.gettempdir()
+        temp_file_name = f"{session_id}_{uuid.uuid4().hex[:8]}_crop.pdf"
+        temp_file_path = os.path.join(temp_dir, temp_file_name)
+        
+        try:
+            content = await file.read()
+            with open(temp_file_path, "wb") as f:
+                f.write(content)
+            try:
+                with open(r"c:\Users\Hp\Desktop\Costmate_v3\Backend\uploaded_crop.pdf", "wb") as f:
+                    f.write(content)
+            except Exception as e:
+                logger.error(f"Failed to copy uploaded crop file to workspace: {e}")
+        except Exception as e:
+            logger.error(f"Failed to save temp file for cropping: {e}")
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f"Failed to read/write uploaded file: {str(e)}")
+            
+        try:
+            import pdfplumber
+            with pdfplumber.open(temp_file_path) as pdf:
+                if page_num < 0 or page_num >= len(pdf.pages):
+                    from fastapi import HTTPException
+                    raise HTTPException(status_code=400, detail=f"Invalid page number {page_num}. PDF has {len(pdf.pages)} pages.")
+                    
+                page = pdf.pages[page_num]
+                
+                left = min(x0, x1)
+                top = min(y0, y1)
+                right = max(x0, x1)
+                bottom = max(y0, y1)
+                logger.info(f"[CROP DEBUG] Coordinates: left={left}, top={top}, right={right}, bottom={bottom}, page_num={page_num}")
+                logger.info(f"[CROP DEBUG] Page size: width={page.width}, height={page.height}")
+                
+                cropped_page = page.crop((left, top, right, bottom), relative=True)
+                
+                tables = cropped_page.find_tables(table_settings={
+                    "vertical_strategy": "lines",
+                    "horizontal_strategy": "lines",
+                    "snap_tolerance": 3,
+                    "join_tolerance": 3
+                })
+                
+                if not tables:
+                    tables = cropped_page.find_tables(table_settings={
+                        "vertical_strategy": "text",
+                        "horizontal_strategy": "text"
+                    })
+                    
+                results = []
+                if tables:
+                    raw_table = tables[0].extract()
+                    logger.info(f"[CROP DEBUG] Extracted table rows count: {len(raw_table) if raw_table else 0}")
+                    if raw_table and len(raw_table) >= 5:
+                        headers, data_start_idx = self._flatten_headers(raw_table)
+                        logger.info(f"[CROP DEBUG] Parsed headers: {headers}, data_start_idx: {data_start_idx}")
+                        
+                        if headers:
+                            headers[0] = "mark"
+                            
+                        for r_idx, row_data in enumerate(raw_table[data_start_idx:]):
+                            if not any(cell for cell in row_data if cell):
+                                continue
+                                
+                            row_dict = {}
+                            for col_idx, val in enumerate(row_data):
+                                if col_idx < len(headers):
+                                    key = headers[col_idx]
+                                    if not key:
+                                        key = f"COLUMN_{col_idx}"
+                                    row_dict[key] = str(val).strip() if val else ""
+                                    
+                            mark = str(row_dict.get("mark", "")).strip()
+                            logger.info(f"[CROP DEBUG] Row {r_idx} mark: '{mark}'")
+                            if not mark:
+                                continue
+                            
+                            mark_lower = mark.lower()
+                            if mark_lower in {
+                                "panel 1", "panel 2", "width", "height", "door number", "mark", 
+                                "door details", "door panels", "door frame", "type", "finish 1",
+                                "fire rating", "finish", "head", "jamb", "hw set", "comments",
+                                "level 1", "level 2", "level 3", "level 4", "level 5", "level 6"
+                            } or mark_lower.startswith("level "):
+                                logger.info(f"[CROP DEBUG] Skipping row {r_idx} due to filter: '{mark}'")
+                                continue
+                                
+                            row_dict["mark"] = mark.upper()
+                            row_dict["needs_review"] = False
+                            row_dict["_schedule_type"] = "door"
+                            results.append(row_dict)
+                            
+                if len(results) < 5:
+                    logger.info("[CROP FALLBACK] Table extraction returned few rows. Falling back to word coordinate binning...")
+                    import re
+                    words = cropped_page.extract_words()
+                    lines = []
+                    for w in words:
+                        found = False
+                        for line in lines:
+                            if abs(line[0]['top'] - w['top']) < 4:
+                                line.append(w)
+                                found = True
+                                break
+                        if not found:
+                            lines.append([w])
+                            
+                    lines.sort(key=lambda l: l[0]['top'])
+                    
+                    fallback_results = []
+                    for line in lines:
+                        line.sort(key=lambda w: w['x0'])
+                        if not line:
+                            continue
+                        first_w = line[0]['text'].strip()
+                        logger.debug(f"[CROP FALLBACK] Candidate row first_w: '{first_w}'")
+                        if re.match(r"^([A-Z]{1,2}-?\d+[A-Z]?|\d+[A-Z]?)$", first_w, re.IGNORECASE):
+                            row_dict = {
+                                "mark": first_w,
+                                "FIRE RATING": "",
+                                "PANEL 1": "",
+                                "PANEL 2": "",
+                                "WIDTH 1": "",
+                                "WIDTH 2": "",
+                                "HEIGHT": "",
+                                "PANEL FINISH": "",
+                                "FRAME TYPE": "",
+                                "FRAME FINISH": "",
+                                "HEAD": "",
+                                "JAMB": "",
+                                "HW SET": "",
+                                "COMMENTS": ""
+                            }
+                            comments_words = []
+                            for w in line[1:]:
+                                x = w["x0"]
+                                txt = w["text"]
+                                if 210 <= x < 260:
+                                    row_dict["FIRE RATING"] = (row_dict["FIRE RATING"] + " " + txt).strip()
+                                elif 260 <= x < 370:
+                                    row_dict["PANEL 1"] = (row_dict["PANEL 1"] + " " + txt).strip()
+                                elif 370 <= x < 475:
+                                    row_dict["PANEL 2"] = (row_dict["PANEL 2"] + " " + txt).strip()
+                                elif 475 <= x < 530:
+                                    row_dict["WIDTH 1"] = txt
+                                elif 530 <= x < 585:
+                                    row_dict["WIDTH 2"] = txt
+                                elif 585 <= x < 645:
+                                    row_dict["HEIGHT"] = txt
+                                elif 645 <= x < 830:
+                                    row_dict["PANEL FINISH"] = (row_dict["PANEL FINISH"] + " " + txt).strip()
+                                elif 830 <= x < 970:
+                                    row_dict["FRAME TYPE"] = (row_dict["FRAME TYPE"] + " " + txt).strip()
+                                elif 970 <= x < 1100:
+                                    row_dict["FRAME FINISH"] = (row_dict["FRAME FINISH"] + " " + txt).strip()
+                                elif 1100 <= x < 1150:
+                                    row_dict["HEAD"] = txt
+                                elif 1150 <= x < 1200:
+                                    row_dict["JAMB"] = txt
+                                elif 1200 <= x < 1270:
+                                    row_dict["HW SET"] = txt
+                                elif 1270 <= x:
+                                    comments_words.append(txt)
+                            if comments_words:
+                                row_dict["COMMENTS"] = " ".join(comments_words)
+                                
+                            row_dict["needs_review"] = False
+                            row_dict["_schedule_type"] = "door"
+                            fallback_results.append(row_dict)
+                    
+                    if fallback_results:
+                        logger.info(f"[CROP FALLBACK] Successfully extracted {len(fallback_results)} rows using word coordinate binning.")
+                        results = fallback_results
+                        
+                return {"status": "success", "schedule_registry": results}
+                
+        except Exception as err:
+            logger.error(f"Error extracting cropped schedule: {err}")
+            import traceback
+            traceback.print_exc()
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail=f"Failed to crop and parse table: {str(err)}")
+        finally:
+            if os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except:
+                    pass
+                    
+    def _flatten_headers(self, raw_table: list) -> tuple:
+        if not raw_table or not raw_table[0]:
+            return [], 0
+            
+        num_cols = len(raw_table[0])
+        
+        header_rows = 1
+        if len(raw_table) > 1:
+            row0 = raw_table[0]
+            row1 = raw_table[1]
+            if len(row0) > 0 and len(row1) > 0:
+                if (not row1[0] or str(row1[0]).strip() == "") and any(cell for cell in row1 if cell):
+                    header_rows = 2
+                
+        headers = []
+        
+        if header_rows == 2:
+            filled_row0 = []
+            last_val = ""
+            for cell in raw_table[0]:
+                c_str = str(cell).strip() if cell else ""
+                if c_str:
+                    last_val = c_str
+                filled_row0.append(last_val)
+                
+            while len(filled_row0) < num_cols:
+                filled_row0.append("")
+                
+            row1 = raw_table[1]
+            for col_idx in range(num_cols):
+                p_val = filled_row0[col_idx]
+                sub_val = ""
+                if col_idx < len(row1):
+                    sub_val = str(row1[col_idx]).strip() if row1[col_idx] else ""
+                    
+                if p_val and sub_val:
+                    key = f"{p_val} {sub_val}"
+                elif p_val:
+                    key = p_val
+                else:
+                    key = sub_val
+                headers.append(key.strip())
+            data_start_idx = 2
+        else:
+            for cell in raw_table[0]:
+                headers.append(str(cell).strip() if cell else "")
+            data_start_idx = 1
+            
+        return headers, data_start_idx
+
     async def quick_scan_draft(self, conn, session_id: str, user_id: int) -> dict:
         # Bypassed VLM room scanning during draft setup to save cost and latency
         return {"rooms": []}

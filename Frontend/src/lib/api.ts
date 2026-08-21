@@ -205,6 +205,21 @@ export const api = {
     return res.json();
   },
 
+  async cropDraftSchedule(draftId: string, file: File, x0: number, y0: number, x1: number, y1: number, pageNum: number) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('x0', x0.toString());
+    formData.append('y0', y0.toString());
+    formData.append('x1', x1.toString());
+    formData.append('y1', y1.toString());
+    formData.append('page_num', pageNum.toString());
+    const res = await request(`/api/session/draft/${draftId}/crop-schedule`, {
+      method: 'POST',
+      body: formData,
+    });
+    return res.json();
+  },
+
   async uploadDraftSpecification(draftId: string, file: File) {
     const formData = new FormData();
     formData.append('file', file);

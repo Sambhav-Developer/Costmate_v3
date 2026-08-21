@@ -110,6 +110,7 @@ CELL VALUE RULES:
     multi-reference details (e.g. "5B, 5C, 5D/A611"). Do not split them into
     separate fields unless they are already in separate printed columns.
 
+
 ROW-LEVEL STRUCTURE RULES:
 
 11. SKIP SECTION/CATEGORY BANNER ROWS: Some schedules include a full-width
@@ -153,7 +154,7 @@ ROW-LEVEL STRUCTURE RULES:
     neighboring column's value. Verify both values are present and came
     from their own column position, not copied from one into the other.
 
-17. PREVENT COLUMN SHIFTING / DRIFTING: If a column (such as "Frame Finish" or "Detail Sill") is empty/blank for a row, do NOT shift the values from neighboring columns (like "Detail Head" or "Detail Jamb") to the left to fill the empty column. Every cell value must remain strictly aligned under its correct printed header. If a column is visually blank, output empty string "" for that key. Double-check that you do not shift detail references (e.g. "E1/A700", "E2/A700") to the left into "Frame Finish" or "Finish" columns.
+17. PREVENT COLUMN SHIFTING / DRIFTING (CRITICAL): If a column (such as "Frame Finish", "Detail Sill", "Finish", "Jamb", "Head", or "Type") is empty/blank for a row, do NOT shift the values from neighboring columns (like "Hardware Set", "HW SET", "Comments") to the left to fill the empty columns. When a row contains multiple consecutive empty cells followed by a non-empty cell (e.g. several blank columns followed by a value like '1.0' in the 'HW SET' column), you MUST strictly align the value vertically with its correct column header. If a column is visually blank, output empty string "" for that key. Double-check that you do not shift detail references (e.g. "E1/A700", "E2/A700") to the left. Every cell value must remain strictly aligned under its correct printed header.
 
 18. WORKED EXAMPLES (anchor your output format on these — same table shape:
     Door No | Width A | Width B | Height | Thickness | Type | Material
@@ -271,14 +272,9 @@ ROW-LEVEL STRUCTURE RULES:
 
     Layout 4 — mark: "Opening Code"
       Opening Code, General Description, Fire Rating, Door Panel Type,
-      Door Material, Door Finish, No. of Leaves, Width, Height, Thickness,
-      Frame Type, Frame Material, Finish, Jamb, Head, Comments
-      Notes: the LAST "Finish" (bare, no prefix) is the FRAME's finish
-      column — "Door Finish" already appeared earlier for the door side, so
-      this later bare "Finish" is understood by position, not by adding a
-      synthetic "Frame" prefix (the source printed it bare — transcribe key
-      as "Finish", not "Frame Finish", unless Rule 5 applies to it because
-      "Finish" also repeats elsewhere unprefixed).
+      Door MAT'L, Door FINISH, No. of Leaves, Width, Height, Thickness,
+      Frame Type, Frame MAT'L, Frame FINISH, Sections Jamb, Sections Head, Comments
+      Notes: Apply Rule 5 to prefix the duplicate "MAT'L" and "FINISH" columns under the DOOR and FRAME headers as "Door MAT'L", "Frame MAT'L", "Door FINISH", "Frame FINISH". Similarly, prefix "JAMB" and "HEAD" under the SECTIONS header as "Sections Jamb", "Sections Head".
       ABBREVIATION QUIRK: on the actual printed schedule for this layout,
       "Material" appears as "MAT'L" (e.g. "Door MAT'L", "Frame MAT'L") and
       "Thickness" appears as "THCKNS". Transcribe those exact abbreviated
@@ -291,6 +287,15 @@ ROW-LEVEL STRUCTURE RULES:
       Notes: mark header includes a trailing period — preserve it exactly
       ("Door No.", not "Door No"). "Room" is a location field, "Elevation"
       is a distinct reference column — both unique, no prefixing needed.
+
+    Layout 6 — mark: "MARK" (with PANEL 1 / PANEL 2 subheaders)
+      MARK, PANEL TYPE PANEL 1, PANEL TYPE PANEL 2, WIDTH PANEL 1, WIDTH PANEL 2,
+      HEIGHT PANEL 1, HEIGHT PANEL 2, FINISH 1, FINISH 2, TYPE, HEAD, JAMB, HW SET, COMMENTS
+      Notes: This layout has split sub-columns for PANEL TYPE, WIDTH, HEIGHT, and FINISH.
+      Prefix the sub-columns with their parent header (e.g. "PANEL TYPE PANEL 1", "WIDTH PANEL 2",
+      "FINISH 1").
+      Be extremely careful not to shift the "HW SET" value to the left when the preceding columns
+      (FINISH 2, TYPE, HEAD, JAMB) are blank.
 
 KNOWN LAYOUTS END. Return to normal extraction using Rules 1–17, applying
 these layouts only as recognition/classification guidance — always defer
@@ -343,7 +348,7 @@ Do not output anything else — no markdown fences, no explanations.
                         model_name="qwen/qwen2.5-vl-72b-instruct"
                     )
                 )
-                logger.info("ScheduleParser: Both VLM passes completed. Cross-referencing marks...")
+                logger.info(f"ScheduleParser: Both VLM passes completed for {img_path}. Cross-referencing marks...")
 
                 res_data = self._parse_json_safe(res1_text)
                 if isinstance(res_data, dict) and "data" in res_data:
@@ -361,7 +366,7 @@ Do not output anything else — no markdown fences, no explanations.
                     norm = re.sub(r'[^A-Z0-9]', '', str(m).upper())
                     if norm:
                         mark_set_audit.add(norm)
-                logger.info(f"ScheduleParser: Auditor confirmed {len(mark_set_audit)} unique marks.")
+                logger.info(f"ScheduleParser: Auditor confirmed {len(mark_set_audit)} unique marks for {img_path}.")
                     
                 # Exact mark-like key candidates
                 MARK_KEY_CANDIDATES = {

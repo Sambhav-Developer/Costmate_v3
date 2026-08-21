@@ -106,7 +106,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
         # Known hardware group key name variants (all lowercased for comparison)
         HARDWARE_GROUP_VARIANTS = {
             "hardware group no", "hardware group number", "group no",
-            "group number", "hardware group"
+            "group number", "hardware group", "hw set", "hardware set", "hw_set"
         }
         
         schedule_type = item.get("_schedule_type", "")

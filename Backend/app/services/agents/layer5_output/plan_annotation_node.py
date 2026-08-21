@@ -17,6 +17,30 @@ ROOM_KEYWORDS = {
     "triage", "harrison", "mamaroneck"
 }
 
+def reassemble_pdf_words(words):
+    if not words:
+        return []
+    sorted_words = sorted(words, key=lambda x: (x[5], x[6], x[0]))
+    merged = []
+    i = 0
+    n = len(sorted_words)
+    while i < n:
+        w = list(sorted_words[i])
+        while i + 1 < n:
+            next_w = sorted_words[i + 1]
+            if next_w[5] == w[5] and next_w[6] == w[6]:
+                gap = next_w[0] - w[2]
+                if 0 <= gap < 8:
+                    w[4] = w[4] + next_w[4]
+                    w[2] = next_w[2]
+                    w[3] = max(w[3], next_w[3])
+                    i += 1
+                    continue
+            break
+        merged.append(tuple(w))
+        i += 1
+    return merged
+
 def find_closest_schedule_mark(word_text, sched_marks):
     if word_text in sched_marks:
         return word_text
@@ -185,7 +209,7 @@ async def plan_annotation_node(state: CostmateState) -> dict:
             sched_marks = list(sched_lookup.keys())
             for page in doc:
                 blocks = page.get_text("blocks")
-                words_on_page = page.get_text("words")
+                words_on_page = reassemble_pdf_words(page.get_text("words"))
                 drawings_on_page = page.get_drawings()
                 table_rects = get_schedule_table_rects(page)
                 
@@ -249,16 +273,12 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                         })
                         
                 for word_text, matches in candidates_by_mark.items():
-                    # Deduplicate: if any match has nearby door arcs, only keep matches that have arcs
-                    has_arcs = any(m["arc_count"] > 0 for m in matches)
-                    if has_arcs:
-                        filtered_matches = [m for m in matches if m["arc_count"] > 0]
-                    else:
-                        filtered_matches = matches
+                    # Sort matches by arc count descending so those with door arcs are prioritized
+                    sorted_matches = sorted(matches, key=lambda x: x["arc_count"], reverse=True)
                         
                     # Also apply simple spatial deduplication: within 60pt
                     final_matches = []
-                    for m in filtered_matches:
+                    for m in sorted_matches:
                         if any(abs(fm["w_x"] - m["w_x"]) < 60 and abs(fm["w_y"] - m["w_y"]) < 60 for fm in final_matches):
                             continue
                         final_matches.append(m)
@@ -279,8 +299,10 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                         
                         int_ext = str(cv_info.get("int_ext", "")).upper()
                         
-                        mat_words = [t.strip() for t in material.split()]
-                        if any(kw in material for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM", "STOREFRONT"]) or "AL" in mat_words:
+                        import re
+                        mat_upper = material.upper()
+                        mat_words = [t.strip() for t in re.split(r'[/\s]', mat_upper) if t.strip()]
+                        if any(kw in mat_upper for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM", "STOREFRONT", "GL"]) or "AL" in mat_words:
                             highlight_color = color_storefront
                         elif int_ext in ["EXT", "EXTERNAL", "EXTERIOR"]:
                             highlight_color = color_exterior

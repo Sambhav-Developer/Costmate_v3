@@ -513,9 +513,9 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                             for (let i = 0; i < files.length; i++) {
                               const file = files[i];
                               uploadedNames.push(file.name);
-                              // 10-minute client timeout — dual-pass VLM can take 7-8 min
+                              // 30-minute client timeout for large schedules processed sequentially
                               const timeoutPromise = new Promise<never>((_, reject) =>
-                                setTimeout(() => reject(new Error('Schedule parsing timed out. The AI service is busy — please try again in a moment.')), 600_000)
+                                setTimeout(() => reject(new Error('Schedule parsing timed out. The AI service is busy — please try again in a moment.')), 1_800_000)
                               );
                               const res = await Promise.race([api.uploadDraftSchedule(sid!, file), timeoutPromise]);
                               
@@ -596,9 +596,9 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                             for (let i = 0; i < files.length; i++) {
                               const file = files[i];
                               uploadedNames.push(file.name);
-                              // 10-minute client timeout — dual-pass VLM can take 7-8 min
+                              // 30-minute client timeout for large schedules processed sequentially
                               const timeoutPromise = new Promise<never>((_, reject) =>
-                                setTimeout(() => reject(new Error('Schedule parsing timed out. The AI service is busy — please try again in a moment.')), 600_000)
+                                setTimeout(() => reject(new Error('Schedule parsing timed out. The AI service is busy — please try again in a moment.')), 1_800_000)
                               );
                               const res = await Promise.race([api.uploadDraftSchedule(sid!, file), timeoutPromise]);
                               

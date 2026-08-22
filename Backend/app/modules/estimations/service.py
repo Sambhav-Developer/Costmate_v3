@@ -274,11 +274,6 @@ class EstimationService:
             content = await file.read()
             with open(temp_file_path, "wb") as f:
                 f.write(content)
-            try:
-                with open(r"c:\Users\Hp\Desktop\Costmate_v3\Backend\uploaded_crop.pdf", "wb") as f:
-                    f.write(content)
-            except Exception as e:
-                logger.error(f"Failed to copy uploaded crop file to workspace: {e}")
         except Exception as e:
             logger.error(f"Failed to save temp file for cropping: {e}")
             from fastapi import HTTPException
@@ -302,143 +297,348 @@ class EstimationService:
                 
                 cropped_page = page.crop((left, top, right, bottom), relative=True)
                 
-                tables = cropped_page.find_tables(table_settings={
-                    "vertical_strategy": "lines",
-                    "horizontal_strategy": "lines",
-                    "snap_tolerance": 3,
-                    "join_tolerance": 3
-                })
-                
-                if not tables:
-                    tables = cropped_page.find_tables(table_settings={
-                        "vertical_strategy": "text",
-                        "horizontal_strategy": "text"
-                    })
-                    
                 results = []
-                if tables:
-                    raw_table = tables[0].extract()
-                    logger.info(f"[CROP DEBUG] Extracted table rows count: {len(raw_table) if raw_table else 0}")
-                    if raw_table and len(raw_table) >= 5:
-                        headers, data_start_idx = self._flatten_headers(raw_table)
-                        logger.info(f"[CROP DEBUG] Parsed headers: {headers}, data_start_idx: {data_start_idx}")
-                        
-                        if headers:
-                            headers[0] = "mark"
-                            
-                        for r_idx, row_data in enumerate(raw_table[data_start_idx:]):
-                            if not any(cell for cell in row_data if cell):
-                                continue
-                                
-                            row_dict = {}
-                            for col_idx, val in enumerate(row_data):
-                                if col_idx < len(headers):
-                                    key = headers[col_idx]
-                                    if not key:
-                                        key = f"COLUMN_{col_idx}"
-                                    row_dict[key] = str(val).strip() if val else ""
-                                    
-                            mark = str(row_dict.get("mark", "")).strip()
-                            logger.info(f"[CROP DEBUG] Row {r_idx} mark: '{mark}'")
-                            if not mark:
-                                continue
-                            
-                            mark_lower = mark.lower()
-                            if mark_lower in {
-                                "panel 1", "panel 2", "width", "height", "door number", "mark", 
-                                "door details", "door panels", "door frame", "type", "finish 1",
-                                "fire rating", "finish", "head", "jamb", "hw set", "comments",
-                                "level 1", "level 2", "level 3", "level 4", "level 5", "level 6"
-                            } or mark_lower.startswith("level "):
-                                logger.info(f"[CROP DEBUG] Skipping row {r_idx} due to filter: '{mark}'")
-                                continue
-                                
-                            row_dict["mark"] = mark.upper()
-                            row_dict["needs_review"] = False
-                            row_dict["_schedule_type"] = "door"
-                            results.append(row_dict)
-                            
-                if len(results) < 5:
-                    logger.info("[CROP FALLBACK] Table extraction returned few rows. Falling back to word coordinate binning...")
-                    import re
-                    words = cropped_page.extract_words()
-                    lines = []
-                    for w in words:
+                words = cropped_page.extract_words()
+                # Filter out empty or whitespace-only texts
+                words = [w for w in words if w["text"].strip()]
+                
+                if words:
+                    # 1. Detect column bounds list (Strategy A: Use vertical grid lines if they exist in vector PDF)
+                    vertical_lines = [e for e in cropped_page.vertical_edges if (e["y1"] - e["y0"]) >= 12.0]
+                    crop_height = bottom - top
+                    
+                    # Group vertical edges into X-clusters (within 2.5 points)
+                    clusters = [] # list of (mean_x, [edges])
+                    for edge in vertical_lines:
+                        x = edge["x0"]
                         found = False
-                        for line in lines:
-                            if abs(line[0]['top'] - w['top']) < 4:
-                                line.append(w)
+                        for idx, (mean_x, edges) in enumerate(clusters):
+                            if abs(x - mean_x) <= 2.5:
+                                edges.append(edge)
+                                new_mean = sum(e["x0"] for e in edges) / len(edges)
+                                clusters[idx] = (new_mean, edges)
                                 found = True
                                 break
                         if not found:
-                            lines.append([w])
+                            clusters.append((x, [edge]))
                             
-                    lines.sort(key=lambda l: l[0]['top'])
+                    # Filter clusters by total length of edges in the cluster (at least 30% of crop height)
+                    min_total_len = crop_height * 0.3
+                    clustered_xs = []
+                    for mean_x, edges in clusters:
+                        total_len = sum(e["y1"] - e["y0"] for e in edges)
+                        if total_len >= min_total_len:
+                            clustered_xs.append(mean_x)
+                            
+                    clustered_xs = sorted(clustered_xs)
                     
-                    fallback_results = []
-                    for line in lines:
-                        line.sort(key=lambda w: w['x0'])
-                        if not line:
-                            continue
-                        first_w = line[0]['text'].strip()
-                        logger.debug(f"[CROP FALLBACK] Candidate row first_w: '{first_w}'")
-                        if re.match(r"^([A-Z]{1,2}-?\d+[A-Z]?|\d+[A-Z]?)$", first_w, re.IGNORECASE):
-                            row_dict = {
-                                "mark": first_w,
-                                "FIRE RATING": "",
-                                "PANEL 1": "",
-                                "PANEL 2": "",
-                                "WIDTH 1": "",
-                                "WIDTH 2": "",
-                                "HEIGHT": "",
-                                "PANEL FINISH": "",
-                                "FRAME TYPE": "",
-                                "FRAME FINISH": "",
-                                "HEAD": "",
-                                "JAMB": "",
-                                "HW SET": "",
-                                "COMMENTS": ""
+                    merged_spans = []
+                    if len(clustered_xs) >= 3:
+                        logger.info(f"[CROP DYNAMIC] Using {len(clustered_xs)} detected vertical grid lines for column bounds.")
+                        min_word_x = min(w["x0"] for w in words)
+                        max_word_x = max(w["x1"] for w in words)
+                        
+                        if min_word_x < clustered_xs[0] - 8:
+                            clustered_xs.insert(0, round(min_word_x - 3, 1))
+                        if max_word_x > clustered_xs[-1] + 8:
+                            clustered_xs.append(round(max_word_x + 3, 1))
+                            
+                        for i in range(len(clustered_xs) - 1):
+                            merged_spans.append((clustered_xs[i], clustered_xs[i+1]))
+                    else:
+                        # Strategy B: Fallback to text projection (for borderless or scanned tables)
+                        logger.info("[CROP DYNAMIC] Few vertical grid lines detected. Falling back to X-axis text projection...")
+                        
+                        # Helper to check if a word looks like a mark
+                        import re
+                        def is_mark_text(text):
+                            text_lower = text.lower()
+                            header_keywords = {
+                                "mark", "number", "door", "window", "frame", "schedule", "type", "finish",
+                                "comments", "level", "sheet", "code", "id", "tag", "fire", "rating", "width",
+                                "height", "hw", "set", "head", "jamb", "panel", "pane", "dimensions"
                             }
-                            comments_words = []
-                            for w in line[1:]:
-                                x = w["x0"]
-                                txt = w["text"]
-                                if 210 <= x < 260:
-                                    row_dict["FIRE RATING"] = (row_dict["FIRE RATING"] + " " + txt).strip()
-                                elif 260 <= x < 370:
-                                    row_dict["PANEL 1"] = (row_dict["PANEL 1"] + " " + txt).strip()
-                                elif 370 <= x < 475:
-                                    row_dict["PANEL 2"] = (row_dict["PANEL 2"] + " " + txt).strip()
-                                elif 475 <= x < 530:
-                                    row_dict["WIDTH 1"] = txt
-                                elif 530 <= x < 585:
-                                    row_dict["WIDTH 2"] = txt
-                                elif 585 <= x < 645:
-                                    row_dict["HEIGHT"] = txt
-                                elif 645 <= x < 830:
-                                    row_dict["PANEL FINISH"] = (row_dict["PANEL FINISH"] + " " + txt).strip()
-                                elif 830 <= x < 970:
-                                    row_dict["FRAME TYPE"] = (row_dict["FRAME TYPE"] + " " + txt).strip()
-                                elif 970 <= x < 1100:
-                                    row_dict["FRAME FINISH"] = (row_dict["FRAME FINISH"] + " " + txt).strip()
-                                elif 1100 <= x < 1150:
-                                    row_dict["HEAD"] = txt
-                                elif 1150 <= x < 1200:
-                                    row_dict["JAMB"] = txt
-                                elif 1200 <= x < 1270:
-                                    row_dict["HW SET"] = txt
-                                elif 1270 <= x:
-                                    comments_words.append(txt)
-                            if comments_words:
-                                row_dict["COMMENTS"] = " ".join(comments_words)
+                            if text_lower in header_keywords:
+                                return False
+                            if re.search(r"\d", text):
+                                return True
+                            if len(text) <= 4 and text.isupper():
+                                return True
+                            return False
+                            
+                        # Classify words horizontally to build raw text rows
+                        words.sort(key=lambda w: w['top'])
+                        rows = []
+                        for w in words:
+                            found = False
+                            for r in rows:
+                                if abs(r[0]['top'] - w['top']) < 4:
+                                    r.append(w)
+                                    found = True
+                                    break
+                            if not found:
+                                rows.append([w])
                                 
-                            row_dict["needs_review"] = False
-                            row_dict["_schedule_type"] = "door"
-                            fallback_results.append(row_dict)
+                        for r in rows:
+                            r.sort(key=lambda w: w['x0'])
+                        rows.sort(key=lambda r: r[0]['top'])
+                        
+                        # Find data rows
+                        data_rows = []
+                        for r in rows:
+                            if r and is_mark_text(r[0]['text']):
+                                data_rows.append(r)
+                                
+                        projection_rows = data_rows if data_rows else rows
+                        intervals = []
+                        for r in projection_rows:
+                            for w in r:
+                                intervals.append((w['x0'], w['x1']))
+                                
+                        intervals.sort(key=lambda x: x[0])
+                        if intervals:
+                            cur_start, cur_end = intervals[0]
+                            for start, end in intervals[1:]:
+                                if start <= cur_end + 5:
+                                    cur_end = max(cur_end, end)
+                                else:
+                                    merged_spans.append((cur_start, cur_end))
+                                    cur_start = start
+                                    cur_end = end
+                            merged_spans.append((cur_start, cur_end))
+                            
+                    num_cols = len(merged_spans)
+                    logger.info(f"[CROP DYNAMIC] Final columns count: {num_cols}")
                     
-                    if fallback_results:
-                        logger.info(f"[CROP FALLBACK] Successfully extracted {len(fallback_results)} rows using word coordinate binning.")
-                        results = fallback_results
+                    if num_cols > 0:
+                        # 2. Helper to check if a word looks like a mark
+                        import re
+                        def is_mark_text(text):
+                            text_lower = text.lower()
+                            header_keywords = {
+                                "mark", "number", "door", "window", "frame", "schedule", "type", "finish",
+                                "comments", "level", "sheet", "code", "id", "tag", "fire", "rating", "width",
+                                "height", "hw", "set", "head", "jamb", "panel", "pane", "dimensions"
+                            }
+                            if text_lower in header_keywords:
+                                return False
+                            if re.search(r"\d", text):
+                                return True
+                            if len(text) <= 4 and text.isupper():
+                                return True
+                            return False
+                            
+                        # Find all explicit marks and their Y-centers
+                        marks_info = []
+                        for w in words:
+                            center_x = (w['x0'] + w['x1']) / 2.0
+                            # Check if the word is in Column 0
+                            if merged_spans[0][0] <= center_x <= merged_spans[0][1]:
+                                if is_mark_text(w['text']):
+                                    marks_info.append((w['text'], (w['top'] + w['bottom']) / 2.0))
+                                    
+                        marks_info.sort(key=lambda x: x[1])
+                        
+                        # Define first data row Y-start boundary
+                        first_data_y = float('inf')
+                        if marks_info:
+                            first_data_y = marks_info[0][1] - 8
+                            
+                        logger.info(f"[CROP DYNAMIC] Detected {len(marks_info)} marks. First data Y: {first_data_y}")
+                        
+                        # 3. Group words into Headers and Data Rows
+                        header_words = []
+                        data_row_words = {}
+                        if marks_info:
+                            data_row_words = {m_text: [[] for _ in range(num_cols)] for m_text, _ in marks_info}
+                            
+                        for w in words:
+                            center_x = (w['x0'] + w['x1']) / 2.0
+                            center_y = (w['top'] + w['bottom']) / 2.0
+                            
+                            # Find best column index
+                            best_col = 0
+                            min_dist = float('inf')
+                            for col_idx, (start, end) in enumerate(merged_spans):
+                                if start <= center_x <= end:
+                                    best_col = col_idx
+                                    break
+                                dist = min(abs(center_x - start), abs(center_x - end))
+                                if dist < min_dist:
+                                    min_dist = dist
+                                    best_col = col_idx
+                                    
+                            if center_y < first_data_y:
+                                header_words.append((w, best_col))
+                            elif marks_info:
+                                # Find closest mark Y coordinate
+                                closest_mark = None
+                                min_y_dist = float('inf')
+                                for m_text, m_y in marks_info:
+                                    dist_y = abs(center_y - m_y)
+                                    if dist_y < min_y_dist:
+                                        min_y_dist = dist_y
+                                        closest_mark = m_text
+                                if closest_mark:
+                                    data_row_words[closest_mark][best_col].append(w)
+                                    
+                        # 4. Extract Header names
+                        column_headers = [[] for _ in range(num_cols)]
+                        for w, col_idx in header_words:
+                            column_headers[col_idx].append(w)
+                            
+                        clean_headers = []
+                        seen_keys = {}
+                        for col_idx, h_w_list in enumerate(column_headers):
+                            # Sort header words top-to-bottom, left-to-right
+                            h_w_list.sort(key=lambda w: (w['top'], w['x0']))
+                            h_text = " ".join(w['text'] for w in h_w_list).strip()
+                            is_empty_header = False
+                            if not h_text:
+                                h_text = f"COLUMN_{col_idx}"
+                                is_empty_header = True
+                                
+                            base_key = h_text
+                            if not is_empty_header:
+                                if base_key in seen_keys:
+                                    seen_keys[base_key] += 1
+                                    h_text = f"{base_key}_{seen_keys[base_key]}"
+                                else:
+                                    seen_keys[base_key] = 0
+                            clean_headers.append(h_text)
+                                
+                        if clean_headers:
+                            clean_headers[0] = "mark"
+                            
+                        logger.info(f"[CROP DYNAMIC] Unified header keys: {clean_headers}")
+                        
+                        # 5. Extract data rows
+                        raw_results = []
+                        # If no marks were found, fall back to simple row grouping
+                        if not marks_info:
+                            # Group all words into simple rows
+                            words.sort(key=lambda w: w['top'])
+                            rows = []
+                            for w in words:
+                                found = False
+                                for r in rows:
+                                    if abs(r[0]['top'] - w['top']) < 4:
+                                        r.append(w)
+                                        found = True
+                                        break
+                                if not found:
+                                    rows.append([w])
+                            for r in rows:
+                                r.sort(key=lambda w: w['x0'])
+                            rows.sort(key=lambda r: r[0]['top'])
+                            
+                            for r in rows:
+                                row_dict = {}
+                                row_cells = [[] for _ in range(num_cols)]
+                                for w in r:
+                                    center_x = (w['x0'] + w['x1']) / 2.0
+                                    best_col = 0
+                                    min_dist = float('inf')
+                                    for col_idx, (start, end) in enumerate(merged_spans):
+                                        if start <= center_x <= end:
+                                            best_col = col_idx
+                                            break
+                                        dist = min(abs(center_x - start), abs(center_x - end))
+                                        if dist < min_dist:
+                                            min_dist = dist
+                                            best_col = col_idx
+                                    row_cells[best_col].append(w['text'])
+                                    
+                                for col_idx, cell_words in enumerate(row_cells):
+                                    val = " ".join(cell_words).strip()
+                                    if col_idx < len(clean_headers):
+                                        key = clean_headers[col_idx]
+                                        row_dict[key] = val
+                                        
+                                mark = row_dict.get("mark", "").strip()
+                                if not mark:
+                                    continue
+                                row_dict["mark"] = mark.upper()
+                                row_dict["needs_review"] = False
+                                row_dict["_schedule_type"] = "door"
+                                raw_results.append(row_dict)
+                        else:
+                            for m_text, _ in marks_info:
+                                row_dict = {}
+                                for col_idx in range(num_cols):
+                                    cell_w = data_row_words[m_text][col_idx]
+                                    cell_w.sort(key=lambda w: (w['top'], w['x0']))
+                                    val = " ".join(w['text'] for w in cell_w).strip()
+                                    if col_idx < len(clean_headers):
+                                        key = clean_headers[col_idx]
+                                        row_dict[key] = val
+                                        
+                                mark = row_dict.get("mark", "").strip()
+                                if not mark:
+                                    row_dict["mark"] = m_text.upper()
+                                else:
+                                    row_dict["mark"] = mark.upper()
+                                row_dict["needs_review"] = False
+                                row_dict["_schedule_type"] = "door"
+                                raw_results.append(row_dict)
+                                
+                        # Identify empty COLUMN_x columns that have all empty values
+                        cols_to_drop = set()
+                        for col_idx, key in enumerate(clean_headers):
+                            if key.startswith("COLUMN_"):
+                                all_empty = all(row.get(key, "") == "" for row in raw_results)
+                                if all_empty:
+                                    cols_to_drop.add(key)
+                                    
+                        # Filter out dropped columns from results
+                        for row in raw_results:
+                            final_row = {k: v for k, v in row.items() if k not in cols_to_drop}
+                            results.append(final_row)
+                                
+                if not results:
+                    # Line-based table extraction fallback (e.g. for scanned PDFs or when text projection returns nothing)
+                    logger.info("[CROP FALLBACK] Word projection returned no rows. Falling back to line-based table finder...")
+                    tables = cropped_page.find_tables(table_settings={
+                        "vertical_strategy": "lines",
+                        "horizontal_strategy": "lines",
+                        "snap_tolerance": 3,
+                        "join_tolerance": 3
+                    })
+                    if not tables:
+                        tables = cropped_page.find_tables(table_settings={
+                            "vertical_strategy": "text",
+                            "horizontal_strategy": "text"
+                        })
+                    if tables:
+                        raw_table = tables[0].extract()
+                        if raw_table and len(raw_table) >= 5:
+                            headers, data_start_idx = self._flatten_headers(raw_table)
+                            if headers:
+                                headers[0] = "mark"
+                            for r_idx, row_data in enumerate(raw_table[data_start_idx:]):
+                                if not any(cell for cell in row_data if cell):
+                                    continue
+                                row_dict = {}
+                                for col_idx, val in enumerate(row_data):
+                                    if col_idx < len(headers):
+                                        key = headers[col_idx]
+                                        if not key:
+                                            key = f"COLUMN_{col_idx}"
+                                        row_dict[key] = str(val).strip() if val else ""
+                                mark = str(row_dict.get("mark", "")).strip()
+                                if not mark:
+                                    continue
+                                mark_lower = mark.lower()
+                                if mark_lower in {
+                                    "panel 1", "panel 2", "width", "height", "door number", "mark", 
+                                    "door details", "door panels", "door frame", "type", "finish 1",
+                                    "fire rating", "finish", "head", "jamb", "hw set", "comments"
+                                }:
+                                    continue
+                                row_dict["mark"] = mark.upper()
+                                row_dict["needs_review"] = False
+                                row_dict["_schedule_type"] = "door"
+                                results.append(row_dict)
                         
                 return {"status": "success", "schedule_registry": results}
                 

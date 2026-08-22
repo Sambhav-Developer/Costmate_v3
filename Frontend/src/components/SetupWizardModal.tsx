@@ -43,6 +43,11 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   const [pageWidth, setPageWidth] = useState(0);
   const [pageHeight, setPageHeight] = useState(0);
 
+  // --- Intermediate Crop States for Header Mapping ---
+  const [cropStage, setCropStage] = useState<'crop' | 'map'>('crop');
+  const [extractedItems, setExtractedItems] = useState<any[]>([]);
+  const [headerMappings, setHeaderMappings] = useState<Record<string, string>>({});
+
   // --- Global Settings ---
   const [globalSettings, setGlobalSettings] = useState({
     projectName: 'New Project',
@@ -290,49 +295,75 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
 
       if (res && res.schedule_registry) {
         const rawReg = res.schedule_registry;
-        let newReg: any = { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-        
-        if (Array.isArray(rawReg)) {
-          newReg.instance_schedule = rawReg.map((item: any) => ({ ...item, _schedule_type: cropType }));
+        const items = Array.isArray(rawReg) ? rawReg : (rawReg.instance_schedule || []);
+        if (Array.isArray(items) && items.length > 0) {
+          const keys = Array.from(new Set(items.flatMap(item => Object.keys(item))));
+          const filteredKeys = keys.filter(k => k !== 'needs_review' && k !== '_schedule_type');
+          const initialMappings: Record<string, string> = {};
+          filteredKeys.forEach(k => {
+            initialMappings[k] = k;
+          });
+          setHeaderMappings(initialMappings);
+          setExtractedItems(items);
+          setCropStage('map');
+        } else {
+          setError("⚠️ Extraction completed, but no rows were found. Please adjust your crop selection.");
         }
-        
-        setGlobalSettings(prev => {
-          const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-          const scheduleNameField = cropType === 'door' ? ('doorScheduleFileName' as const) : ('windowScheduleFileName' as const);
-          
-          let prevNames: string[] = [];
-          if (prev[scheduleNameField]) {
-            prevNames = prev[scheduleNameField].split(", ");
-          }
-          if (!prevNames.includes(cropFile.name)) {
-            prevNames.push(cropFile.name);
-          }
-
-          return {
-            ...prev,
-            [scheduleNameField]: prevNames.join(", "),
-            scheduleRegistry: {
-              ...oldReg,
-              ...newReg,
-              type_registry: {
-                doors: [...(oldReg.type_registry?.doors || []), ...(newReg.type_registry?.doors || [])],
-                windows: [...(oldReg.type_registry?.windows || []), ...(newReg.type_registry?.windows || [])]
-              },
-              instance_schedule: [...(oldReg.instance_schedule || []), ...(newReg.instance_schedule || [])]
-            }
-          };
-        });
       }
-
-      setIsCropModalOpen(false);
-      setCropFile(null);
-      setCropPdf(null);
     } catch (err: any) {
       console.error("Crop extraction failed:", err);
       setError("⚠️ Failed to parse table from selection: " + (err.message || err));
     } finally {
       setExtracting(false);
     }
+  };
+
+  const handleConfirmSchema = () => {
+    if (extractedItems.length === 0) return;
+
+    const mapped = extractedItems.map((item) => {
+      const newItem: any = { _schedule_type: cropType, needs_review: false };
+      Object.keys(item).forEach((oldKey) => {
+        if (oldKey === '_schedule_type' || oldKey === 'needs_review') return;
+        const newKey = headerMappings[oldKey]?.trim() || oldKey;
+        newItem[newKey] = item[oldKey];
+      });
+      return newItem;
+    });
+
+    setGlobalSettings(prev => {
+      const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
+      const scheduleNameField = cropType === 'door' ? ('doorScheduleFileName' as const) : ('windowScheduleFileName' as const);
+      
+      let prevNames: string[] = [];
+      if (prev[scheduleNameField]) {
+        prevNames = prev[scheduleNameField].split(", ");
+      }
+      if (!prevNames.includes(cropFile!.name)) {
+        prevNames.push(cropFile!.name);
+      }
+
+      return {
+        ...prev,
+        [scheduleNameField]: prevNames.join(", "),
+        scheduleRegistry: {
+          ...oldReg,
+          type_registry: {
+            doors: [...(oldReg.type_registry?.doors || [])],
+            windows: [...(oldReg.type_registry?.windows || [])]
+          },
+          instance_schedule: [...(oldReg.instance_schedule || []), ...mapped]
+        }
+      };
+    });
+
+    // Reset crop modal states
+    setIsCropModalOpen(false);
+    setCropFile(null);
+    setCropPdf(null);
+    setExtractedItems([]);
+    setHeaderMappings({});
+    setCropStage('crop');
   };
 
   // Structural Temp States
@@ -1358,12 +1389,12 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
 
       {/* PDF Interactive Crop Modal */}
       {isCropModalOpen && cropFile && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-[#09090b] text-white">
+        <div className="fixed inset-0 z-50 flex flex-col bg-[#09090b] text-white animate-in fade-in duration-200">
           {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-zinc-900">
-            <div className="flex items-center gap-4">
-              <h2 className="text-lg font-bold">Crop Table Selection - {cropFile.name}</h2>
-              <span className="px-2.5 py-0.5 text-xs rounded bg-violet-600/30 text-violet-300 font-semibold uppercase tracking-wider">
+          <div className="flex items-center justify-between px-6 py-3.5 border-b border-white/10 bg-zinc-900 shrink-0">
+            <div className="flex items-center gap-3">
+              <h2 className="text-base font-bold text-white">Crop Table Selection: {cropFile.name}</h2>
+              <span className="px-2.5 py-0.5 text-[10px] rounded bg-violet-500/20 text-violet-300 border border-violet-500/30 font-semibold uppercase tracking-wider">
                 {cropType} schedule
               </span>
             </div>
@@ -1372,6 +1403,9 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                 setIsCropModalOpen(false);
                 setCropFile(null);
                 setCropPdf(null);
+                setCropStage('crop');
+                setExtractedItems([]);
+                setHeaderMappings({});
               }}
               className="p-1.5 rounded-lg hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
             >
@@ -1379,158 +1413,260 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
             </button>
           </div>
 
-          {/* Main Body */}
-          <div className="flex-1 flex overflow-hidden">
-            {/* Left Control Panel */}
-            <div className="w-80 border-r border-white/10 bg-zinc-900 p-6 flex flex-col justify-between">
-              <div className="space-y-6">
-                <div>
-                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block mb-2">Instructions</label>
-                  <ol className="list-decimal pl-4 text-xs text-zinc-300 space-y-2">
-                    <li>Navigate to the page containing the schedule table using page controls.</li>
-                    <li>Click and drag your mouse over the schedule table area to draw a selection crop box.</li>
-                    <li>Verify the selection, then click <strong>"Extract Schedule"</strong>.</li>
-                  </ol>
-                </div>
-
-                {/* Page navigation */}
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block mb-2">Page Controls</label>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={cropPageNum <= 1 || pdfLoading}
-                      onClick={() => setCropPageNum(prev => Math.max(1, prev - 1))}
-                      className="px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                    >
-                      Previous
-                    </button>
-                    <span className="text-xs font-semibold flex-1 text-center">
-                      Page {cropPageNum} / {cropTotalPages || '?'}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={cropPageNum >= (cropTotalPages || 1) || pdfLoading}
-                      onClick={() => setCropPageNum(prev => Math.min(cropTotalPages || 1, prev + 1))}
-                      className="px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                    >
-                      Next
-                    </button>
-                  </div>
+          {/* Top Toolbar */}
+          <div className="flex items-center justify-between px-6 py-3 bg-[#121214] border-b border-white/10 shrink-0 gap-6">
+            {cropStage === 'crop' ? (
+              <>
+                {/* Page Controls */}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider mr-2">Page:</span>
+                  <button
+                    type="button"
+                    disabled={cropPageNum <= 1 || pdfLoading}
+                    onClick={() => setCropPageNum(prev => Math.max(1, prev - 1))}
+                    className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs font-bold bg-[#18181b] border border-white/5 px-3 py-1.5 rounded-lg text-zinc-300 min-w-[90px] text-center">
+                    {cropPageNum} / {cropTotalPages || '?'}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={cropPageNum >= (cropTotalPages || 1) || pdfLoading}
+                    onClick={() => setCropPageNum(prev => Math.min(cropTotalPages || 1, prev + 1))}
+                    className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    Next
+                  </button>
                 </div>
 
                 {/* Zoom Controls */}
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block mb-2">Zoom Controls</label>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={pdfScale <= 0.25 || pdfLoading}
-                      onClick={() => setPdfScale(prev => Math.max(0.25, prev - 0.25))}
-                      className="px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                    >
-                      Zoom Out
-                    </button>
-                    <div className="flex items-center gap-0.5 bg-white/5 border border-white/10 rounded px-1.5 py-1 w-16 shrink-0 justify-center">
-                      <input 
-                        type="text"
-                        value={zoomText}
-                        onChange={(e) => {
-                          const valStr = e.target.value;
-                          if (valStr === "" || /^\d+$/.test(valStr)) {
-                            setZoomText(valStr);
-                            const val = parseInt(valStr);
-                            if (!isNaN(val) && val >= 25 && val <= 500) {
-                              setPdfScale(val / 100);
-                            }
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider mr-2">Zoom:</span>
+                  <button
+                    type="button"
+                    disabled={pdfScale <= 0.25 || pdfLoading}
+                    onClick={() => setPdfScale(prev => Math.max(0.25, prev - 0.25))}
+                    className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    Zoom Out
+                  </button>
+                  <div className="flex items-center gap-0.5 bg-[#18181b] border border-white/10 rounded-lg px-2.5 py-1.5 w-20 shrink-0 justify-center">
+                    <input 
+                      type="text"
+                      value={zoomText}
+                      onChange={(e) => {
+                        const valStr = e.target.value;
+                        if (valStr === "" || /^\d+$/.test(valStr)) {
+                          setZoomText(valStr);
+                          const val = parseInt(valStr);
+                          if (!isNaN(val) && val >= 25 && val <= 500) {
+                            setPdfScale(val / 100);
                           }
-                        }}
-                        onBlur={() => {
-                          let val = parseInt(zoomText);
-                          if (isNaN(val) || val < 25) val = 25;
-                          if (val > 500) val = 500;
-                          setPdfScale(val / 100);
-                          setZoomText(val.toString());
-                        }}
-                        className="w-full bg-transparent text-xs font-semibold text-center focus:outline-none text-white"
-                      />
-                      <span className="text-xs text-zinc-400 font-semibold">%</span>
+                        }
+                      }}
+                      onBlur={() => {
+                        let val = parseInt(zoomText);
+                        if (isNaN(val) || val < 25) val = 25;
+                        if (val > 500) val = 500;
+                        setPdfScale(val / 100);
+                        setZoomText(val.toString());
+                      }}
+                      className="w-full bg-transparent text-xs font-bold text-center focus:outline-none text-white"
+                    />
+                    <span className="text-xs text-zinc-400 font-bold">%</span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={pdfScale >= 5.0 || pdfLoading}
+                    onClick={() => setPdfScale(prev => Math.min(5.0, prev + 0.25))}
+                    className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    Zoom In
+                  </button>
+                </div>
+
+                {/* Status and Action */}
+                <div className="flex items-center gap-4">
+                  {pdfLoading && (
+                    <div className="flex items-center gap-2 text-violet-400 text-xs font-medium animate-pulse">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Loading Page...</span>
                     </div>
-                    <button
-                      type="button"
-                      disabled={pdfScale >= 5.0 || pdfLoading}
-                      onClick={() => setPdfScale(prev => Math.min(5.0, prev + 0.25))}
-                      className="px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                    >
-                      Zoom In
-                    </button>
+                  )}
+                  {extracting && (
+                    <div className="flex items-center gap-2 text-amber-400 text-xs font-medium animate-pulse">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Extracting...</span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    disabled={!cropRect || extracting || pdfLoading}
+                    onClick={handleExtractCrop}
+                    className="px-5 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-xs font-bold transition-all shadow-md flex items-center gap-2 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {extracting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                    Extract Schedule
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Left side info */}
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-zinc-400 font-medium">
+                    Successfully extracted <strong className="text-white">{extractedItems.length}</strong> rows across <strong className="text-white">{Object.keys(headerMappings).length}</strong> columns.
+                  </span>
+                </div>
+
+                {/* Right side actions */}
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCropStage('crop');
+                      setExtractedItems([]);
+                      setHeaderMappings({});
+                    }}
+                    className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Back to Crop
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmSchema}
+                    className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer animate-pulse"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    Confirm & Save Schema
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Main Body */}
+          <div className="flex-1 flex overflow-hidden">
+            {cropStage === 'crop' ? (
+              /* Right PDF Canvas Workspace */
+              <div className="flex-1 overflow-auto bg-[#09090b] p-8 flex items-start justify-start relative">
+                <div 
+                  className="relative select-none border border-white/10 shadow-2xl bg-white shrink-0"
+                  style={{ 
+                    cursor: 'crosshair',
+                    width: pageWidth ? pageWidth * pdfScale : 'auto',
+                    height: pageHeight ? pageHeight * pdfScale : 'auto'
+                  }}
+                  onMouseDown={handleCanvasMouseDown}
+                  onMouseMove={handleCanvasMouseMove}
+                  onMouseUp={handleCanvasMouseUp}
+                >
+                  <canvas 
+                    ref={canvasRef} 
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      display: 'block'
+                    }}
+                  />
+                  {/* Crop Overlay Selection Box */}
+                  {cropRect && (
+                    <div 
+                      className="absolute border-2 border-violet-500 bg-violet-500/20"
+                      style={{
+                        left: Math.min(cropRect.startX, cropRect.currentX),
+                        top: Math.min(cropRect.startY, cropRect.currentY),
+                        width: Math.abs(cropRect.startX - cropRect.currentX),
+                        height: Math.abs(cropRect.startY - cropRect.currentY),
+                        pointerEvents: 'none'
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* Header Mapping Dashboard */
+              <div className="flex-1 flex overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                {/* Left Form: Mappings Editor */}
+                <div className="w-[380px] shrink-0 border-r border-white/10 bg-[#0d0d0f] flex flex-col overflow-hidden">
+                  <div className="p-5 border-b border-white/5 shrink-0">
+                    <h3 className="text-sm font-bold text-white mb-1">Column Schema Editor</h3>
+                    <p className="text-xs text-zinc-500">Provide clean, descriptive names for the detected columns.</p>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-5 space-y-4 custom-scrollbar">
+                    {Object.keys(headerMappings).map((oldKey) => {
+                      const sampleVal = extractedItems.find(item => item[oldKey])?.[oldKey] || '';
+                      return (
+                        <div key={oldKey} className="flex flex-col gap-1.5 p-3 rounded-xl bg-white/5 border border-white/10 hover:border-white/15 transition-all">
+                          <div className="flex justify-between items-center text-[9px] font-black text-zinc-500 uppercase tracking-widest">
+                            <span>Detected Label</span>
+                            <span className="text-zinc-400 max-w-[150px] truncate bg-white/5 px-1.5 py-0.5 rounded font-medium">Sample: "{sampleVal}"</span>
+                          </div>
+                          <div className="text-xs text-zinc-300 font-bold truncate bg-black/45 px-2.5 py-1.5 rounded border border-white/5 select-all font-mono">
+                            {oldKey}
+                          </div>
+                          <input
+                            type="text"
+                            value={headerMappings[oldKey]}
+                            onChange={(e) => setHeaderMappings(prev => ({ ...prev, [oldKey]: e.target.value }))}
+                            className="w-full bg-[#18181b] border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/50 transition-all font-semibold"
+                            placeholder="Clean name (e.g. Width 1)"
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
-                {/* Status info */}
-                {pdfLoading && (
-                  <div className="flex items-center gap-2 text-violet-400 text-xs">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Loading PDF renderer...</span>
+                {/* Right Interactive Table Preview */}
+                <div className="flex-1 flex flex-col bg-[#09090b] overflow-hidden">
+                  <div className="p-5 border-b border-white/5 shrink-0 flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-white mb-1">Data Schema Live Preview</h3>
+                      <p className="text-xs text-zinc-500">Table rows updated instantly with your renamed column keys.</p>
+                    </div>
                   </div>
-                )}
-                {extracting && (
-                  <div className="flex items-center gap-2 text-yellow-400 text-xs">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Parsing table geometrically...</span>
+                  <div className="flex-1 overflow-auto p-6 custom-scrollbar">
+                    <div className="min-w-full inline-block align-middle">
+                      <div className="overflow-hidden border border-white/10 rounded-xl bg-[#0d0d0f]">
+                        <table className="min-w-full divide-y divide-white/5">
+                          <thead className="bg-[#121214]">
+                            <tr>
+                              {Object.keys(headerMappings).map((oldKey) => {
+                                const newKey = headerMappings[oldKey] || oldKey;
+                                return (
+                                  <th key={oldKey} className="px-4 py-3.5 text-left text-xs font-bold text-zinc-300 uppercase tracking-wider whitespace-nowrap border-r border-white/5 last:border-r-0">
+                                    {newKey}
+                                  </th>
+                                );
+                              })}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5 bg-transparent">
+                            {extractedItems.slice(0, 10).map((item, idx) => (
+                              <tr key={idx} className="hover:bg-white/[0.02] transition-colors">
+                                {Object.keys(headerMappings).map((oldKey) => (
+                                  <td key={oldKey} className="px-4 py-3 text-xs text-zinc-400 whitespace-nowrap border-r border-white/5 last:border-r-0 max-w-[200px] truncate">
+                                    {item[oldKey]}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {extractedItems.length > 10 && (
+                        <div className="text-center text-zinc-600 text-[10px] font-semibold mt-3 uppercase tracking-wider">
+                          Showing first 10 of {extractedItems.length} rows
+                        </div>
+                      )}
+                    </div>
                   </div>
-                )}
+                </div>
               </div>
-
-              <div className="space-y-3">
-                <button
-                  type="button"
-                  disabled={!cropRect || extracting || pdfLoading}
-                  onClick={handleExtractCrop}
-                  className="w-full py-3 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-sm font-bold transition-all shadow-lg flex items-center justify-center gap-2 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  {extracting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  Extract Schedule
-                </button>
-              </div>
-            </div>
-
-            {/* Right PDF Canvas Workspace */}
-            <div className="flex-1 overflow-auto bg-[#09090b] p-8 flex items-start justify-start relative">
-              <div 
-                className="relative select-none border border-white/10 shadow-2xl bg-white shrink-0"
-                style={{ 
-                  cursor: 'crosshair',
-                  width: pageWidth ? pageWidth * pdfScale : 'auto',
-                  height: pageHeight ? pageHeight * pdfScale : 'auto'
-                }}
-                onMouseDown={handleCanvasMouseDown}
-                onMouseMove={handleCanvasMouseMove}
-                onMouseUp={handleCanvasMouseUp}
-              >
-                <canvas 
-                  ref={canvasRef} 
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    display: 'block'
-                  }}
-                />
-                {/* Crop Overlay Selection Box */}
-                {cropRect && (
-                  <div 
-                    className="absolute border-2 border-violet-500 bg-violet-500/20"
-                    style={{
-                      left: Math.min(cropRect.startX, cropRect.currentX),
-                      top: Math.min(cropRect.startY, cropRect.currentY),
-                      width: Math.abs(cropRect.startX - cropRect.currentX),
-                      height: Math.abs(cropRect.startY - cropRect.currentY),
-                      pointerEvents: 'none'
-                    }}
-                  />
-                )}
-              </div>
-            </div>
+            )}
           </div>
         </div>
       )}

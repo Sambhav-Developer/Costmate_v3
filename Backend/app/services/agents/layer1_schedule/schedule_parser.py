@@ -1,9 +1,71 @@
 import json
 import asyncio
+import re
 from typing import List, Dict
 from app.core.openrouter_client import OpenRouterClient
 from app.core.logging import logger
 from app.services.agents.schemas import ScheduleData
+
+def extract_schedule_opening_mode(row: dict) -> str:
+    """
+    Multi-heuristic classifier to extract SGL vs PR from raw schedule rows.
+    """
+    # 1. Check leaf count / Leaves / Qty / No. of Leaves column directly
+    leaves_keys = ["no. of leaves", "leaves", "leaf qty", "panels", "leaves qty", "no. of panels", "leaves number"]
+    for k, v in row.items():
+        k_lower = str(k).lower().strip()
+        v_str = str(v).strip().upper()
+        if any(lk in k_lower for lk in leaves_keys):
+            if v_str in ["2", "PR", "DBL", "PAIR", "DOUBLE", "TWO", "2.0"]:
+                return "PR"
+            if v_str in ["1", "SGL", "SINGLE", "ONE", "1.0"]:
+                return "SGL"
+
+    # 2. Check dimension columns (Width, Size, Dimension) for double door syntax
+    width_keys = ["width", "size", "dimension", "opening size", "panel size"]
+    for k, v in row.items():
+        k_lower = str(k).lower().strip()
+        v_str = str(v).strip().lower()
+        if any(wk in k_lower for wk in width_keys):
+            if "/" in v_str:
+                parts = [p.strip() for p in v_str.split("/")]
+                if len(parts) >= 2 and all(re.search(r"\d", p) for p in parts):
+                    return "PR"
+            if "x2" in v_str.replace(" ", "") or "x 2" in v_str or "2@" in v_str.replace(" ", "") or "@2" in v_str.replace(" ", "") or "2 @" in v_str:
+                return "PR"
+            if "(" in v_str and "2" in v_str:
+                return "PR"
+
+    # 3. Check for multiple panel width columns containing values (e.g. width panel 1 and width panel 2 both populated)
+    panel_1_val = None
+    panel_2_val = None
+    for k, v in row.items():
+        k_lower = str(k).lower().strip()
+        v_str = str(v).strip()
+        if not v_str:
+            continue
+        if "width" in k_lower or "panel" in k_lower or "size" in k_lower:
+            if "panel 1" in k_lower or "width 1" in k_lower or k_lower.endswith("_1") or "first" in k_lower or (re.search(r"\b1\b", k_lower) and not re.search(r"\b2\b", k_lower)):
+                panel_1_val = v_str
+            elif "panel 2" in k_lower or "width 2" in k_lower or k_lower.endswith("_2") or "second" in k_lower or (re.search(r"\b2\b", k_lower) and not re.search(r"\b1\b", k_lower)):
+                panel_2_val = v_str
+
+    if panel_1_val and panel_2_val:
+        return "PR"
+
+    # Default fallback: if we have a single width column or only 1 panel column, SGL
+    has_width = False
+    for k, v in row.items():
+        k_lower = str(k).lower().strip()
+        v_str = str(v).strip()
+        if v_str and any(wk in k_lower for wk in width_keys):
+            has_width = True
+            break
+    if has_width:
+        return "SGL"
+
+    return "SGL"
+
 
 class ScheduleParserAgent:
     def __init__(self):
@@ -401,6 +463,7 @@ Do not output anything else — no markdown fences, no explanations.
                         logger.warning(f"ScheduleParser: ⚠️ Mark '{mark}' not confirmed by auditor — flagged for review.")
 
                     row_data = {**row, "needs_review": needs_review}
+                    row_data["_schedule_opening_mode"] = extract_schedule_opening_mode(row)
                     
                     try:
                         validated = ScheduleData(**row_data)

@@ -179,20 +179,14 @@ async def excel_writer_node(state: CostmateState) -> dict:
                             elif header == "ESTIMATOR NOTES": val = notes
                             elif header in ["FLOOR / LEVEL", "FLOOR NO"]: val = floor_val
                             elif header == "OPENING MODE": 
-                                if is_storefront:
-                                    val = ""
-                                else:
-                                    raw_mode = d.get("opening_mode", "SGL")
-                                    val = normalize_opening_mode(raw_mode)
+                                raw_mode = d.get("opening_mode") or item.get("OPENING MODE", "SGL")
+                                val = normalize_opening_mode(raw_mode)
                             elif header == "INT/EXT": 
-                                if is_storefront:
-                                    val = ""
+                                raw_ie = str(d.get("int_ext") or item.get("INT/EXT", "INT")).upper()
+                                if any(x in raw_ie for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
+                                    val = "EXT"
                                 else:
-                                    raw_ie = str(d.get("int_ext", "INT")).upper()
-                                    if any(x in raw_ie for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
-                                        val = "EXT"
-                                    else:
-                                        val = "INT"
+                                    val = "INT"
                             else: val = item.get(header, "")
                             
                             ws.cell(row=row_idx, column=col_idx, value=str(val))
@@ -208,8 +202,17 @@ async def excel_writer_node(state: CostmateState) -> dict:
                         elif header == "LOCATION": val = ""
                         elif header == "ESTIMATOR NOTES": val = notes
                         elif header in ["FLOOR / LEVEL", "FLOOR NO"]: val = floor_val
-                        elif header == "OPENING MODE": val = ""
-                        elif header == "INT/EXT": val = ""
+                        elif header == "OPENING MODE": 
+                            raw_mode = item.get("OPENING MODE", "")
+                            val = normalize_opening_mode(raw_mode) if raw_mode else ""
+                        elif header == "INT/EXT": 
+                            raw_ie = str(item.get("INT/EXT", "")).upper()
+                            if any(x in raw_ie for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
+                                val = "EXT"
+                            elif any(x in raw_ie for x in ["INT", "INTERNAL", "INTERIOR"]):
+                                val = "INT"
+                            else:
+                                val = ""
                         else: val = item.get(header, "")
                         
                         ws.cell(row=row_idx, column=col_idx, value=str(val))

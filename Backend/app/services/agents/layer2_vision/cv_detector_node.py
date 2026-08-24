@@ -2,10 +2,151 @@ import os
 import json
 import asyncio
 import traceback
+import base64
+from functools import lru_cache
+from PIL import Image, ImageDraw
 from app.core.openrouter_client import openrouter_client, parse_json_response
 from app.services.graph.state import CostmateState
 from app.core.logging import logger
 from app.config import settings
+
+# VLM door classification paths and helper functions
+# Dynamically locate WORKSPACE_DIR containing the Assets folder
+dir_path = os.path.dirname(os.path.abspath(__file__))
+while dir_path:
+    if os.path.exists(os.path.join(dir_path, "Assets")):
+        break
+    parent = os.path.dirname(dir_path)
+    if parent == dir_path:
+        break
+    dir_path = parent
+WORKSPACE_DIR = dir_path
+REFERENCE_CATALOG_PATH = os.path.join(WORKSPACE_DIR, "Assets", "door_types.jpg")
+
+@lru_cache(maxsize=1)
+def get_reference_catalog_b64() -> str:
+    if not os.path.exists(REFERENCE_CATALOG_PATH):
+        logger.warning(f"VLM: Reference catalog image not found at {REFERENCE_CATALOG_PATH}")
+        return ""
+    with open(REFERENCE_CATALOG_PATH, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+VALID_OPENING_MODES = {"SGL", "PR", "CO", "DA", "SLD", "PKT", "BIFOLD", "OHD", "REV", "BYPASS", "UNKNOWN"}
+VALID_WALL_TYPES = {"INT", "EXT", "UNKNOWN"}
+
+SYSTEM_PROMPT = """You are an expert civil construction estimation assistant.
+
+You will be given two images:
+1. A reference catalog image showing 10 standard door opening-type plan symbols, each labeled with its code (SGL, PR, CO, DA, SLD, PKT, BIFOLD, OHD, REV, BYPASS).
+2. A cropped image from an architectural floor plan, centered exactly on the door opening of interest.
+
+Your task is to analyze the door opening located directly at the center of the Crop Image, compare it against the Reference Catalog, and determine its properties.
+
+Please classify the following fields:
+- "matched_code": Identify which of the 10 reference codes the center door opening symbol most closely resembles. Select ONLY from: "SGL", "PR", "CO", "DA", "SLD", "PKT", "BIFOLD", "OHD", "REV", "BYPASS". If it does not resemble any of them, return "UNKNOWN".
+  Classification tips for visual shapes:
+  * "SGL" (Single Swing): One leaf, one quarter-circle arc. Very common.
+  * "PR" (Pair Swing): Two mirrored leaves, two arcs meeting at the center (double doors).
+  * "CO" (Cased Opening): Just jamb/trim lines, no swing arc line, no door leaf line (open doorway).
+  * "DA" (Double Acting): Pivot dot with swing arc paths on both sides of the wall.
+  * "SLD" (Sliding): Flat panel riding along the wall surface, often with a travel arrow.
+  * "PKT" (Pocket Sliding): Sliding panel shown dashed, sliding inside the wall cavity.
+  * "BIFOLD" (Bi-fold): Panels folding into a "V" shape.
+- "wall_type": Classify whether the wall the door is sitting in is "INT" or "EXT".
+  Tips for accuracy:
+  * Read any wall tag symbols printed near the wall/door on the plan (e.g., tags like "6A.AL.EXT", "CMU.EXT", "6A.AL", "6A").
+  * If the tag contains ".EXT" or "EXT" suffix, it is "EXT" (Exterior).
+  * If the tag has no "EXT" suffix (e.g., "6A.AL", "6A", "8A.WD"), it is "INT" (Interior).
+  * Otherwise, look at wall graphics: exterior walls are typically thick envelope/perimeter walls (often with insulation hatching), while interior partitions are thin, uniform double lines. If it cannot be determined, return "UNKNOWN".
+- "location": Identify the room name/corridor name label printed inside or near the door opening space (e.g. "Office 101", "Corridor", "Staff Toilet"). If not visible, return "Unknown".
+- "confidence": "high" | "medium" | "low" based on classification clarity.
+- "reasoning": A short sentence explaining the graphic feature driving your matched_code match.
+
+Return ONLY a clean JSON object:
+{
+  "matched_code": "SGL" | "PR" | "CO" | "DA" | "SLD" | "PKT" | "BIFOLD" | "OHD" | "REV" | "BYPASS" | "UNKNOWN",
+  "wall_type": "INT" | "EXT" | "UNKNOWN",
+  "location": "string",
+  "confidence": "high" | "medium" | "low",
+  "reasoning": "string"
+}
+"""
+
+def validate_vlm_output(result: dict) -> dict:
+    if not isinstance(result, dict):
+        return {
+            "matched_code": "UNKNOWN",
+            "wall_type": "UNKNOWN",
+            "location": "Unknown",
+            "confidence": "low",
+            "reasoning": "Invalid VLM response format"
+        }
+    
+    if result.get("matched_code") not in VALID_OPENING_MODES:
+        result["matched_code"] = "UNKNOWN"
+    if result.get("wall_type") not in VALID_WALL_TYPES:
+        result["wall_type"] = "UNKNOWN"
+    if not result.get("location"):
+        result["location"] = "Unknown"
+        
+    return result
+
+async def classify_door_crop_vlm(crop_path: str, mark: str, floor_no: int, semaphore: asyncio.Semaphore) -> dict:
+    """
+    Call Qwen-VL vision agent to classify the crop opening mode and wall type side-by-side with reference catalog.
+    """
+    if not crop_path or not os.path.exists(crop_path):
+        return {
+            "matched_code": "UNKNOWN",
+            "wall_type": "UNKNOWN",
+            "location": "Unknown",
+            "confidence": "low",
+            "reasoning": "Missing crop path"
+        }
+        
+    reference_b64 = get_reference_catalog_b64()
+    if not reference_b64:
+        return {
+            "matched_code": "UNKNOWN",
+            "wall_type": "UNKNOWN",
+            "location": "Unknown",
+            "confidence": "low",
+            "reasoning": "Missing reference catalog b64"
+        }
+
+    # Normalize crop resolution to 400x400 px
+    try:
+        with Image.open(crop_path) as img:
+            if img.size != (400, 400):
+                img_resized = img.resize((400, 400), Image.Resampling.LANCZOS)
+                img_resized.save(crop_path)
+    except Exception as resize_err:
+        logger.warning(f"VLM Guardrails: Failed to normalize crop resolution for {crop_path}: {resize_err}")
+
+    async with semaphore:
+        try:
+            res = await openrouter_client.generate_chat(
+                prompt=SYSTEM_PROMPT,
+                image_paths=[
+                    f"data:image/jpeg;base64,{reference_b64}",
+                    crop_path
+                ],
+                json_mode=True,
+                temperature=0.1,
+                model_name="qwen/qwen2.5-vl-72b-instruct"
+            )
+            data = parse_json_response(res)
+            return validate_vlm_output(data)
+        except Exception as e:
+            logger.error(f"VLM: Vision classification failed for mark {mark} on Floor {floor_no}: {e}")
+            return {
+                "matched_code": "UNKNOWN",
+                "wall_type": "UNKNOWN",
+                "location": "Unknown",
+                "confidence": "low",
+                "reasoning": f"Vision API error: {str(e)}"
+            }
+
 
 # Common room keywords to filter out room name labels from door/window callouts
 ROOM_KEYWORDS = {
@@ -93,6 +234,30 @@ def is_block_room_label(blocks, block_no, clean_mark) -> bool:
         return False
     except:
         return False
+
+def is_enclosed_in_tag_circle(w_cx, w_cy, nearby_drawings) -> bool:
+    """
+    Check if a word's center is enclosed by a small circle vector path (typical door tag circle).
+    """
+    for d in nearby_drawings:
+        rect = d.get("rect")
+        if not rect:
+            continue
+        width = rect[2] - rect[0]
+        height = rect[3] - rect[1]
+        
+        # Check if it's a small square/circle bounding box (typically diameter 12-35 pt)
+        if 12.0 <= width <= 35.0 and 12.0 <= height <= 35.0 and abs(width - height) <= 4.0:
+            draw_cx = (rect[0] + rect[2]) / 2
+            draw_cy = (rect[1] + rect[3]) / 2
+            dist = ((draw_cx - w_cx) ** 2 + (draw_cy - w_cy) ** 2) ** 0.5
+            # Word center should be very close to the circle center
+            if dist <= 12.0:
+                items = d.get("items", [])
+                has_curve = any(it[0] in ("c", "qu") for it in items)
+                if has_curve:
+                    return True
+    return False
 
 def normalize_opening_mode(val: str) -> str:
     val_clean = str(val).strip().upper()
@@ -740,7 +905,51 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             "arc_count": len(arc_paths)
                         })
                         
+                # Calculate Building Wall Envelope for the page using all candidates_by_mark matches
+                all_dm_points = []
+                for mark_text, mark_matches in candidates_by_mark.items():
+                    for m in mark_matches:
+                        all_dm_points.append((m["w_cx"], m["w_cy"]))
+                
+                env_min_x, env_max_x, env_min_y, env_max_y = None, None, None, None
+                if all_dm_points:
+                    dm_xs = [p[0] for p in all_dm_points]
+                    dm_ys = [p[1] for p in all_dm_points]
+                    min_dm_x, max_dm_x = min(dm_xs), max(dm_xs)
+                    min_dm_y, max_dm_y = min(dm_ys), max(dm_ys)
+                    
+                    # Floor plan area expanded by 100 points
+                    fp_rect = fz.Rect(min_dm_x - 100, min_dm_y - 100, max_dm_x + 100, max_dm_y + 100)
+                    
+                    # Get bounding box of all wall drawings inside fp_rect
+                    wall_rects = []
+                    for d in drawings_on_page:
+                        rect_val = d.get("rect")
+                        if not rect_val:
+                            continue
+                        r = fz.Rect(rect_val)
+                        if fp_rect.contains(r) and (r.width > 2 or r.height > 2):
+                            # Exclude full page borders
+                            if r.width < page.rect.width * 0.8 and r.height < page.rect.height * 0.8:
+                                wall_rects.append(r)
+                                
+                    if wall_rects:
+                        env_min_x = min(r.x0 for r in wall_rects)
+                        env_max_x = max(r.x1 for r in wall_rects)
+                        env_min_y = min(r.y0 for r in wall_rects)
+                        env_max_y = max(r.y1 for r in wall_rects)
+                        logger.info(f"CV Envelope: Found wall envelope bounding box X=[{env_min_x:.1f}, {env_max_x:.1f}], Y=[{env_min_y:.1f}, {env_max_y:.1f}]")
+                        
                 for word_text, matches in candidates_by_mark.items():
+                    # Disambiguate true door tags (in circles next to swing arcs) from room numbers (in boxes in center of room)
+                    has_circle_candidate = any(is_enclosed_in_tag_circle(m["w_cx"], m["w_cy"], m["nearby_drawings"]) for m in matches)
+                    if has_circle_candidate:
+                        matches = [m for m in matches if is_enclosed_in_tag_circle(m["w_cx"], m["w_cy"], m["nearby_drawings"])]
+                    else:
+                        has_arc_candidate = any(m["arc_count"] > 0 for m in matches)
+                        if has_arc_candidate:
+                            matches = [m for m in matches if m["arc_count"] > 0]
+
                     # Sort matches by arc count descending so those with door arcs are prioritized
                     sorted_matches = sorted(matches, key=lambda x: x["arc_count"], reverse=True)
                         
@@ -758,7 +967,31 @@ async def cv_detector_node(state: CostmateState) -> dict:
                         inst_rect = m["inst_rect"]
                         nearby_drawings = m["nearby_drawings"]
                         
-                        logger.info(f"CV Detector DEBUG: MATCH FOUND word={word_text!r} at ({w_cx:.1f},{w_cy:.1f})")
+                        # Geometric building perimeter check
+                        is_perimeter = False
+                        if env_min_x is not None:
+                            dx0 = abs(w_cx - env_min_x)
+                            dx1 = abs(w_cx - env_max_x)
+                            dy0 = abs(w_cy - env_min_y)
+                            dy1 = abs(w_cy - env_max_y)
+                            min_dist = min(dx0, dx1, dy0, dy1)
+                            # Exterior perimeter envelope boundary check (within 120 points)
+                            if min_dist < 120.0:
+                                # Look for a nearby "E" or "EXT" wall type tag (within 15pt) to verify exterior status
+                                has_nearby_e = False
+                                for w_tag in words_on_page:
+                                    tag_text = w_tag[4].strip(".,()[]{}-_#*").upper()
+                                    if tag_text in ["E", "EXT"]:
+                                        tag_cx = (w_tag[0] + w_tag[2]) / 2
+                                        tag_cy = (w_tag[1] + w_tag[3]) / 2
+                                        dist_to_tag = ((tag_cx - w_cx) ** 2 + (tag_cy - w_cy) ** 2) ** 0.5
+                                        if dist_to_tag <= 15.0:
+                                            has_nearby_e = True
+                                            break
+                                if has_nearby_e:
+                                    is_perimeter = True
+
+                        logger.info(f"CV Detector DEBUG: MATCH FOUND word={word_text!r} at ({w_cx:.1f},{w_cy:.1f}), is_perimeter={is_perimeter}")
                         
                         # Increment index of this word on the page for unique crop filename
                         word_indices[word_text] = word_indices.get(word_text, 0) + 1
@@ -774,44 +1007,35 @@ async def cv_detector_node(state: CostmateState) -> dict:
                         opening_mode = classify_opening_from_drawings(nearby_drawings, inst_rect, item=sched_item)
                         logger.info(f"CV Detector: Mark {word_text} programmatic opening mode = {opening_mode}")
                         
-                        # Solution 1: Expand crop radius to 140pt to capture room labels in large rooms,
-                        # and draw a BRIGHT RED TARGET ARROW & CIRCLE pointing directly at (mark_cx, mark_cy)
-                        clip_rect = inst_rect + (-140, -140, 140, 140)
+                        # Crop-quality guardrail: reject crops with no nearby wall lines/drawings in vector page
+                        if len(drawings_on_page) > 0 and not nearby_drawings:
+                            logger.info(f"VLM Guardrails: Rejecting empty vector crop for mark {word_text} (no drawings near tag)")
+                            detections.append({
+                                "mark": word_text,
+                                "location": "Unknown",
+                                "opening_mode": "UNKNOWN",
+                                "int_ext": "Exterior" if is_perimeter else "Interior",
+                                "floor_no": str(floor_no),
+                                "floor_name": floor_name
+                            })
+                            continue
+
+                        # Solution 1: Expand crop radius to 80pt to capture room labels in high resolution,
+                        # centered exactly on the door mark
+                        clip_rect = inst_rect + (-80, -80, 80, 80)
                         try:
                             pix = page.get_pixmap(clip=clip_rect, dpi=200)
                             import re, uuid
-                            from PIL import Image, ImageDraw
                             
                             clean_mark_file = re.sub(r'[^a-zA-Z0-9_-]', '_', word_text)
                             crop_filename = f"crop_f{floor_no}_p{page_idx}_{clean_mark_file}_{w_idx}_{uuid.uuid4().hex[:6]}.png"
                             crop_path = os.path.join(settings.OUTPUT_DIR, crop_filename)
                             pix.save(crop_path)
                             
-                            # Draw Red Target Pin on Crop
-                            try:
-                                img = Image.open(crop_path).convert("RGB")
-                                draw = ImageDraw.Draw(img)
-                                scale = 200.0 / 72.0
-                                px_x = (mark_cx - clip_rect.x0) * scale
-                                px_y = (mark_cy - clip_rect.y0) * scale
-                                
-                                # Red circle around target mark
-                                r = 30
-                                draw.ellipse([px_x - r, px_y - r, px_x + r, px_y + r], outline=(255, 0, 0), width=5)
-                                
-                                # Red pointer arrow pointing down-right at circle
-                                draw.line([(px_x - 70, px_y - 70), (px_x - 25, px_y - 25)], fill=(255, 0, 0), width=6)
-                                arrow_head = [(px_x - 20, px_y - 20), (px_x - 45, px_y - 22), (px_x - 22, px_y - 45)]
-                                draw.polygon(arrow_head, fill=(255, 0, 0))
-                                
-                                img.save(crop_path)
-                            except Exception as pin_err:
-                                logger.warning(f"Could not draw red target pin on crop: {pin_err}")
-                                
                             all_temp_crops.append(crop_path)
                             
-                            # Queue LLM task for location/room name only
-                            location_tasks.append((word_text, floor_no, floor_name, crop_path, opening_mode))
+                            # Queue LLM task for location and classification mapping
+                            location_tasks.append((word_text, floor_no, floor_name, crop_path, opening_mode, is_perimeter))
                         except Exception as crop_err:
                             logger.error(f"Failed to create crop for mark {word_text}: {crop_err}")
                             # Still record the programmatic result without location
@@ -819,7 +1043,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
                                 "mark": word_text,
                                 "location": "",
                                 "opening_mode": opening_mode,
-                                "int_ext": "Interior",
+                                "int_ext": "Exterior" if is_perimeter else "Interior",
                                 "floor_no": str(floor_no),
                                 "floor_name": floor_name
                             })
@@ -829,19 +1053,30 @@ async def cv_detector_node(state: CostmateState) -> dict:
         # Run location LLM tasks concurrently
         logger.info(f"CV Detector: Running {len(location_tasks)} location-detection LLM tasks...")
         
-        async def run_location_task(mark, floor_no, floor_name, crop_path, opening_mode):
-            location, int_ext = await get_location_from_crop(crop_path, mark, floor_no, semaphore)
+        async def run_location_task(mark, floor_no, floor_name, crop_path, programmatic_mode, is_perimeter):
+            vlm_res = await classify_door_crop_vlm(crop_path, mark, floor_no, semaphore)
+            
+            vlm_mode = vlm_res.get("matched_code", "UNKNOWN")
+            opening_mode = vlm_mode if vlm_mode != "UNKNOWN" else programmatic_mode
+            
+            vlm_wall = vlm_res.get("wall_type", "UNKNOWN")
+            int_ext = "Exterior" if is_perimeter else "Interior"
+                
             return {
                 "mark": mark,
-                "location": location,
-                "opening_mode": opening_mode,  # programmatically determined
+                "location": vlm_res.get("location", "Unknown"),
+                "opening_mode": opening_mode,
                 "int_ext": int_ext,
+                "vlm_opening_mode": vlm_mode,
+                "vlm_wall_type": vlm_wall,
+                "vlm_confidence": vlm_res.get("confidence", "low"),
+                "vlm_reasoning": f"Geometric perimeter check (is_perimeter={is_perimeter}). VLM wall type guess: {vlm_wall}",
                 "floor_no": str(floor_no),
                 "floor_name": floor_name
             }
         
         location_results = await asyncio.gather(
-            *[run_location_task(m, f, fn, cp, om) for m, f, fn, cp, om in location_tasks]
+            *[run_location_task(m, f, fn, cp, om, ip) for m, f, fn, cp, om, ip in location_tasks]
         )
         detections.extend(location_results)
         

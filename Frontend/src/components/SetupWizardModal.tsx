@@ -274,6 +274,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   const handleExtractCrop = async () => {
     if (!cropRect || !cropFile || !draftSessionId) return;
 
+    setError(null);
     setExtracting(true);
     try {
       const x0 = Math.min(cropRect.startX, cropRect.currentX) / pdfScale;
@@ -357,6 +358,12 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       };
     });
 
+    // Reset native input values to allow uploading the same file again
+    const doorEl = document.getElementById('door-schedule-upload') as HTMLInputElement;
+    if (doorEl) doorEl.value = '';
+    const winEl = document.getElementById('window-schedule-upload') as HTMLInputElement;
+    if (winEl) winEl.value = '';
+
     // Reset crop modal states
     setIsCropModalOpen(false);
     setCropFile(null);
@@ -383,6 +390,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setError(null);
     setLoading(true);
     setUploadingFloorId(activeFloorId);
     try {
@@ -767,6 +775,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                     {/* Door Schedule */}
                     <div className="flex items-center gap-4">
                       <button 
+                        type="button"
                         onClick={() => document.getElementById('door-schedule-upload')?.click()}
                         disabled={isUploadingDoor || loading}
                         className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-2 text-sm font-medium transition-colors w-52 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -780,6 +789,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         multiple
                         className="hidden" 
                         onChange={async (e) => {
+                          setError(null);
                           const files = e.target.files;
                           if (!files || files.length === 0) return;
                           
@@ -817,6 +827,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                     {/* Window Schedule */}
                     <div className="flex items-center gap-4">
                       <button 
+                        type="button"
                         onClick={() => document.getElementById('window-schedule-upload')?.click()}
                         disabled={isUploadingWindow || loading}
                         className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-2 text-sm font-medium transition-colors w-52 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -830,6 +841,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         multiple
                         className="hidden" 
                         onChange={async (e) => {
+                          setError(null);
                           const files = e.target.files;
                           if (!files || files.length === 0) return;
                           
@@ -881,6 +893,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         accept=".docx,.doc,.dotx,.dot,.txt,.pdf"
                         className="hidden" 
                         onChange={async (e) => {
+                          setError(null);
                           const file = e.target.files?.[0];
                           if (!file) return;
                           setLoading(true);

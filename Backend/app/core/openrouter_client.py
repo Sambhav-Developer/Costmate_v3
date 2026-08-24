@@ -63,7 +63,9 @@ class OpenRouterClient:
                         content_parts.append({"type": "image_url", "image_url": {"url": path}})
                     else:
                         b64 = self._encode_image(path)
-                        content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+                        ext = os.path.splitext(path)[1].lower().strip(".")
+                        mime = "jpeg" if ext in ("jpg", "jpeg") else "png"
+                        content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/{mime};base64,{b64}"}})
                 except Exception as e:
                     logger.error(f"Failed to encode image {path[:100]}...: {e}")
                     raise e

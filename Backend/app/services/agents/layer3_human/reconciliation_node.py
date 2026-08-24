@@ -1,5 +1,6 @@
 from app.services.graph.state import CostmateState
 from app.core.logging import logger
+import re
 
 async def reconciliation_node(state: CostmateState) -> dict:
     logger.info("Reconciliation Node: Joining tracks A, B, and C...")
@@ -101,7 +102,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
             "needs_review": bool(item.get("needs_review", False))
         }
         
-        ignore_keys = {"mark", "mark_normalized", "mark_norm", "_schedule_type", "count", "needs_review"}
+        ignore_keys = {"mark", "mark_normalized", "mark_norm", "_schedule_type", "count", "needs_review", "_schedule_opening_mode"}
         
         # Known hardware group key name variants (all lowercased for comparison)
         HARDWARE_GROUP_VARIANTS = {
@@ -146,8 +147,85 @@ async def reconciliation_node(state: CostmateState) -> dict:
             else:
                 obj[canonical_key] = v
         
+        # Check Panel 2 presence in the schedule row
+        panel_2_keys = []
+        has_hardware = False
+        has_material = False
+        is_explicit_exterior = False
+        
+        for k, v in item.items():
+            k_lower = str(k).lower().strip()
+            v_str = str(v).strip().upper()
+            if not v_str or v_str in ["", "-", "N/A", "NONE"]:
+                continue
+            
+            # Panel 2 check
+            if "panel 2" in k_lower or "width 2" in k_lower or "panel type 2" in k_lower or k_lower.endswith("_2") or "second" in k_lower or (re.search(r"\b2\b", k_lower) and not re.search(r"\b1\b", k_lower)):
+                if v_str not in ["EXIST", "EX", "EXISTING"]:
+                    panel_2_keys.append(v_str)
+                    
+            # Hardware Set check
+            if any(hw in k_lower for hw in ["hardware group", "hardware set", "hw set", "group no", "group number"]):
+                has_hardware = True
+                
+            # Material check
+            if "material" in k_lower or "mat'l" in k_lower:
+                if v_str not in ["EXIST", "EX", "EXISTING"]:
+                    has_material = True
+                    
+        has_panel_2 = len(panel_2_keys) > 0
+
+        # Reconcile Opening Mode and INT/EXT wall type using VLM results from cv_detections
+        sched_opening_mode = item.get("_schedule_opening_mode", "SGL")
+        mark_dets = [d for d in cv_detections if str(d.get("mark", "")).strip().upper() == mark]
+        
+        resolved_mode = sched_opening_mode
+        if has_panel_2:
+            resolved_mode = "PR"
+            
+        final_opening_mode = resolved_mode
+        final_int_ext = "Interior"
+        
+        if mark_dets:
+            det = mark_dets[0]
+            vlm_mode = det.get("vlm_opening_mode", "UNKNOWN")
+            vlm_wall = det.get("vlm_wall_type", "UNKNOWN")
+            
+            if vlm_mode != "UNKNOWN":
+                # Sanity check cased openings (CO) and revolving (REV)
+                is_invalid_co = (vlm_mode == "CO") and (has_hardware or has_material)
+                is_invalid_rev = (vlm_mode == "REV") and (has_hardware or has_material)
+                
+                vlm_mode_cleaned = vlm_mode
+                if is_invalid_co or is_invalid_rev:
+                    vlm_mode_cleaned = "PR" if has_panel_2 else "SGL"
+                    logger.info(f"Reconciliation: Overriding invalid VLM {vlm_mode} for mark {mark} to {vlm_mode_cleaned} (has hardware/material).")
+                elif vlm_mode == "PR" and not has_panel_2 and resolved_mode == "SGL":
+                    vlm_mode_cleaned = "SGL"
+                    logger.info(f"Reconciliation: Overriding VLM PR for mark {mark} to SGL (no Panel 2 in schedule).")
+
+                if resolved_mode == vlm_mode_cleaned:
+                    final_opening_mode = resolved_mode
+                else:
+                    unresolved_queue.append({
+                        "type": "opening_mode_conflict",
+                        "mark": mark,
+                        "context": f"Opening Mode Conflict: Schedule suggests '{resolved_mode}' but floor plan crop reads as '{vlm_mode_cleaned}'. (Reasoning: {det.get('vlm_reasoning', 'VLM detection discrepancy')})"
+                    })
+                    obj["needs_review"] = True
+                    # Prioritize schedule-resolved mode over wrong VLM guess for final output
+                    final_opening_mode = resolved_mode
+            else:
+                final_opening_mode = resolved_mode
+            
+            final_int_ext = det.get("int_ext", "Interior")
+        else:
+            final_int_ext = "Unknown"
+            
+        obj["OPENING MODE"] = final_opening_mode
+        obj["INT/EXT"] = final_int_ext
+        
         # Shift detail values if they drifted into the FINISH or FRAME FINISH columns
-        import re
         for finish_key in ["FINISH", "FRAME FINISH"]:
             finish_val = str(obj.get(finish_key, "")).strip()
             if finish_val and re.match(r'^[A-Z0-9]+/[A-Z]\d+', finish_val):

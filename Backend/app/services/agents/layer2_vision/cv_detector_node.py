@@ -151,7 +151,7 @@ async def classify_door_crop_vlm(crop_path: str, mark: str, floor_no: int, semap
 # Common room keywords to filter out room name labels from door/window callouts
 ROOM_KEYWORDS = {
     "room", "rm", "office", "toilet", "staff", "holding", "treatment", "bed", 
-    "ex", "existing", "lounge", "lobby", "corridor", "hall", "stair", "storage", 
+    "lounge", "lobby", "corridor", "hall", "stair", "storage", 
     "mech", "electrical", "elec", "janitor", "closet", "bath", "shower", "wc", 
     "vestibule", "entry", "exit", "classroom", "kitchen", "conf", "conference", 
     "shared", "hvac", "elevator", "utility", "laundry", "nourse", "care", "station",
@@ -174,7 +174,7 @@ def reassemble_pdf_words(words):
             next_w = sorted_words[i + 1]
             if next_w[5] == w[5] and next_w[6] == w[6]:
                 gap = next_w[0] - w[2]
-                if 0 <= gap < 8:
+                if 0 <= gap < 2.5:
                     w[4] = w[4] + next_w[4]
                     w[2] = next_w[2]
                     w[3] = max(w[3], next_w[3])
@@ -219,16 +219,22 @@ def get_schedule_table_rects(page):
             rects.append(table_rect)
     return rects
 
-def is_block_room_label(blocks, block_no, clean_mark) -> bool:
+def is_block_room_label(blocks, block_no, line_no, clean_mark) -> bool:
     if block_no < 0 or block_no >= len(blocks):
         return False
     try:
         b = blocks[block_no]
-        block_text = b[4].strip().upper()
-        block_words = [w.strip(".,()[]{}-_#*") for w in block_text.split()]
-        block_words = [w for w in block_words if w]
+        block_text = b[4]
+        lines = block_text.split("\n")
+        if line_no < 0 or line_no >= len(lines):
+            block_words = [w.strip(".,()[]{}-_#*") for w in block_text.split()]
+            words_lower = [w.lower() for w in block_words if w]
+            return any(kw in words_lower for kw in ROOM_KEYWORDS)
+            
+        line_text = lines[line_no].strip().upper()
+        line_words = [w.strip(".,()[]{}-_#*") for w in line_text.split()]
+        words_lower = [w.lower() for w in line_words if w]
         
-        words_lower = [w.lower() for w in block_words]
         if any(kw in words_lower for kw in ROOM_KEYWORDS):
             return True
         return False
@@ -853,6 +859,13 @@ async def cv_detector_node(state: CostmateState) -> dict:
                         w_cx = (w[0] + w[2]) / 2
                         w_cy = (w[1] + w[3]) / 2
                         
+                        # Filter out gridline bubbles and sheet borders in the outer 10% margins
+                        W = page.rect.width
+                        H = page.rect.height
+                        if w_cx < 0.10 * W or w_cx > 0.90 * W or w_cy < 0.10 * H or w_cy > 0.90 * H:
+                            logger.info(f"CV Detector: Skipping margin word '{w[4]}' at ({w_cx:.1f}, {w_cy:.1f})")
+                            continue
+                        
                         # Skip if the match falls inside a masked schedule table area
                         is_inside_table = False
                         for tr in table_rects:
@@ -864,8 +877,9 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             
                         # Skip if block is room label block
                         block_no = w[5]
-                        if is_block_room_label(blocks, block_no, word_text):
-                            logger.info(f"CV Detector: Skipping block {block_no} for mark {word_text} (room label keyword)")
+                        line_no = w[6]
+                        if is_block_room_label(blocks, block_no, line_no, word_text):
+                            logger.info(f"CV Detector: Skipping block {block_no} line {line_no} for mark {word_text} (room label keyword)")
                             continue
                             
                         import fitz as fz
@@ -945,18 +959,14 @@ async def cv_detector_node(state: CostmateState) -> dict:
                     has_circle_candidate = any(is_enclosed_in_tag_circle(m["w_cx"], m["w_cy"], m["nearby_drawings"]) for m in matches)
                     if has_circle_candidate:
                         matches = [m for m in matches if is_enclosed_in_tag_circle(m["w_cx"], m["w_cy"], m["nearby_drawings"])]
-                    else:
-                        has_arc_candidate = any(m["arc_count"] > 0 for m in matches)
-                        if has_arc_candidate:
-                            matches = [m for m in matches if m["arc_count"] > 0]
 
                     # Sort matches by arc count descending so those with door arcs are prioritized
                     sorted_matches = sorted(matches, key=lambda x: x["arc_count"], reverse=True)
                         
-                    # Also apply simple spatial deduplication: within 60pt
+                    # Also apply simple spatial deduplication: within 25pt
                     final_matches = []
                     for m in sorted_matches:
-                        if any(abs(fm["w_cx"] - m["w_cx"]) < 60 and abs(fm["w_cy"] - m["w_cy"]) < 60 for fm in final_matches):
+                        if any(abs(fm["w_cx"] - m["w_cx"]) < 25 and abs(fm["w_cy"] - m["w_cy"]) < 25 for fm in final_matches):
                             continue
                         final_matches.append(m)
                         
@@ -1016,7 +1026,10 @@ async def cv_detector_node(state: CostmateState) -> dict:
                                 "opening_mode": "UNKNOWN",
                                 "int_ext": "Exterior" if is_perimeter else "Interior",
                                 "floor_no": str(floor_no),
-                                "floor_name": floor_name
+                                "floor_name": floor_name,
+                                "w_cx": w_cx,
+                                "w_cy": w_cy,
+                                "bbox": [inst_rect.x0, inst_rect.y0, inst_rect.x1, inst_rect.y1]
                             })
                             continue
 
@@ -1035,7 +1048,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             all_temp_crops.append(crop_path)
                             
                             # Queue LLM task for location and classification mapping
-                            location_tasks.append((word_text, floor_no, floor_name, crop_path, opening_mode, is_perimeter))
+                            location_tasks.append((word_text, floor_no, floor_name, crop_path, opening_mode, is_perimeter, w_cx, w_cy, [inst_rect.x0, inst_rect.y0, inst_rect.x1, inst_rect.y1]))
                         except Exception as crop_err:
                             logger.error(f"Failed to create crop for mark {word_text}: {crop_err}")
                             # Still record the programmatic result without location
@@ -1045,7 +1058,10 @@ async def cv_detector_node(state: CostmateState) -> dict:
                                 "opening_mode": opening_mode,
                                 "int_ext": "Exterior" if is_perimeter else "Interior",
                                 "floor_no": str(floor_no),
-                                "floor_name": floor_name
+                                "floor_name": floor_name,
+                                "w_cx": w_cx,
+                                "w_cy": w_cy,
+                                "bbox": [inst_rect.x0, inst_rect.y0, inst_rect.x1, inst_rect.y1]
                             })
                             
             doc.close()
@@ -1053,7 +1069,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
         # Run location LLM tasks concurrently
         logger.info(f"CV Detector: Running {len(location_tasks)} location-detection LLM tasks...")
         
-        async def run_location_task(mark, floor_no, floor_name, crop_path, programmatic_mode, is_perimeter):
+        async def run_location_task(mark, floor_no, floor_name, crop_path, programmatic_mode, is_perimeter, w_cx, w_cy, bbox):
             vlm_res = await classify_door_crop_vlm(crop_path, mark, floor_no, semaphore)
             
             vlm_mode = vlm_res.get("matched_code", "UNKNOWN")
@@ -1072,11 +1088,14 @@ async def cv_detector_node(state: CostmateState) -> dict:
                 "vlm_confidence": vlm_res.get("confidence", "low"),
                 "vlm_reasoning": f"Geometric perimeter check (is_perimeter={is_perimeter}). VLM wall type guess: {vlm_wall}",
                 "floor_no": str(floor_no),
-                "floor_name": floor_name
+                "floor_name": floor_name,
+                "w_cx": w_cx,
+                "w_cy": w_cy,
+                "bbox": bbox
             }
         
         location_results = await asyncio.gather(
-            *[run_location_task(m, f, fn, cp, om, ip) for m, f, fn, cp, om, ip in location_tasks]
+            *[run_location_task(m, f, fn, cp, om, ip, cx, cy, box) for m, f, fn, cp, om, ip, cx, cy, box in location_tasks]
         )
         detections.extend(location_results)
         

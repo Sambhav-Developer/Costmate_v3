@@ -152,6 +152,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
         has_hardware = False
         has_material = False
         is_explicit_exterior = False
+        has_pair_leaves = False
         
         for k, v in item.items():
             k_lower = str(k).lower().strip()
@@ -164,6 +165,20 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 if v_str not in ["EXIST", "EX", "EXISTING"]:
                     panel_2_keys.append(v_str)
                     
+            # Leaf count check: e.g. NO. OF LEAVES = 2
+            leaves_keys = ["no. of leaves", "leaves", "leaf qty", "panels", "leaves qty", "no. of panels", "leaves number"]
+            if any(lk in k_lower for lk in leaves_keys):
+                if v_str in ["2", "PR", "DBL", "PAIR", "DOUBLE", "TWO", "2.0"]:
+                    has_pair_leaves = True
+                    
+            # Width check for slash (e.g. 3'-0"/3'-0")
+            width_keys = ["width", "size", "dimension", "opening size", "panel size"]
+            if any(wk in k_lower for wk in width_keys):
+                if "/" in v_str:
+                    parts = [p.strip() for p in v_str.split("/")]
+                    if len(parts) >= 2 and all(re.search(r"\d", p) for p in parts):
+                        has_pair_leaves = True
+                    
             # Hardware Set check
             if any(hw in k_lower for hw in ["hardware group", "hardware set", "hw set", "group no", "group number"]):
                 has_hardware = True
@@ -173,7 +188,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 if v_str not in ["EXIST", "EX", "EXISTING"]:
                     has_material = True
                     
-        has_panel_2 = len(panel_2_keys) > 0
+        has_panel_2 = len(panel_2_keys) > 0 or has_pair_leaves
 
         # Reconcile Opening Mode and INT/EXT wall type using VLM results from cv_detections
         sched_opening_mode = item.get("_schedule_opening_mode", "SGL")

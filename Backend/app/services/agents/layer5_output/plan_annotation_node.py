@@ -1,95 +1,18 @@
 import os
 import traceback
+import openpyxl
 from app.core.logging import logger
 from app.services.graph.state import CostmateState
 from app.config import settings
 
-# Common room keywords to filter out room name labels from door/window callouts
-ROOM_KEYWORDS = {
-    "room", "rm", "office", "toilet", "staff", "holding", "treatment", "bed", 
-    "ex", "existing", "lounge", "lobby", "corridor", "hall", "stair", "storage", 
-    "mech", "electrical", "elec", "janitor", "closet", "bath", "shower", "wc", 
-    "vestibule", "entry", "exit", "classroom", "kitchen", "conf", "conference", 
-    "shared", "hvac", "elevator", "utility", "laundry", "nourse", "care", "station",
-    "exam", "examination", "it", "pantry", "waiting", "reception", "soiled", "clean", 
-    "nurse", "nook", "dictation", "physician", "touchdown", "med", "meds", "unisex", 
-    "vest", "clos", "lrd", "sub", "wait", "consult", "consultation", "work", "lockers", 
-    "triage", "harrison", "mamaroneck"
-}
-
-def reassemble_pdf_words(words):
-    if not words:
-        return []
-    sorted_words = sorted(words, key=lambda x: (x[5], x[6], x[0]))
-    merged = []
-    i = 0
-    n = len(sorted_words)
-    while i < n:
-        w = list(sorted_words[i])
-        while i + 1 < n:
-            next_w = sorted_words[i + 1]
-            if next_w[5] == w[5] and next_w[6] == w[6]:
-                gap = next_w[0] - w[2]
-                if 0 <= gap < 8:
-                    w[4] = w[4] + next_w[4]
-                    w[2] = next_w[2]
-                    w[3] = max(w[3], next_w[3])
-                    i += 1
-                    continue
-            break
-        merged.append(tuple(w))
-        i += 1
-    return merged
-
-def find_closest_schedule_mark(word_text, sched_marks):
-    if word_text in sched_marks:
-        return word_text
-    # Common OCR digit-to-letter confusion fixes
-    normalized_variants = []
-    # Variant A: replace all '0' and 'O' with 'C' (for 3C03/3C06A type marks read as 3003/3O03)
-    v_c = word_text.replace('0', 'C').replace('O', 'C')
-    normalized_variants.append(v_c)
-    # Variant B: replace 'C' with '0'
-    v_0 = word_text.replace('C', '0')
-    normalized_variants.append(v_0)
-    # Variant C: replace 'O' with '0'
-    v_o2 = word_text.replace('O', '0')
-    normalized_variants.append(v_o2)
-    # Variant D: replace '8' with 'B' or 'B' with '8'
-    normalized_variants.append(word_text.replace('8', 'B'))
-    normalized_variants.append(word_text.replace('B', '8'))
-    
-    for v in normalized_variants:
-        if v != word_text and v in sched_marks:
-            return v
+def get_item_mark(item):
+    for k, v in item.items():
+        if str(k).lower().strip() in ["mark", "type", "door mark", "door no", "door no.", "id", "mark / type", "mark/type"]:
+            return str(v).strip().upper()
+    for k, v in item.items():
+        if "mark" in str(k).lower() or "type" in str(k).lower():
+            return str(v).strip().upper()
     return None
-
-def get_schedule_table_rects(page):
-    import fitz
-    rects = []
-    for term in ["DOOR AND FRAME SCHEDULE", "DOOR SCHEDULE", "WINDOW SCHEDULE", "FRAME SCHEDULE"]:
-        rects_found = page.search_for(term)
-        for r in rects_found:
-            page_rect = page.rect
-            table_rect = fitz.Rect(r.x0 - 20, r.y0 - 50, page_rect.x1, page_rect.y1)
-            rects.append(table_rect)
-    return rects
-
-def is_block_room_label(blocks, block_no, clean_mark) -> bool:
-    if block_no < 0 or block_no >= len(blocks):
-        return False
-    try:
-        b = blocks[block_no]
-        block_text = b[4].strip().upper()
-        block_words = [w.strip(".,()[]{}-_#*") for w in block_text.split()]
-        block_words = [w for w in block_words if w]
-        
-        words_lower = [w.lower() for w in block_words]
-        if any(kw in words_lower for kw in ROOM_KEYWORDS):
-            return True
-        return False
-    except:
-        return False
 
 async def plan_annotation_node(state: CostmateState) -> dict:
     logger.info("Plan Annotation Node: Color-coding door and window marks on floor plan drawings...")
@@ -102,8 +25,6 @@ async def plan_annotation_node(state: CostmateState) -> dict:
         
     # Gather all raw drawing paths/URLs
     raw_drawings = []
-    
-    # 1. Look for rawUrls in intake_data floor levels
     intake = state.get("intake_data") or {}
     floors = intake.get("floors", [])
     if isinstance(floors, list):
@@ -112,7 +33,6 @@ async def plan_annotation_node(state: CostmateState) -> dict:
             if raw_url and raw_url not in raw_drawings:
                 raw_drawings.append(raw_url)
                 
-    # 2. Fall back to uploaded_file_path if no floor rawUrls found
     if not raw_drawings:
         overall_file = state.get("uploaded_file_path")
         if overall_file:
@@ -131,20 +51,19 @@ async def plan_annotation_node(state: CostmateState) -> dict:
     items = doors + windows
     
     if not items:
-        logger.warning("No schedule items found to highlight.")
-        return {}
-
+        items = state.get("schedule_data", [])
+        
     # Extract all marks and map them to their schedule details
     sched_lookup = {}
-    for item in items:
-        mark_val = item.get("type") or item.get("mark")
-        if mark_val:
-            sched_lookup[str(mark_val).strip().upper()] = item
+    if items:
+        for item in items:
+            mark_val = get_item_mark(item)
+            if mark_val:
+                sched_lookup[str(mark_val).strip().upper()] = item
 
     # Get computer vision detections context
     cv_results = state.get("cv_results", {}) or {}
     detections = cv_results.get("detections", []) or []
-    cv_lookup = {str(d.get("mark", "")).strip().upper(): d for d in detections if d.get("mark")}
     
     # Saturated, vibrant color definitions (RGB in 0-1 range for fitz)
     color_interior = (1.0, 0.9, 0.0)    # Saturated Yellow/Gold (Interior Door/Window)
@@ -152,16 +71,18 @@ async def plan_annotation_node(state: CostmateState) -> dict:
     color_storefront = (1.0, 0.15, 0.6) # Saturated Magenta/Pink (Glass/Storefront Door/Window)
     
     downloaded_temps = []
+    total_highlighted = 0
+    total_detections_with_bbox = 0
+    unannotated_marks = []
     
     try:
         os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
-        
-        # Create a master document to hold all annotated drawings merged together
         master_doc = fitz.open()
         
         for idx, file_source in enumerate(raw_drawings):
             temp_local_file = None
             local_raw_path = None
+            floor_no = idx + 1
             
             # Download the file if it's hosted in the cloud (Cloudinary URL)
             if file_source.startswith("http://") or file_source.startswith("https://"):
@@ -206,129 +127,75 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                 
             highlighted_count = 0
             
-            sched_marks = list(sched_lookup.keys())
-            for page in doc:
-                blocks = page.get_text("blocks")
-                words_on_page = reassemble_pdf_words(page.get_text("words"))
-                drawings_on_page = page.get_drawings()
-                table_rects = get_schedule_table_rects(page)
-                
-                # 1. Collect candidates by mark
-                candidates_by_mark = {}
-                for w in words_on_page:
-                    raw_word = w[4].strip(".,()[]{}-_#*").upper()
-                    
-                    matched_mark = find_closest_schedule_mark(raw_word, sched_marks)
-                    if matched_mark:
-                        word_text = matched_mark
-                        w_x = (w[0] + w[2]) / 2
-                        w_y = (w[1] + w[3]) / 2
-                        
-                        # Skip if the match falls inside a masked schedule table area
-                        is_inside_table = False
-                        for tr in table_rects:
-                            if w_x >= tr.x0 and w_x <= tr.x1 and w_y >= tr.y0 and w_y <= tr.y1:
-                                is_inside_table = True
-                                break
-                        if is_inside_table:
-                            continue
-                            
-                        # Skip if block is room label block
-                        block_no = w[5]
-                        if is_block_room_label(blocks, block_no, word_text):
-                            continue
-                            
-                        import fitz as fz
-                        inst_rect = fz.Rect(w[0], w[1], w[2], w[3])
-                        search_rect = inst_rect + (-70, -70, 70, 70)
-                        nearby_drawings = [
-                            d for d in drawings_on_page
-                            if d.get("rect") and fz.Rect(d["rect"]).intersects(search_rect)
-                        ]
-                        
-                        # Count nearby arc curves
-                        arc_paths = []
-                        for d in nearby_drawings:
-                            items = d.get("items", [])
-                            has_curve = any(it[0] in ("c", "qu") for it in items)
-                            if not has_curve:
-                                continue
-                            arc_rect = fz.Rect(d.get("rect"))
-                            arc_cx = (arc_rect.x0 + arc_rect.x1) / 2
-                            arc_cy = (arc_rect.y0 + arc_rect.y1) / 2
-                            dist = ((arc_cx - w_x) ** 2 + (arc_cy - w_y) ** 2) ** 0.5
-                            if dist <= 50:
-                                # Skip tiny label circle arcs
-                                arc_area = arc_rect.width * arc_rect.height
-                                if dist < 15 and arc_area < 200:
-                                    continue
-                                arc_paths.append(d)
-                                
-                        candidates_by_mark.setdefault(word_text, []).append({
-                            "word": w,
-                            "w_x": w_x,
-                            "w_y": w_y,
-                            "inst_rect": inst_rect,
-                            "arc_count": len(arc_paths)
-                        })
-                        
-                for word_text, matches in candidates_by_mark.items():
-                    # Sort matches by arc count descending so those with door arcs are prioritized
-                    sorted_matches = sorted(matches, key=lambda x: x["arc_count"], reverse=True)
-                        
-                    # Also apply simple spatial deduplication: within 60pt
-                    final_matches = []
-                    for m in sorted_matches:
-                        if any(abs(fm["w_x"] - m["w_x"]) < 60 and abs(fm["w_y"] - m["w_y"]) < 60 for fm in final_matches):
-                            continue
-                        final_matches.append(m)
-                        
-                    for m in final_matches:
-                        w = m["word"]
-                        inst_rect = m["inst_rect"]
-                        
-                        sched_info = sched_lookup[word_text]
-                        cv_info = cv_lookup.get(word_text, {})
-                        
-                        # Case-insensitive material column lookup
-                        material = ""
-                        for k, v in sched_info.items():
-                            if "material" in str(k).lower():
-                                material = str(v).upper()
-                                break
-                        
-                        int_ext = str(cv_info.get("int_ext", "")).upper()
-                        
-                        import re
-                        mat_upper = material.upper()
-                        mat_words = [t.strip() for t in re.split(r'[/\s]', mat_upper) if t.strip()]
-                        if any(kw in mat_upper for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM", "STOREFRONT", "GL"]) or "AL" in mat_words:
-                            highlight_color = color_storefront
-                        elif int_ext in ["EXT", "EXTERNAL", "EXTERIOR"]:
-                            highlight_color = color_exterior
-                        else:
-                            highlight_color = color_interior
-                            
-                        annot = page.add_rect_annot(inst_rect)
-                        annot.set_colors(stroke=highlight_color, fill=highlight_color)
-                        annot.set_opacity(0.65) # Darker opacity for clear visibility
-                        annot.update()
-                        highlighted_count += 1
-                        
-            logger.info(f"Highlighted {highlighted_count} items on drawing {idx} ({os.path.basename(local_raw_path)})")
+            # Filter detections for this floor
+            floor_dets = [d for d in detections if str(d.get("floor_no")) == str(floor_no)]
             
-            # Merge this annotated drawing into the master document
+            for page_num, page in enumerate(doc):
+                for d in floor_dets:
+                    bbox = d.get("bbox")
+                    if not bbox:
+                        continue
+                        
+                    total_detections_with_bbox += 1
+                    
+                    mark = str(d.get("mark", "")).strip().upper()
+                    sched_info = sched_lookup.get(mark, {})
+                    
+                    # Case-insensitive material column lookup
+                    material = ""
+                    for k, v in sched_info.items():
+                        if "material" in str(k).lower():
+                            material = str(v).upper()
+                            break
+                            
+                    # Check for D-series demountable fronts or glass/aluminum partition
+                    is_d_series = mark.startswith("D")
+                    is_storefront = is_d_series or any(kw in material for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM", "STOREFRONT", "GL"])
+                    
+                    int_ext = str(sched_info.get("INT/EXT") or d.get("int_ext") or "INT").upper()
+                    
+                    if is_storefront:
+                        highlight_color = color_storefront
+                    elif any(x in int_ext for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
+                        highlight_color = color_exterior
+                    else:
+                        highlight_color = color_interior
+                        
+                    inst_rect = fitz.Rect(bbox[0], bbox[1], bbox[2], bbox[3])
+                    annot = page.add_rect_annot(inst_rect)
+                    annot.set_colors(stroke=highlight_color, fill=highlight_color)
+                    annot.set_opacity(0.65)
+                    annot.update()
+                    highlighted_count += 1
+                    total_highlighted += 1
+                    
+            logger.info(f"Highlighted {highlighted_count} items on drawing {idx} ({os.path.basename(local_raw_path)})")
             master_doc.insert_pdf(doc)
             doc.close()
-
+            
         # Save the master consolidated PDF
         out_path = os.path.join(settings.OUTPUT_DIR, f"{state.get('session_id', 'output')}_annotated.txt")
         master_doc.save(out_path)
         master_doc.close()
-        
         logger.info(f"Consolidated annotated PDF successfully saved at {out_path}")
         
-        # Upload generated PDF to Cloudinary as raw text to bypass PDF restricted delivery setting
+        # Hard check: count(highlighted_items) == count(quantity_rows/detections)
+        # Check if there are any detections that had QTY > 0 but zero coordinates/highlights
+        missing_coords_count = len(detections) - total_highlighted
+        
+        logger.info(f"Self-Check: Total Detections = {len(detections)}, Detections with bbox = {total_detections_with_bbox}, Highlighted = {total_highlighted}")
+        
+        if total_highlighted != len(detections):
+            msg = f"Self-Check FAILED: count(highlighted_items)={total_highlighted} does not match count(detections)={len(detections)} (missing {missing_coords_count} highlights)."
+            logger.error(msg)
+            # Find which marks missed highlights
+            for d in detections:
+                if not d.get("bbox"):
+                    unannotated_marks.append(d.get("mark"))
+            # Raise exception to fail loudly
+            raise ValueError(f"{msg} Unannotated marks: {unannotated_marks}")
+            
+        # Upload generated PDF to Cloudinary
         from app.core.cloud import upload_to_cloudinary
         cloud_url = upload_to_cloudinary(out_path, resource_type="raw") or out_path
         
@@ -336,16 +203,16 @@ async def plan_annotation_node(state: CostmateState) -> dict:
         if os.path.exists(out_path):
             try:
                 os.remove(out_path)
-                logger.info(f"Cleaned up local annotated PDF: {out_path}")
-            except Exception as cleanup_err:
-                logger.warning(f"Failed to remove local annotated PDF: {cleanup_err}")
+            except:
+                pass
                 
         # Cleanup temporary files
         for temp_file in downloaded_temps:
             if os.path.exists(temp_file):
-                try: os.remove(temp_file)
-                except Exception as cleanup_err:
-                    logger.warning(f"Failed to delete temp file {temp_file}: {cleanup_err}")
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
                     
         return {"annotated_pdf_path": cloud_url}
         
@@ -355,6 +222,8 @@ async def plan_annotation_node(state: CostmateState) -> dict:
         # Clean up temp files on error
         for temp_file in downloaded_temps:
             if os.path.exists(temp_file):
-                try: os.remove(temp_file)
-                except: pass
-        return {"error": str(e)}
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+        return {"error": str(e), "needs_review": True}

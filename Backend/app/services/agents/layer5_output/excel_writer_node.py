@@ -179,10 +179,10 @@ async def excel_writer_node(state: CostmateState) -> dict:
                             elif header == "ESTIMATOR NOTES": val = notes
                             elif header in ["FLOOR / LEVEL", "FLOOR NO"]: val = floor_val
                             elif header == "OPENING MODE": 
-                                raw_mode = d.get("opening_mode") or item.get("OPENING MODE", "SGL")
+                                raw_mode = item.get("OPENING MODE") or d.get("opening_mode") or "SGL"
                                 val = normalize_opening_mode(raw_mode)
                             elif header == "INT/EXT": 
-                                raw_ie = str(d.get("int_ext") or item.get("INT/EXT", "INT")).upper()
+                                raw_ie = str(item.get("INT/EXT") or d.get("int_ext") or "INT").upper()
                                 if any(x in raw_ie for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
                                     val = "EXT"
                                 else:

@@ -21,7 +21,7 @@ while dir_path:
         break
     dir_path = parent
 WORKSPACE_DIR = dir_path
-REFERENCE_CATALOG_PATH = os.path.join(WORKSPACE_DIR, "Assets", "door_types.jpg")
+REFERENCE_CATALOG_PATH = os.path.join(WORKSPACE_DIR, "Assets", "door_types_updated.png")
 
 @lru_cache(maxsize=1)
 def get_reference_catalog_b64() -> str:
@@ -128,7 +128,7 @@ async def classify_door_crop_vlm(crop_path: str, mark: str, floor_no: int, semap
             res = await openrouter_client.generate_chat(
                 prompt=SYSTEM_PROMPT,
                 image_paths=[
-                    f"data:image/jpeg;base64,{reference_b64}",
+                    f"data:image/png;base64,{reference_b64}" if REFERENCE_CATALOG_PATH.endswith(".png") else f"data:image/jpeg;base64,{reference_b64}",
                     crop_path
                 ],
                 json_mode=True,
@@ -158,7 +158,7 @@ ROOM_KEYWORDS = {
     "exam", "examination", "it", "pantry", "waiting", "reception", "soiled", "clean", 
     "nurse", "nook", "dictation", "physician", "touchdown", "med", "meds", "unisex", 
     "vest", "clos", "lrd", "sub", "wait", "consult", "consultation", "work", "lockers", 
-    "triage", "harrison", "mamaroneck"
+    "triage", "harrison", "mamaroneck", "shwr", "toilet/shwr", "cr", "com", "crm"
 }
 
 def reassemble_pdf_words(words):
@@ -225,18 +225,17 @@ def is_block_room_label(blocks, block_no, line_no, clean_mark) -> bool:
     try:
         b = blocks[block_no]
         block_text = b[4]
-        lines = block_text.split("\n")
-        if line_no < 0 or line_no >= len(lines):
-            block_words = [w.strip(".,()[]{}-_#*") for w in block_text.split()]
-            words_lower = [w.lower() for w in block_words if w]
-            return any(kw in words_lower for kw in ROOM_KEYWORDS)
-            
-        line_text = lines[line_no].strip().upper()
-        line_words = [w.strip(".,()[]{}-_#*") for w in line_text.split()]
-        words_lower = [w.lower() for w in line_words if w]
-        
-        if any(kw in words_lower for kw in ROOM_KEYWORDS):
+        # Check if the entire block contains any room keywords (handles room numbers grouped with room names)
+        block_words = [w.strip(".,()[]{}-_#*/").lower() for w in block_text.split() if w]
+        if any(kw in block_words for kw in ROOM_KEYWORDS):
             return True
+            
+        lines = block_text.split("\n")
+        if 0 <= line_no < len(lines):
+            line_text = lines[line_no].strip().upper()
+            line_words = [w.strip(".,()[]{}-_#*/").lower() for w in line_text.split() if w]
+            if any(kw in line_words for kw in ROOM_KEYWORDS):
+                return True
         return False
     except:
         return False
@@ -271,6 +270,8 @@ def normalize_opening_mode(val: str) -> str:
         return "SGL"
     if val_clean in ["DA", "DOUBLE ACTING", "DOUBLE-ACTING", "DOUBLE_ACTING"]:
         return "DA"
+    if val_clean in ["DE", "DOUBLE EGRESS", "DOUBLE-EGRESS", "DOUBLE_EGRESS"]:
+        return "DE"
     if val_clean in ["PR", "PAIR", "PAIRED", "DOUBLE SGL", "PR.", "PRS", "P"]:
         return "PR"
     if val_clean in ["CO", "DOUBLE-LEAF", "DOUBLE LEAF", "TWO-LEAF", "TWO LEAF", "2", "CASED", "CASED OPENING"]:
@@ -357,14 +358,19 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
             return "CO"
 
         # Check for Double-Acting (DA) / Anti-Barricade in schedule
-        da_tokens = ["AB", "DA", "DOUBLE ACTING", "DOUBLE-ACTING", "ANTI-BARRICADE", "ANTI - BARRICADE"]
-        dtype_tokens = dtype.split()
-        if any(t in dtype_tokens for t in ["AB", "DA"]) or any(t in dtype for t in ["DOUBLE ACTING", "ANTI-BARRICADE", "ANTI - BARRICADE"]):
-            logger.info(f"CV Drawing Analysis: Schedule indicates Anti-Barricade / Double-Acting (type={dtype!r}) -> DA")
-            return "DA"
+        da_phrases = ["DBL ACT", "DBL-ACT", "DOUBLE ACTING", "DOUBLE-ACTING", "DOUBLE ACT", "DOUBLE-ACT", "ANTI-BARRICADE", "ANTI - BARRICADE"]
+        da_exact_words = {"DA", "AB"}
+        
+        dtype_upper = dtype.upper()
         comments_upper = comments.upper()
-        if any(t in comments_upper for t in ["DBL ACT", "DA", "DOUBLE ACTING", "DOUBLE-ACTING", "ANTI-BARRICADE", "ANTI - BARRICADE", "AB"]):
-            logger.info(f"CV Drawing Analysis: Schedule comments indicate Anti-Barricade / Double-Acting -> DA")
+        dtype_words = {w.strip(".,()[]{}-_#*") for w in dtype_upper.split()}
+        comments_words = {w.strip(".,()[]{}-_#*") for w in comments_upper.split()}
+        
+        if (any(p in dtype_upper for p in da_phrases) or 
+            any(p in comments_upper for p in da_phrases) or 
+            da_exact_words.intersection(dtype_words) or 
+            da_exact_words.intersection(comments_words)):
+            logger.info(f"CV Drawing Analysis: Schedule indicates Anti-Barricade / Double-Acting -> DA")
             return "DA"
 
     mark_cx = (mark_rect.x0 + mark_rect.x1) / 2
@@ -929,30 +935,9 @@ async def cv_detector_node(state: CostmateState) -> dict:
                 if all_dm_points:
                     dm_xs = [p[0] for p in all_dm_points]
                     dm_ys = [p[1] for p in all_dm_points]
-                    min_dm_x, max_dm_x = min(dm_xs), max(dm_xs)
-                    min_dm_y, max_dm_y = min(dm_ys), max(dm_ys)
-                    
-                    # Floor plan area expanded by 100 points
-                    fp_rect = fz.Rect(min_dm_x - 100, min_dm_y - 100, max_dm_x + 100, max_dm_y + 100)
-                    
-                    # Get bounding box of all wall drawings inside fp_rect
-                    wall_rects = []
-                    for d in drawings_on_page:
-                        rect_val = d.get("rect")
-                        if not rect_val:
-                            continue
-                        r = fz.Rect(rect_val)
-                        if fp_rect.contains(r) and (r.width > 2 or r.height > 2):
-                            # Exclude full page borders
-                            if r.width < page.rect.width * 0.8 and r.height < page.rect.height * 0.8:
-                                wall_rects.append(r)
-                                
-                    if wall_rects:
-                        env_min_x = min(r.x0 for r in wall_rects)
-                        env_max_x = max(r.x1 for r in wall_rects)
-                        env_min_y = min(r.y0 for r in wall_rects)
-                        env_max_y = max(r.y1 for r in wall_rects)
-                        logger.info(f"CV Envelope: Found wall envelope bounding box X=[{env_min_x:.1f}, {env_max_x:.1f}], Y=[{env_min_y:.1f}, {env_max_y:.1f}]")
+                    env_min_x, env_max_x = min(dm_xs), max(dm_xs)
+                    env_min_y, env_max_y = min(dm_ys), max(dm_ys)
+                    logger.info(f"CV Envelope: Found door mark building envelope X=[{env_min_x:.1f}, {env_max_x:.1f}], Y=[{env_min_y:.1f}, {env_max_y:.1f}]")
                         
                 for word_text, matches in candidates_by_mark.items():
                     # Disambiguate true door tags (in circles next to swing arcs) from room numbers (in boxes in center of room)
@@ -963,10 +948,10 @@ async def cv_detector_node(state: CostmateState) -> dict:
                     # Sort matches by arc count descending so those with door arcs are prioritized
                     sorted_matches = sorted(matches, key=lambda x: x["arc_count"], reverse=True)
                         
-                    # Also apply simple spatial deduplication: within 25pt
+                    # Also apply simple spatial deduplication: within 8pt
                     final_matches = []
                     for m in sorted_matches:
-                        if any(abs(fm["w_cx"] - m["w_cx"]) < 25 and abs(fm["w_cy"] - m["w_cy"]) < 25 for fm in final_matches):
+                        if any(abs(fm["w_cx"] - m["w_cx"]) < 8 and abs(fm["w_cy"] - m["w_cy"]) < 8 for fm in final_matches):
                             continue
                         final_matches.append(m)
                         
@@ -985,21 +970,23 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             dy0 = abs(w_cy - env_min_y)
                             dy1 = abs(w_cy - env_max_y)
                             min_dist = min(dx0, dx1, dy0, dy1)
-                            # Exterior perimeter envelope boundary check (within 120 points)
-                            if min_dist < 120.0:
-                                # Look for a nearby "E" or "EXT" wall type tag (within 15pt) to verify exterior status
-                                has_nearby_e = False
-                                for w_tag in words_on_page:
-                                    tag_text = w_tag[4].strip(".,()[]{}-_#*").upper()
-                                    if tag_text in ["E", "EXT"]:
-                                        tag_cx = (w_tag[0] + w_tag[2]) / 2
-                                        tag_cy = (w_tag[1] + w_tag[3]) / 2
-                                        dist_to_tag = ((tag_cx - w_cx) ** 2 + (tag_cy - w_cy) ** 2) ** 0.5
-                                        if dist_to_tag <= 15.0:
-                                            has_nearby_e = True
-                                            break
-                                if has_nearby_e:
-                                    is_perimeter = True
+                            
+                            # Check nearby words (within 60pt) for exterior wall/curtain wall sub-tokens (e.g. 'CW-A03', '6A.AL.EXT')
+                            has_nearby_e = False
+                            for w_tag in words_on_page:
+                                w_text = w_tag[4].strip(".,()[]{}-_#*").upper()
+                                tag_cx = (w_tag[0] + w_tag[2]) / 2
+                                tag_cy = (w_tag[1] + w_tag[3]) / 2
+                                dist_to_tag = ((tag_cx - w_cx) ** 2 + (tag_cy - w_cy) ** 2) ** 0.5
+                                if dist_to_tag <= 60.0:
+                                    sub_tokens = w_text.split("-") + w_text.split(".")
+                                    if any(t in ["EXT", "EXTERIOR", "CW", "CURTAIN"] for t in sub_tokens):
+                                        has_nearby_e = True
+                                        break
+                                        
+                            # Exterior perimeter threshold (within 75pt of building edge OR has nearby CW/EXT tag)
+                            if min_dist <= 75.0 or has_nearby_e:
+                                is_perimeter = True
 
                         logger.info(f"CV Detector DEBUG: MATCH FOUND word={word_text!r} at ({w_cx:.1f},{w_cy:.1f}), is_perimeter={is_perimeter}")
                         
@@ -1027,6 +1014,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
                                 "int_ext": "Exterior" if is_perimeter else "Interior",
                                 "floor_no": str(floor_no),
                                 "floor_name": floor_name,
+                                "page_no": str(page_idx),
                                 "w_cx": w_cx,
                                 "w_cy": w_cy,
                                 "bbox": [inst_rect.x0, inst_rect.y0, inst_rect.x1, inst_rect.y1]
@@ -1048,7 +1036,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             all_temp_crops.append(crop_path)
                             
                             # Queue LLM task for location and classification mapping
-                            location_tasks.append((word_text, floor_no, floor_name, crop_path, opening_mode, is_perimeter, w_cx, w_cy, [inst_rect.x0, inst_rect.y0, inst_rect.x1, inst_rect.y1]))
+                            location_tasks.append((word_text, floor_no, floor_name, crop_path, opening_mode, is_perimeter, w_cx, w_cy, [inst_rect.x0, inst_rect.y0, inst_rect.x1, inst_rect.y1], page_idx))
                         except Exception as crop_err:
                             logger.error(f"Failed to create crop for mark {word_text}: {crop_err}")
                             # Still record the programmatic result without location
@@ -1059,6 +1047,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
                                 "int_ext": "Exterior" if is_perimeter else "Interior",
                                 "floor_no": str(floor_no),
                                 "floor_name": floor_name,
+                                "page_no": str(page_idx),
                                 "w_cx": w_cx,
                                 "w_cy": w_cy,
                                 "bbox": [inst_rect.x0, inst_rect.y0, inst_rect.x1, inst_rect.y1]
@@ -1069,14 +1058,14 @@ async def cv_detector_node(state: CostmateState) -> dict:
         # Run location LLM tasks concurrently
         logger.info(f"CV Detector: Running {len(location_tasks)} location-detection LLM tasks...")
         
-        async def run_location_task(mark, floor_no, floor_name, crop_path, programmatic_mode, is_perimeter, w_cx, w_cy, bbox):
+        async def run_location_task(mark, floor_no, floor_name, crop_path, programmatic_mode, is_perimeter, w_cx, w_cy, bbox, page_idx):
             vlm_res = await classify_door_crop_vlm(crop_path, mark, floor_no, semaphore)
             
             vlm_mode = vlm_res.get("matched_code", "UNKNOWN")
             opening_mode = vlm_mode if vlm_mode != "UNKNOWN" else programmatic_mode
             
             vlm_wall = vlm_res.get("wall_type", "UNKNOWN")
-            int_ext = "Exterior" if is_perimeter else "Interior"
+            int_ext = "Exterior" if (is_perimeter or vlm_wall in ["EXT", "EXTERIOR"]) else "Interior"
                 
             return {
                 "mark": mark,
@@ -1089,13 +1078,14 @@ async def cv_detector_node(state: CostmateState) -> dict:
                 "vlm_reasoning": f"Geometric perimeter check (is_perimeter={is_perimeter}). VLM wall type guess: {vlm_wall}",
                 "floor_no": str(floor_no),
                 "floor_name": floor_name,
+                "page_no": str(page_idx),
                 "w_cx": w_cx,
                 "w_cy": w_cy,
                 "bbox": bbox
             }
         
         location_results = await asyncio.gather(
-            *[run_location_task(m, f, fn, cp, om, ip, cx, cy, box) for m, f, fn, cp, om, ip, cx, cy, box in location_tasks]
+            *[run_location_task(m, f, fn, cp, om, ip, cx, cy, box, p_idx) for m, f, fn, cp, om, ip, cx, cy, box, p_idx in location_tasks]
         )
         detections.extend(location_results)
         

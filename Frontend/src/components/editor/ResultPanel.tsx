@@ -67,10 +67,13 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
       const allKeys = new Set<string>();
       sheetItems.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
       const rawHeaders = Array.from(allKeys).filter(k => {
+        if (k.startsWith('_')) return false;
         const kl = k.toLowerCase().trim();
         return kl !== 'count' && kl !== 'qty' &&
           kl !== 'needs_review' && kl !== 'needs review' &&
-          kl !== 'need_review' && kl !== 'need review';
+          kl !== 'need_review' && kl !== 'need review' &&
+          kl !== 'opening_mode' && kl !== 'opening mode' &&
+          kl !== 'int/ext' && kl !== 'int_ext';
       });
 
       const celldata: any[] = [];
@@ -107,11 +110,14 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
 
       const estimationHeaders = ['QTY', 'MARKS', 'LOCATION', 'ESTIMATOR NOTES', 'FLOOR NO', 'OPENING MODE', 'INT/EXT'];
       const dynamicHeaders = rawHeaders.filter(k => {
+        if (k.startsWith('_')) return false;
         const kl = k.toLowerCase().trim();
         return kl !== 'mark' && kl !== 'marks' && kl !== 'type' &&
           kl !== 'count' && kl !== 'qty' &&
           kl !== 'needs_review' && kl !== 'needs review' &&
-          kl !== 'need_review' && kl !== 'need review';
+          kl !== 'need_review' && kl !== 'need review' &&
+          kl !== 'opening_mode' && kl !== 'opening mode' &&
+          kl !== 'int/ext' && kl !== 'int_ext';
       });
       const finalHeaders = [...estimationHeaders, ...dynamicHeaders];
 
@@ -172,7 +178,7 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
           }
         }
         const notes = notesParts.join(' | ');
-        const isStorefront = isAlumGlass;
+        const isStorefront = isAlumGlass || item._reconciled_opening_mode === 'STOREFRONT' || item._is_ad_system;
 
         if (instances.length > 0) {
           // Write one row for each detected instance
@@ -194,8 +200,8 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
               else if (h === 'LOCATION') val = d.location || '';
               else if (h === 'ESTIMATOR NOTES') val = notes;
               else if (h === 'FLOOR NO') val = floorNo;
-              else if (h === 'OPENING MODE') val = isStorefront ? '' : (d.opening_mode || 'Single');
-              else if (h === 'INT/EXT') val = isStorefront ? '' : (d.int_ext || 'Interior');
+              else if (h === 'OPENING MODE') val = isStorefront ? '' : (item._reconciled_opening_mode || item._schedule_opening_mode || d.opening_mode || 'Single');
+              else if (h === 'INT/EXT') val = isStorefront ? '' : (item._reconciled_int_ext || d.int_ext || 'Interior');
               else val = item[h] || '';
 
               celldata.push({ r: rowIdx + 1, c: cIdx, v: { v: val, m: String(val) } });

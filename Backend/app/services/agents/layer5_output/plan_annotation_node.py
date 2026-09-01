@@ -66,9 +66,9 @@ async def plan_annotation_node(state: CostmateState) -> dict:
     detections = cv_results.get("detections", []) or []
     
     # Saturated, vibrant color definitions (RGB in 0-1 range for fitz)
-    color_interior = (1.0, 0.9, 0.0)    # Saturated Yellow/Gold (Interior Door/Window)
-    color_exterior = (0.0, 0.45, 1.0)   # Vivid Azure Blue (Exterior Door/Window)
-    color_storefront = (1.0, 0.15, 0.6) # Saturated Magenta/Pink (Glass/Storefront Door/Window)
+    color_interior = (1.0, 1.0, 0.0)    # Bright Yellow (255, 255, 0)
+    color_exterior = (0.0, 0.8, 1.0)    # Bright Cyan/Sky Blue (0, 204, 255)
+    color_storefront = (1.0, 0.0, 0.5)  # Bright Pink/Magenta (255, 0, 128)
     
     downloaded_temps = []
     total_highlighted = 0
@@ -131,7 +131,8 @@ async def plan_annotation_node(state: CostmateState) -> dict:
             floor_dets = [d for d in detections if str(d.get("floor_no")) == str(floor_no)]
             
             for page_num, page in enumerate(doc):
-                for d in floor_dets:
+                page_dets = [d for d in floor_dets if str(d.get("page_no", "0")) == str(page_num)]
+                for d in page_dets:
                     bbox = d.get("bbox")
                     if not bbox:
                         continue
@@ -148,23 +149,22 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                             material = str(v).upper()
                             break
                             
-                    # Check for D-series demountable fronts or glass/aluminum partition
-                    is_d_series = mark.startswith("D")
-                    is_storefront = is_d_series or any(kw in material for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM", "STOREFRONT", "GL"])
+                    # Determine classification status for highlight color branching
+                    raw_mode = sched_info.get("_reconciled_opening_mode") or sched_info.get("OPENING MODE")
+                    raw_ie = str(sched_info.get("_reconciled_int_ext") or sched_info.get("INT/EXT") or "").strip().upper()
                     
-                    int_ext = str(sched_info.get("INT/EXT") or d.get("int_ext") or "INT").upper()
+                    is_blank_classification = (not raw_mode) or (raw_mode == "UNKNOWN") or (not raw_ie) or (raw_ie in ["UNKNOWN", ""])
                     
-                    if is_storefront:
-                        highlight_color = color_storefront
-                    elif any(x in int_ext for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
-                        highlight_color = color_exterior
+                    if is_blank_classification:
+                        highlight_color = color_storefront  # Pink/Magenta for blank/storefront/cased openings
+                    elif any(x in raw_ie for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
+                        highlight_color = color_exterior   # Vivid Azure Blue for exterior
                     else:
-                        highlight_color = color_interior
+                        highlight_color = color_interior   # Saturated Yellow/Gold for interior
                         
                     inst_rect = fitz.Rect(bbox[0], bbox[1], bbox[2], bbox[3])
-                    annot = page.add_rect_annot(inst_rect)
-                    annot.set_colors(stroke=highlight_color, fill=highlight_color)
-                    annot.set_opacity(0.65)
+                    annot = page.add_highlight_annot(inst_rect)
+                    annot.set_colors(stroke=highlight_color)
                     annot.update()
                     highlighted_count += 1
                     total_highlighted += 1

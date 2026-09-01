@@ -80,11 +80,13 @@ async def excel_writer_node(state: CostmateState) -> dict:
                     if k not in all_keys:
                         all_keys.append(k)
             
-            # Filter keys case-insensitively
+            # Filter keys case-insensitively (exclude private keys starting with _ and estimation-only columns)
             raw_headers = []
             for k in all_keys:
+                if str(k).startswith("_"):
+                    continue
                 kl = str(k).lower().strip()
-                if kl not in ["count", "qty", "needs_review", "needs review", "need_review", "need review"]:
+                if kl not in ["count", "qty", "needs_review", "needs review", "need_review", "need review", "opening_mode", "opening mode", "int/ext", "int_ext"]:
                     raw_headers.append(k)
             
             ws = wb.create_sheet(title=sheet_name)
@@ -105,7 +107,13 @@ async def excel_writer_node(state: CostmateState) -> dict:
                     ws.cell(row=row_idx, column=col_idx, value=str(val))
  
         def generate_estimation_sheet(sheet_items):
-            if not sheet_items: return
+            # Only write doors to the ESTIMATION SCHEDULE (exclude window items)
+            doors_only = [
+                item for item in sheet_items 
+                if item.get("_schedule_type") == "door" or not (get_item_mark(item).upper().startswith("W") or get_item_mark(item).upper().startswith("V"))
+            ]
+            if not doors_only: return
+            sheet_items = doors_only
             
             user_keys = []
             for item in sheet_items:
@@ -113,11 +121,18 @@ async def excel_writer_node(state: CostmateState) -> dict:
                     if k not in user_keys:
                         user_keys.append(k)
                         
-            ignore_meta = {"mark", "marks", "type", "count", "qty", "needs_review", "needs review", "need_review", "need review"}
-            user_columns = [k for k in user_keys if str(k).lower().strip() not in ignore_meta]
+            ignore_meta = {
+                "mark", "marks", "type", "count", "qty", 
+                "needs_review", "needs review", "need_review", "need review",
+                "opening_mode", "opening mode", "int/ext", "int_ext"
+            }
+            user_columns = [
+                k for k in user_keys 
+                if not str(k).startswith("_") and str(k).lower().strip() not in ignore_meta
+            ]
 
-            base_prefix = ["QTY", "MARKS", "LOCATION", "ESTIMATOR NOTES"]
-            base_suffix = ["OPENING MODE", "INT/EXT"]
+            base_prefix = ["QTY", "MARKS", "LOCATION", "ESTIMATOR NOTES", "FLOOR NO", "OPENING MODE", "INT/EXT"]
+            base_suffix = []
 
             final_headers = []
             for h in base_prefix:
@@ -143,13 +158,39 @@ async def excel_writer_node(state: CostmateState) -> dict:
                 cell.fill = PatternFill(start_color="333333", end_color="333333", fill_type="solid")
                 ws.column_dimensions[openpyxl.utils.get_column_letter(col_num)].width = 20
                 
-            # Data
             row_idx = 2
             for item in sheet_items:
                 mark = get_item_mark(item)
                 
+                # Determine expected quantity from schedule
+                expected_qty = 1
+                for k, v in item.items():
+                    kl = str(k).lower().strip()
+                    if kl in ["qty", "qty.", "quantity", "no. of doors"]:
+                        try:
+                            expected_qty = max(1, int(float(str(v).strip())))
+                        except:
+                            pass
+                        break
+
                 # Find all detected instances for this mark
                 instances = [d for d in detections if str(d.get("mark", "")).strip().upper() == mark]
+                
+                # Sort instances to prioritize correct floor and valid locations
+                sched_floor = str(item.get("FLOOR / LEVEL") or item.get("FLOOR") or item.get("LEVEL") or "").strip().upper()
+                def get_sort_key(d):
+                    det_floor = str(d.get("floor_name") or d.get("floor") or d.get("level") or "").strip().upper()
+                    floor_match = 0
+                    if sched_floor and det_floor:
+                        if sched_floor in det_floor or det_floor in sched_floor:
+                            floor_match = 1
+                    loc = str(d.get("location", "")).strip().upper()
+                    has_location = 1 if loc and loc != "UNKNOWN" else 0
+                    conf_map = {"high": 3, "medium": 2, "low": 1}
+                    conf = conf_map.get(d.get("vlm_confidence", "low"), 0)
+                    return (floor_match, has_location, conf)
+                
+                instances = sorted(instances, key=get_sort_key, reverse=True)
                 
                 # Determine material for Estimator Notes
                 material = ""
@@ -165,57 +206,59 @@ async def excel_writer_node(state: CostmateState) -> dict:
                         notes_parts.append("EXCLUDED per specifications (Aluminium door exclusion).")
                 notes = " | ".join(notes_parts)
                 
-                is_storefront = any(kw in material for kw in ["ALUMINUM", "GLASS", "ALUMINIUM", "ALUM"]) or "AL" in [w.strip() for w in material.split()]
-                if instances:
-                    # Write one row for each detected instance
-                    for d in instances:
+                # Write rows up to max(expected_qty, len(instances))
+                for idx in range(max(expected_qty, len(instances))):
+                    if idx < len(instances):
+                        # Write detected instance row
+                        d = instances[idx]
                         floor_val = d.get("floor_name") or d.get("floor") or d.get("level") or item.get("FLOOR / LEVEL") or item.get("FLOOR") or item.get("LEVEL") or (f"Level {d.get('floor_no')}" if d.get('floor_no') else "")
-                                    
-                        for col_idx, header in enumerate(final_headers, 1):
-                            val = ""
-                            if header == "QTY": val = "1"
-                            elif header == "MARKS": val = mark
-                            elif header == "LOCATION": val = d.get("location", "")
-                            elif header == "ESTIMATOR NOTES": val = notes
-                            elif header in ["FLOOR / LEVEL", "FLOOR NO"]: val = floor_val
-                            elif header == "OPENING MODE": 
-                                raw_mode = item.get("OPENING MODE") or d.get("opening_mode") or "SGL"
-                                val = normalize_opening_mode(raw_mode)
-                            elif header == "INT/EXT": 
-                                raw_ie = str(item.get("INT/EXT") or d.get("int_ext") or "INT").upper()
-                                if any(x in raw_ie for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
-                                    val = "EXT"
-                                else:
-                                    val = "INT"
-                            else: val = item.get(header, "")
-                            
-                            ws.cell(row=row_idx, column=col_idx, value=str(val))
-                        row_idx += 1
-                else:
-                    # Write one placeholder row with QTY = 0 if not found in plan
-                    floor_val = item.get("FLOOR / LEVEL") or item.get("FLOOR") or item.get("LEVEL") or ""
-                            
+                        qty_val = "1"
+                        loc_val = d.get("location", "")
+                    else:
+                        # Write placeholder row
+                        floor_val = item.get("FLOOR / LEVEL") or item.get("FLOOR") or item.get("LEVEL") or ""
+                        qty_val = "0"
+                        loc_val = ""
+                        
                     for col_idx, header in enumerate(final_headers, 1):
                         val = ""
-                        if header == "QTY": val = "0"
+                        if header == "QTY": val = qty_val
                         elif header == "MARKS": val = mark
-                        elif header == "LOCATION": val = ""
+                        elif header == "LOCATION": val = loc_val
                         elif header == "ESTIMATOR NOTES": val = notes
                         elif header in ["FLOOR / LEVEL", "FLOOR NO"]: val = floor_val
                         elif header == "OPENING MODE": 
-                            raw_mode = item.get("OPENING MODE", "")
-                            val = normalize_opening_mode(raw_mode) if raw_mode else ""
-                        elif header == "INT/EXT": 
-                            raw_ie = str(item.get("INT/EXT", "")).upper()
-                            if any(x in raw_ie for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
-                                val = "EXT"
-                            elif any(x in raw_ie for x in ["INT", "INTERNAL", "INTERIOR"]):
-                                val = "INT"
-                            else:
+                            is_window = item.get("_schedule_type") == "window" or mark.startswith("W") or mark.startswith("V")
+                            is_ad = item.get("_is_ad_system") or any("AD SYSTEM" in str(v).upper() for v in item.values() if isinstance(v, str))
+                            if is_window or is_ad:
                                 val = ""
+                            else:
+                                if idx < len(instances):
+                                    raw_mode = item.get("_reconciled_opening_mode") or item.get("OPENING MODE") or instances[idx].get("opening_mode") or "SGL"
+                                else:
+                                    raw_mode = item.get("_reconciled_opening_mode") or item.get("OPENING MODE", "")
+                                val = normalize_opening_mode(raw_mode) if raw_mode else ""
+                        elif header == "INT/EXT": 
+                            is_ad = item.get("_is_ad_system") or any("AD SYSTEM" in str(v).upper() for v in item.values() if isinstance(v, str))
+                            if is_ad:
+                                val = ""
+                            else:
+                                if idx < len(instances):
+                                    raw_ie = str(item.get("_reconciled_int_ext") or item.get("INT/EXT") or instances[idx].get("int_ext") or "INT").upper()
+                                else:
+                                    raw_ie = str(item.get("_reconciled_int_ext") or item.get("INT/EXT", "")).upper()
+                                    
+                                if any(x in raw_ie for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
+                                    val = "EXT"
+                                elif any(x in raw_ie for x in ["INT", "INTERNAL", "INTERIOR"]):
+                                    val = "INT"
+                                else:
+                                    val = ""
                         else: val = item.get(header, "")
                         
-                        ws.cell(row=row_idx, column=col_idx, value=str(val))
+                        cell = ws.cell(row=row_idx, column=col_idx, value=str(val))
+                        if qty_val == "0":
+                            cell.fill = PatternFill(start_color="FFE6E6", end_color="FFE6E6", fill_type="solid")
                     row_idx += 1
 
         if doors: generate_raw_sheet(doors, "DOOR SCHEDULE")

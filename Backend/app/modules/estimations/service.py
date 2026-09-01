@@ -352,13 +352,19 @@ class EstimationService:
                         # Helper to check if a word looks like a mark
                         import re
                         def is_mark_text(text):
-                            text_lower = text.lower()
+                            text_lower = text.lower().strip(".,")
                             header_keywords = {
                                 "mark", "number", "door", "window", "frame", "schedule", "type", "finish",
-                                "comments", "level", "sheet", "code", "id", "tag", "fire", "rating", "width",
-                                "height", "hw", "set", "head", "jamb", "panel", "pane", "dimensions"
+                                "comments", "level", "floor", "sheet", "code", "id", "tag", "fire", "rating", "width",
+                                "height", "hw", "set", "head", "jamb", "panel", "pane", "dimensions",
+                                "qty", "quantity", "manuf", "manufacturer", "remarks", "elevation", "detail",
+                                "sill", "glass", "glazing", "material", "mat'l", "thickness", "thckns",
+                                "hand", "welding", "gauge", "depth", "anchor", "face"
                             }
-                            if text_lower in header_keywords:
+                            tokens = text_lower.split()
+                            if any(w in header_keywords for w in tokens):
+                                return False
+                            if "'" in text or '"' in text:
                                 return False
                             if re.search(r"\d", text):
                                 return True
@@ -414,13 +420,19 @@ class EstimationService:
                         # 2. Helper to check if a word looks like a mark
                         import re
                         def is_mark_text(text):
-                            text_lower = text.lower()
+                            text_lower = text.lower().strip(".,")
                             header_keywords = {
                                 "mark", "number", "door", "window", "frame", "schedule", "type", "finish",
-                                "comments", "level", "sheet", "code", "id", "tag", "fire", "rating", "width",
-                                "height", "hw", "set", "head", "jamb", "panel", "pane", "dimensions"
+                                "comments", "level", "floor", "sheet", "code", "id", "tag", "fire", "rating", "width",
+                                "height", "hw", "set", "head", "jamb", "panel", "pane", "dimensions",
+                                "qty", "quantity", "manuf", "manufacturer", "remarks", "elevation", "detail",
+                                "sill", "glass", "glazing", "material", "mat'l", "thickness", "thckns",
+                                "hand", "welding", "gauge", "depth", "anchor", "face"
                             }
-                            if text_lower in header_keywords:
+                            tokens = text_lower.split()
+                            if any(w in header_keywords for w in tokens):
+                                return False
+                            if "'" in text or '"' in text:
                                 return False
                             if re.search(r"\d", text):
                                 return True
@@ -429,11 +441,28 @@ class EstimationService:
                             return False
                             
                         # Find all explicit marks and their Y-centers
+                        # Determine which of the first 3 columns has the most unique mark-like texts
+                        mark_col_idx = 0
+                        max_unique_marks = 0
+                        for col_idx in range(min(3, num_cols)):
+                            unique_marks_in_col = set()
+                            for w in words:
+                                center_x = (w['x0'] + w['x1']) / 2.0
+                                if merged_spans[col_idx][0] <= center_x <= merged_spans[col_idx][1]:
+                                    if is_mark_text(w['text']):
+                                        unique_marks_in_col.add(w['text'].strip().upper())
+                            col_marks_count = len(unique_marks_in_col)
+                            if col_marks_count > max_unique_marks:
+                                max_unique_marks = col_marks_count
+                                mark_col_idx = col_idx
+
+                        logger.info(f"[CROP DYNAMIC] Detected mark column index: {mark_col_idx} with {max_unique_marks} unique marks.")
+
                         marks_info = []
                         for w in words:
                             center_x = (w['x0'] + w['x1']) / 2.0
-                            # Check if the word is in Column 0
-                            if merged_spans[0][0] <= center_x <= merged_spans[0][1]:
+                            # Check if the word is in the designated mark column
+                            if merged_spans[mark_col_idx][0] <= center_x <= merged_spans[mark_col_idx][1]:
                                 if is_mark_text(w['text']):
                                     marks_info.append((w['text'], (w['top'] + w['bottom']) / 2.0))
                                     
@@ -450,7 +479,7 @@ class EstimationService:
                         header_words = []
                         data_row_words = {}
                         if marks_info:
-                            data_row_words = {m_text: [[] for _ in range(num_cols)] for m_text, _ in marks_info}
+                            data_row_words = {idx: [[] for _ in range(num_cols)] for idx in range(len(marks_info))}
                             
                         for w in words:
                             center_x = (w['x0'] + w['x1']) / 2.0
@@ -472,15 +501,15 @@ class EstimationService:
                                 header_words.append((w, best_col))
                             elif marks_info:
                                 # Find closest mark Y coordinate
-                                closest_mark = None
+                                closest_mark_idx = None
                                 min_y_dist = float('inf')
-                                for m_text, m_y in marks_info:
+                                for idx, (m_text, m_y) in enumerate(marks_info):
                                     dist_y = abs(center_y - m_y)
                                     if dist_y < min_y_dist:
                                         min_y_dist = dist_y
-                                        closest_mark = m_text
-                                if closest_mark:
-                                    data_row_words[closest_mark][best_col].append(w)
+                                        closest_mark_idx = idx
+                                if closest_mark_idx is not None:
+                                    data_row_words[closest_mark_idx][best_col].append(w)
                                     
                         # 4. Extract Header names
                         column_headers = [[] for _ in range(num_cols)]
@@ -507,8 +536,8 @@ class EstimationService:
                                     seen_keys[base_key] = 0
                             clean_headers.append(h_text)
                                 
-                        if clean_headers:
-                            clean_headers[0] = "mark"
+                        if clean_headers and mark_col_idx < len(clean_headers):
+                            clean_headers[mark_col_idx] = "mark"
                             
                         logger.info(f"[CROP DYNAMIC] Unified header keys: {clean_headers}")
                         
@@ -563,10 +592,10 @@ class EstimationService:
                                 row_dict["_schedule_type"] = "door"
                                 raw_results.append(row_dict)
                         else:
-                            for m_text, _ in marks_info:
+                            for idx, (m_text, _) in enumerate(marks_info):
                                 row_dict = {}
                                 for col_idx in range(num_cols):
-                                    cell_w = data_row_words[m_text][col_idx]
+                                    cell_w = data_row_words[idx][col_idx]
                                     cell_w.sort(key=lambda w: (w['top'], w['x0']))
                                     val = " ".join(w['text'] for w in cell_w).strip()
                                     if col_idx < len(clean_headers):

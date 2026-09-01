@@ -122,7 +122,16 @@ async def download_output(session_id: str, current_user: dict = Depends(get_curr
     if not state_snapshot.values:
         raise HTTPException(status_code=404, detail="Session not found.")
     
-    excel_path = state_snapshot.values.get("excel_file_path")
+    # Regenerate the Excel file dynamically to use the latest code and state
+    from app.services.agents.layer5_output.excel_writer_node import excel_writer_node
+    from app.core.logging import logger
+    try:
+        excel_result = await excel_writer_node(state_snapshot.values)
+        excel_path = excel_result.get("excel_file_path")
+    except Exception as e:
+        logger.error(f"Failed to regenerate Excel on download: {e}")
+        excel_path = state_snapshot.values.get("excel_file_path")
+        
     if not excel_path:
         raise HTTPException(status_code=404, detail="Excel output file not ready or not found.")
         

@@ -65,11 +65,6 @@ async def plan_annotation_node(state: CostmateState) -> dict:
     cv_results = state.get("cv_results", {}) or {}
     detections = cv_results.get("detections", []) or []
     
-    # Saturated, vibrant color definitions (RGB in 0-1 range for fitz)
-    color_interior = (1.0, 1.0, 0.0)    # Bright Yellow (255, 255, 0)
-    color_exterior = (0.0, 0.8, 1.0)    # Bright Cyan/Sky Blue (0, 204, 255)
-    color_storefront = (1.0, 0.0, 0.5)  # Bright Pink/Magenta (255, 0, 128)
-    
     downloaded_temps = []
     total_highlighted = 0
     total_detections_with_bbox = 0
@@ -142,25 +137,44 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                     mark = str(d.get("mark", "")).strip().upper()
                     sched_info = sched_lookup.get(mark, {})
                     
+                    # Fallback lookup for bifurcated marks (e.g. D -> D.1, D.2 or D1 -> D1.1)
+                    if not sched_info:
+                        for k, item_data in sched_lookup.items():
+                            orig_tag = str(item_data.get("original_tag", "")).strip().upper()
+                            if orig_tag == mark or k.startswith(f"{mark}."):
+                                sched_info = item_data
+                                break
+                    
                     # Case-insensitive material column lookup
                     material = ""
-                    for k, v in sched_info.items():
-                        if "material" in str(k).lower():
-                            material = str(v).upper()
-                            break
-                            
+                    # 5 SKILL.md Color Standard definitions (RGB normalized 0-1 for fitz)
+                    # 🟡 Yellow (#FFFF00, RGB 255, 255, 0): Interior opening
+                    color_interior = (1.0, 1.0, 0.0)
+                    # 🔵 Cyan/Blue (#00B0F0 / #007FFF): Exterior opening
+                    color_exterior = (0.0, 0.498, 1.0)
+                    # 🟢 Green (#92D050, RGB 146, 208, 80): Garage / parking / soft exterior
+                    color_soft_ext = (0.57, 0.815, 0.314)
+                    # 🟠 Orange (#FFC000, RGB 255, 192, 0): Window, sidelite, borrowed lite
+                    color_window   = (1.0, 0.75, 0.0)
+                    # 🩷 Pink (#FF69B4 / #FF00FF): Not in scope / Storefront
+                    color_storefront = (1.0, 0.0, 1.0)
+
                     # Determine classification status for highlight color branching
-                    raw_mode = sched_info.get("_reconciled_opening_mode") or sched_info.get("OPENING MODE")
+                    raw_mode = str(sched_info.get("_reconciled_opening_mode") or sched_info.get("OPENING MODE") or "").strip().upper()
                     raw_ie = str(sched_info.get("_reconciled_int_ext") or sched_info.get("INT/EXT") or "").strip().upper()
+                    wall_rating = str(sched_info.get("WALL RATING") or sched_info.get("FIRE RATING") or sched_info.get("WALL TYPE") or sched_info.get("RATING") or sched_info.get("COMMENTS") or "").strip().upper()
                     
-                    is_blank_classification = (not raw_mode) or (raw_mode == "UNKNOWN") or (not raw_ie) or (raw_ie in ["UNKNOWN", ""])
-                    
-                    if is_blank_classification:
-                        highlight_color = color_storefront  # Pink/Magenta for blank/storefront/cased openings
-                    elif any(x in raw_ie for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
-                        highlight_color = color_exterior   # Vivid Azure Blue for exterior
+                    if raw_ie == "NOT IN SCOPE" or sched_info.get("excluded") or raw_mode == "STOREFRONT" or "STOREFRONT" in wall_rating or "BARRIER" in wall_rating:
+                        highlight_color = color_storefront # Pink #FF69B4 / #FF00FF
+                    elif raw_ie == "SOFT EXTERIOR" or any(g_kw in wall_rating for g_kw in ["GARAGE", "PARKING", "BREEZEWAY", "COMPACTOR", "CELLAR"]):
+                        highlight_color = color_soft_ext # Green #92D050 (Garage / parking / soft exterior)
+                    elif raw_ie in ["WINDOW", "SIDELITE", "BORROWED LITE"] or any(w_kw in wall_rating for w_kw in ["WINDOW", "SIDELITE", "BORROWED LITE", "TRANSOM"]):
+                        highlight_color = color_window # Orange #FFC000 (Window, sidelite, borrowed lite)
+                    elif any(x in raw_ie for x in ["EXT", "EXTERNAL", "EXTERIOR"]) or "EXTERIOR" in wall_rating or "PARTITION" in wall_rating:
+                        highlight_color = color_exterior # Blue / Cyan
                     else:
-                        highlight_color = color_interior   # Saturated Yellow/Gold for interior
+                        highlight_color = color_interior # Yellow #FFFF00 (Interior)
+
                         
                     inst_rect = fitz.Rect(bbox[0], bbox[1], bbox[2], bbox[3])
                     annot = page.add_highlight_annot(inst_rect)
@@ -169,44 +183,56 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                     highlighted_count += 1
                     total_highlighted += 1
                     
+            # Add SKILL.md Section 25 Per-Floor Legend Overlay Box
+            for page in doc:
+                try:
+                    legend_rect = fitz.Rect(30, page.rect.height - 130, 260, page.rect.height - 30)
+                    page.draw_rect(legend_rect, color=(0, 0, 0), fill=(0.95, 0.95, 0.95), width=1)
+                    page.insert_text(fitz.Point(40, page.rect.height - 115), "OPENING TAKEOFF LEGEND", fontsize=9, fontname="helv", color=(0,0,0))
+                    page.insert_text(fitz.Point(40, page.rect.height - 100), "YELLOW: Interior Doors (#FFFF00)", fontsize=8, fontname="helv", color=(0.8, 0.8, 0.0))
+                    page.insert_text(fitz.Point(40, page.rect.height - 87),  "BLUE: Exterior Doors (#007FFF)", fontsize=8, fontname="helv", color=(0.0, 0.498, 1.0))
+                    page.insert_text(fitz.Point(40, page.rect.height - 74),  "PINK: Storefront / Not in Scope (#FF00FF)", fontsize=8, fontname="helv", color=(1.0, 0.0, 1.0))
+                    page.insert_text(fitz.Point(40, page.rect.height - 61),  "GREEN: Garage / Soft Exterior (#92D050)", fontsize=8, fontname="helv", color=(0.3, 0.6, 0.1))
+                    page.insert_text(fitz.Point(40, page.rect.height - 48),  "ORANGE: Window / Sidelite (#FFC000)", fontsize=8, fontname="helv", color=(1.0, 0.5, 0.0))
+                except Exception as leg_err:
+                    logger.warning(f"Failed to draw legend overlay box: {leg_err}")
+
             logger.info(f"Highlighted {highlighted_count} items on drawing {idx} ({os.path.basename(local_raw_path)})")
             master_doc.insert_pdf(doc)
             doc.close()
             
-        # Save the master consolidated PDF
-        out_path = os.path.join(settings.OUTPUT_DIR, f"{state.get('session_id', 'output')}_annotated.txt")
+        # Save the master consolidated PDF with SKILL.md Section 33 Filename
+        import datetime
+        proj_title = state.get("project_name") or "Costmate_Takeoff"
+        clean_proj_name = "".join(c for c in proj_title if c.isalnum() or c in [' ', '_', '-']).strip().replace(' ', '_')
+        today_str = datetime.date.today().strftime("%Y-%m-%d")
+        file_name = f"{clean_proj_name}_Division8_Takeoff_MarkedUp_{today_str}.pdf"
+        
+        out_path = os.path.join(settings.OUTPUT_DIR, file_name)
         master_doc.save(out_path)
         master_doc.close()
         logger.info(f"Consolidated annotated PDF successfully saved at {out_path}")
         
-        # Hard check: count(highlighted_items) == count(quantity_rows/detections)
-        # Check if there are any detections that had QTY > 0 but zero coordinates/highlights
         missing_coords_count = len(detections) - total_highlighted
-        
         logger.info(f"Self-Check: Total Detections = {len(detections)}, Detections with bbox = {total_detections_with_bbox}, Highlighted = {total_highlighted}")
         
         if total_highlighted != len(detections):
             msg = f"Self-Check FAILED: count(highlighted_items)={total_highlighted} does not match count(detections)={len(detections)} (missing {missing_coords_count} highlights)."
             logger.error(msg)
-            # Find which marks missed highlights
             for d in detections:
                 if not d.get("bbox"):
                     unannotated_marks.append(d.get("mark"))
-            # Raise exception to fail loudly
             raise ValueError(f"{msg} Unannotated marks: {unannotated_marks}")
             
-        # Upload generated PDF to Cloudinary
         from app.core.cloud import upload_to_cloudinary
         cloud_url = upload_to_cloudinary(out_path, resource_type="raw") or out_path
         
-        # Delete local copy from disk
-        if os.path.exists(out_path):
+        if cloud_url != out_path and os.path.exists(out_path):
             try:
                 os.remove(out_path)
             except:
                 pass
                 
-        # Cleanup temporary files
         for temp_file in downloaded_temps:
             if os.path.exists(temp_file):
                 try:

@@ -18,9 +18,23 @@ class SessionManager:
         queue = asyncio.Queue()
         self.sessions[session_id] = {
             "queue": queue,
-            "task": None
+            "task": None,
+            "state": {}
         }
         return queue
+
+    def get_state(self, session_id: str) -> dict:
+        if session_id in self.sessions:
+            return self.sessions[session_id].get("state", {})
+        return {}
+
+    def update_state(self, session_id: str, updates: dict, user_id: Optional[int] = None):
+        if session_id not in self.sessions:
+            self.create_session(session_id)
+        current_state = self.sessions[session_id].get("state", {})
+        current_state.update(updates)
+        self.sessions[session_id]["state"] = current_state
+        self._save_to_db(session_id, current_state, user_id)
 
     def cancel_session(self, session_id: str):
         """Cancels any running background task for the session."""
@@ -154,6 +168,7 @@ class SessionManager:
         }
 
         # Start background task
+        self.sessions[session_id]["state"] = initial_state
         task = asyncio.create_task(self._run_graph(session_id, initial_state, user_id))
         self.sessions[session_id]["task"] = task
         logger.info(f"[{session_id}] Background task started for graph execution.")

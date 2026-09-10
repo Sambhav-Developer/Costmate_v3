@@ -169,6 +169,123 @@ async def download_output(session_id: str, current_user: dict = Depends(get_curr
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
     )
 
+@router.post("/download/{session_id}/custom-excel")
+async def download_custom_excel(
+    session_id: str,
+    payload: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill
+    from fastapi.responses import FileResponse
+    import tempfile
+    
+    sheets_data = payload.get("sheets", [])
+    if not sheets_data:
+        raise HTTPException(status_code=400, detail="No sheet data provided.")
+        
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    
+    for s in sheets_data:
+        sheet_name = s.get("name", "Sheet1")
+        ws = wb.create_sheet(title=sheet_name)
+        
+        celldata = s.get("celldata", [])
+        data_matrix = s.get("data", [])
+        
+        # Prioritize live 2D grid matrix `data_matrix` which contains user edits from FortuneSheet
+        if data_matrix and len(data_matrix) > 0:
+            for r_idx, row in enumerate(data_matrix, 1):
+                if not row: continue
+                for c_idx, cell_obj in enumerate(row, 1):
+                    if cell_obj is None:
+                        continue
+                    val = ""
+                    font_bold = False
+                    font_color = "000000"
+                    bg_color = None
+                    
+                    if isinstance(cell_obj, dict):
+                        val = cell_obj.get("m") if cell_obj.get("m") is not None else cell_obj.get("v", "")
+                        if cell_obj.get("bl"): font_bold = True
+                        if cell_obj.get("fc"): font_color = str(cell_obj.get("fc")).replace("#", "")
+                        if cell_obj.get("bg"): bg_color = str(cell_obj.get("bg")).replace("#", "")
+                    elif cell_obj is not None:
+                        val = str(cell_obj)
+                        
+                    val_str = str(val) if val is not None else ""
+                    if val_str != "" or (bg_color and len(bg_color) == 6) or r_idx == 1:
+                        cell = ws.cell(row=r_idx, column=c_idx, value=val_str)
+                        fill_color = "FFFFFF"
+                        if bg_color and len(bg_color) == 6:
+                            fill_color = bg_color
+                        elif r_idx == 1:
+                            fill_color = "333333"
+                            
+                        fc = "FFFFFF" if r_idx == 1 else (font_color if len(font_color) == 6 else "000000")
+                        cell.font = Font(bold=(font_bold or r_idx == 1), color=fc)
+                        if r_idx == 1:
+                            cell.alignment = Alignment(horizontal="center")
+                            cell.fill = PatternFill(start_color="333333", end_color="333333", fill_type="solid")
+                        elif bg_color and len(bg_color) == 6:
+                            cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+        elif celldata:
+            for cell_item in celldata:
+                r = cell_item.get("r", 0) + 1
+                c = cell_item.get("c", 0) + 1
+                v_obj = cell_item.get("v")
+                
+                val = ""
+                font_bold = False
+                font_color = "000000"
+                bg_color = None
+                
+                if isinstance(v_obj, dict):
+                    val = v_obj.get("m") if v_obj.get("m") is not None else v_obj.get("v", "")
+                    if v_obj.get("bl"):
+                        font_bold = True
+                    if v_obj.get("fc"):
+                        font_color = str(v_obj.get("fc")).replace("#", "")
+                    if v_obj.get("bg"):
+                        bg_color = str(v_obj.get("bg")).replace("#", "")
+                elif v_obj is not None:
+                    val = str(v_obj)
+                    
+                cell = ws.cell(row=r, column=c, value=str(val) if val is not None else "")
+                
+                fill_color = "FFFFFF"
+                if bg_color and len(bg_color) == 6:
+                    fill_color = bg_color
+                elif r == 1:
+                    fill_color = "333333"
+                    
+                fc = "FFFFFF" if r == 1 else (font_color if len(font_color) == 6 else "000000")
+                
+                cell.font = Font(bold=(font_bold or r == 1), color=fc)
+                if r == 1:
+                    cell.alignment = Alignment(horizontal="center")
+                    cell.fill = PatternFill(start_color="333333", end_color="333333", fill_type="solid")
+                elif bg_color and len(bg_color) == 6:
+                    cell.fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+                    
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = openpyxl.utils.get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+
+    temp_dir = tempfile.gettempdir()
+    output_filename = f"Costmate_Estimate_{session_id}.xlsx"
+    temp_path = os.path.join(temp_dir, output_filename)
+    wb.save(temp_path)
+    
+    return FileResponse(
+        path=temp_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=output_filename,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    )
+
 @router.get("/download/{session_id}/plan")
 async def download_annotated_plan(session_id: str, current_user: dict = Depends(get_current_user)):
     restored = await session_manager.restore_session_if_needed(session_id, user_id=current_user["id"])

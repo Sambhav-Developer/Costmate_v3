@@ -41,12 +41,14 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
   }
 
   const hasVerified = verified && typeof verified === 'object' && Object.keys(verified).length > 0;
-  const hasPreFilled = prefilled && typeof prefilled === 'object' && Object.keys(prefilled).length > 0;
 
-  const qa = hasVerified ? verified : (hasPreFilled ? prefilled : {});
+  const doors = hasVerified && Array.isArray(verified.doors) 
+    ? verified.doors 
+    : (prefilled?.doors || []);
 
-  const doors = (verified?.doors?.length ? verified.doors : prefilled?.doors) || qa.doors || [];
-  const windows = (verified?.windows?.length ? verified.windows : prefilled?.windows) || qa.windows || [];
+  const windows = hasVerified && Array.isArray(verified.windows) 
+    ? verified.windows 
+    : (prefilled?.windows || []);
   const cvLookup = useMemo(() => {
     const detections = sessionState?.cv_results?.detections || [];
     const map: any = {};
@@ -131,9 +133,14 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
 
       items.forEach((item) => {
         const mark = getItemMark(item);
+        const origMark = String(item._original_mark || item.mark || item.type || '').trim().toUpperCase();
+        const itemMarks = Array.from(new Set([mark, origMark].filter(Boolean)));
 
-        // Find all detected instances for this mark
-        const instances = detections.filter((d: any) => String(d.mark || '').trim().toUpperCase() === mark);
+        // Find all detected instances for this mark or original mark
+        const instances = detections.filter((d: any) => {
+          const dMark = String(d.mark || '').trim().toUpperCase();
+          return itemMarks.includes(dMark);
+        });
 
         // Construct concise spec notes summary from structured insights
         const specificationsInsights = sessionState?.specifications_insights || {};
@@ -170,7 +177,7 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
         }
         const notesParts: string[] = [];
         const matWords = material.split(/\s+/).map(w => w.trim());
-        const isAlumGlass = material.includes('ALUMINUM') || material.includes('GLASS') || material.includes('ALUMINIUM') || material.includes('ALUM') || matWords.includes('AL');
+        const isAlumGlass = material.includes('ALUMINUM') || material.includes('GLASS') || material.includes('ALUMINIUM') || material.includes('ALUM') || material.includes('GLAZING') || material.includes('AL/GL') || material.includes('GL/AL') || matWords.includes('AL') || matWords.includes('GL') || matWords.includes('GLZ');
         if (isAlumGlass) {
           notesParts.push('Door is of Aluminium/Glass material.');
           if (specNotes && (specNotes.toUpperCase().includes('EXCLUDE') || specNotes.toUpperCase().includes('EXCLUDED'))) {
@@ -197,9 +204,27 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
               let val = '';
               if (h === 'QTY') val = '1';
               else if (h === 'MARKS') val = mark;
-              else if (h === 'LOCATION') val = d.location || '';
+              else if (h === 'LOCATION') {
+                let itemLoc = '';
+                for (const key of Object.keys(item)) {
+                  const kl = key.toLowerCase().trim();
+                  if (['location', 'location name', 'room', 'room name', 'room no', 'room number', 'room/location', 'room / location'].includes(kl)) {
+                    if (item[key]) { itemLoc = String(item[key]); break; }
+                  }
+                }
+                val = d.location || itemLoc || '';
+              }
               else if (h === 'ESTIMATOR NOTES') val = notes;
-              else if (h === 'FLOOR NO') val = floorNo;
+              else if (h === 'FLOOR NO' || h === 'FLOOR / LEVEL') {
+                let itemFloor = '';
+                for (const key of Object.keys(item)) {
+                  const kl = key.toLowerCase().trim();
+                  if (['floor', 'level', 'floor / level', 'floor/level', 'floor level', 'floor no', 'floor number', 'level no', 'level number'].includes(kl)) {
+                    if (item[key]) { itemFloor = String(item[key]); break; }
+                  }
+                }
+                val = itemFloor || d.floor_name || d.floor_no || floorNo || '';
+              }
               else if (h === 'OPENING MODE') val = isStorefront ? '' : (item._reconciled_opening_mode || item._schedule_opening_mode || d.opening_mode || 'Single');
               else if (h === 'INT/EXT') val = isStorefront ? '' : (item._reconciled_int_ext || d.int_ext || 'Interior');
               else val = item[h] || '';
@@ -255,10 +280,22 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
     if (items.length > 0) sheets.push(generateEstimationSheet(sheets.length));
 
     return sheets;
-  }, [doors, windows, cvLookup, hasScheduleData]);
+  }, [doors, windows, cvLookup, hasScheduleData, sessionState?.specifications_insights]);
+
+  const workbookKey = useMemo(() => {
+    return `${sessionId}_${doors.length}_${windows.length}_${JSON.stringify(doors.map((d: any) => d.mark || d.type))}_${JSON.stringify(windows.map((w: any) => w.mark || w.type))}_${sessionState?.updated_at || ''}`;
+  }, [sessionId, doors, windows, sessionState?.updated_at]);
 
   const [showWorkbook, setShowWorkbook] = React.useState(false);
+  const [editedWorkbookData, setEditedWorkbookData] = React.useState<any[]>([]);
+  const [isDownloading, setIsDownloading] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (workbookData && workbookData.length > 0) {
+      setEditedWorkbookData(workbookData);
+    }
+  }, [workbookData]);
 
   React.useEffect(() => {
     const timer = setTimeout(() => {
@@ -279,6 +316,43 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, [showWorkbook]);
+
+  const handleDownloadExcel = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDownloading(true);
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('costmate_token') : null;
+      const sheetsToExport = (editedWorkbookData && editedWorkbookData.length > 0) ? editedWorkbookData : workbookData;
+
+      const res = await fetch(`${api.baseUrl}/api/download/${sessionId}/custom-excel`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ sheets: sheetsToExport })
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to generate custom Excel file.');
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Costmate_Estimate_${sessionId}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Excel custom download error, falling back:", err);
+      window.location.href = downloadUrl;
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-5 w-full h-[85vh] animate-fade-in relative overflow-hidden">
@@ -310,14 +384,15 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
             <Download className="w-4 h-4" />
             Download Highlighted Plan
           </a>
-          <a
-            href={downloadUrl}
-            download
-            className="btn-accent flex items-center gap-2 text-sm px-5 py-2.5 rounded-xl no-underline transition-all hover:scale-[1.02]"
+          <button
+            type="button"
+            onClick={handleDownloadExcel}
+            disabled={isDownloading}
+            className="btn-accent flex items-center gap-2 text-sm px-5 py-2.5 rounded-xl no-underline transition-all hover:scale-[1.02] cursor-pointer disabled:opacity-50"
           >
             <Download className="w-4 h-4" />
-            Download Excel
-          </a>
+            {isDownloading ? 'Exporting Excel...' : 'Download Excel'}
+          </button>
         </div>
       </div>
 
@@ -328,7 +403,13 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
           className="w-full flex-1 rounded-2xl overflow-hidden border shadow-xl relative costmate-fortune-wrapper"
           style={{ borderColor: 'var(--panel-border)' }}
         >
-          {showWorkbook && <Workbook data={workbookData} />}
+          {showWorkbook && (
+            <Workbook
+              key={workbookKey}
+              data={workbookData}
+              onChange={(data) => setEditedWorkbookData(data)}
+            />
+          )}
         </div>
       ) : (
         <div className="flex-1 flex flex-col items-center justify-center bg-white rounded-2xl border shadow-sm">

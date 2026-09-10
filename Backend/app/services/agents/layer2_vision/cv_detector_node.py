@@ -10,6 +10,18 @@ from app.services.graph.state import CostmateState
 from app.core.logging import logger
 from app.config import settings
 
+try:
+    import shapely
+    from shapely.geometry import Point, LineString, MultiPolygon
+    from shapely.ops import unary_union
+    SHAPELY_AVAILABLE = True
+except ModuleNotFoundError as e:
+    SHAPELY_AVAILABLE = False
+    logger.critical(
+        "shapely is not installed — geometry engine disabled, "
+        "ALL doors on this run will be forced to needs_review=True: %s", e
+    )
+
 # VLM door classification paths and helper functions
 # Dynamically locate WORKSPACE_DIR containing the Assets folder
 dir_path = os.path.dirname(os.path.abspath(__file__))
@@ -925,20 +937,40 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             "arc_count": len(arc_paths)
                         })
                         
-                # Calculate Building Wall Envelope for the page using all candidates_by_mark matches
-                all_dm_points = []
-                for mark_text, mark_matches in candidates_by_mark.items():
-                    for m in mark_matches:
-                        all_dm_points.append((m["w_cx"], m["w_cy"]))
+                # Construct 2D Concave Outer Hull Polygon using Shapely (if available)
+                wall_lines = []
+                exterior_boundary = None
                 
-                env_min_x, env_max_x, env_min_y, env_max_y = None, None, None, None
-                if all_dm_points:
-                    dm_xs = [p[0] for p in all_dm_points]
-                    dm_ys = [p[1] for p in all_dm_points]
-                    env_min_x, env_max_x = min(dm_xs), max(dm_xs)
-                    env_min_y, env_max_y = min(dm_ys), max(dm_ys)
-                    logger.info(f"CV Envelope: Found door mark building envelope X=[{env_min_x:.1f}, {env_max_x:.1f}], Y=[{env_min_y:.1f}, {env_max_y:.1f}]")
+                if SHAPELY_AVAILABLE:
+                    page_w, page_h = page.rect.width, page.rect.height
+                    for d in drawings_on_page:
+                        r_val = d.get("rect")
+                        if not r_val: continue
+                        r = fz.Rect(r_val)
+                        if r.width > page_w * 0.75 or r.height > page_h * 0.75: continue
+                        if r.width < 2 and r.height < 2: continue
                         
+                        width = d.get("width") or 0.0
+                        items = d.get("items", [])
+                        has_curve = any(it[0] in ("c", "v", "y") for it in items)
+                        if has_curve: continue
+                        
+                        if width >= 0.7 or d.get("fill") is not None or (r.width > 25 and r.height > 25):
+                            wall_lines.append(LineString([(r.x0, r.y0), (r.x1, r.y1)]))
+
+                    if wall_lines:
+                        try:
+                            buffered_walls = [line.buffer(8.0) for line in wall_lines]
+                            building_polygon = unary_union(buffered_walls)
+                            main_poly = max(building_polygon.geoms, key=lambda p: p.area) if isinstance(building_polygon, MultiPolygon) else building_polygon
+                            exterior_boundary = main_poly.exterior
+                            logger.info(f"Shapely Hull: Built 2D perimeter polyline length={exterior_boundary.length:.1f} from {len(wall_lines)} CAD wall segments.")
+                        except Exception as poly_err:
+                            logger.error(f"Shapely Hull: Failed to construct building polygon: {poly_err}")
+                            exterior_boundary = None
+                else:
+                    logger.warning("Shapely engine disabled (SHAPELY_AVAILABLE=False). All detections will be flagged for review.")
+
                 for word_text, matches in candidates_by_mark.items():
                     # Disambiguate true door tags (in circles next to swing arcs) from room numbers (in boxes in center of room)
                     has_circle_candidate = any(is_enclosed_in_tag_circle(m["w_cx"], m["w_cy"], m["nearby_drawings"]) for m in matches)
@@ -962,33 +994,36 @@ async def cv_detector_node(state: CostmateState) -> dict:
                         inst_rect = m["inst_rect"]
                         nearby_drawings = m["nearby_drawings"]
                         
-                        # Geometric building perimeter check
+                        # 3-Zone Geometry Engine Evaluation via Shapely Boundary Polyline
+                        dist_to_boundary = 999.0
+                        host_dist = 999.0
+                        is_borderline = False
                         is_perimeter = False
-                        if env_min_x is not None:
-                            dx0 = abs(w_cx - env_min_x)
-                            dx1 = abs(w_cx - env_max_x)
-                            dy0 = abs(w_cy - env_min_y)
-                            dy1 = abs(w_cy - env_max_y)
-                            min_dist = min(dx0, dx1, dy0, dy1)
-                            
-                            # Check nearby words (within 60pt) for exterior wall/curtain wall sub-tokens (e.g. 'CW-A03', '6A.AL.EXT')
-                            has_nearby_e = False
-                            for w_tag in words_on_page:
-                                w_text = w_tag[4].strip(".,()[]{}-_#*").upper()
-                                tag_cx = (w_tag[0] + w_tag[2]) / 2
-                                tag_cy = (w_tag[1] + w_tag[3]) / 2
-                                dist_to_tag = ((tag_cx - w_cx) ** 2 + (tag_cy - w_cy) ** 2) ** 0.5
-                                if dist_to_tag <= 60.0:
-                                    sub_tokens = w_text.split("-") + w_text.split(".")
-                                    if any(t in ["EXT", "EXTERIOR", "CW", "CURTAIN"] for t in sub_tokens):
-                                        has_nearby_e = True
-                                        break
-                                        
-                            # Exterior perimeter threshold (within 75pt of building edge OR has nearby CW/EXT tag)
-                            if min_dist <= 75.0 or has_nearby_e:
+                        
+                        if exterior_boundary:
+                            dist_to_boundary = exterior_boundary.distance(Point(w_cx, w_cy))
+                            nearby_walls = [l for l in wall_lines if l.distance(Point(w_cx, w_cy)) <= 80.0]
+                            if nearby_walls:
+                                best_wall = min(nearby_walls, key=lambda l: exterior_boundary.distance(l))
+                                host_dist = exterior_boundary.distance(best_wall)
+                            else:
+                                host_dist = dist_to_boundary
+                                
+                            if dist_to_boundary <= 25.0:
                                 is_perimeter = True
+                                is_borderline = False
+                            elif 25.0 < dist_to_boundary <= 85.0:
+                                is_perimeter = True
+                                is_borderline = True
+                            else:
+                                is_perimeter = False
+                                is_borderline = False
+                        else:
+                            # Geometry engine unavailable -> force borderline review safety net!
+                            is_perimeter = True
+                            is_borderline = True
 
-                        logger.info(f"CV Detector DEBUG: MATCH FOUND word={word_text!r} at ({w_cx:.1f},{w_cy:.1f}), is_perimeter={is_perimeter}")
+                        logger.info(f"CV Detector DEBUG: MATCH FOUND word={word_text!r} at ({w_cx:.1f},{w_cy:.1f}), dist_to_boundary={dist_to_boundary:.1f}pt, host_dist={host_dist:.1f}pt, is_borderline={is_borderline}")
                         
                         # Increment index of this word on the page for unique crop filename
                         word_indices[word_text] = word_indices.get(word_text, 0) + 1
@@ -1036,7 +1071,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             all_temp_crops.append(crop_path)
                             
                             # Queue LLM task for location and classification mapping
-                            location_tasks.append((word_text, floor_no, floor_name, crop_path, opening_mode, is_perimeter, w_cx, w_cy, [inst_rect.x0, inst_rect.y0, inst_rect.x1, inst_rect.y1], page_idx))
+                            location_tasks.append((word_text, floor_no, floor_name, crop_path, opening_mode, is_perimeter, w_cx, w_cy, [inst_rect.x0, inst_rect.y0, inst_rect.x1, inst_rect.y1], page_idx, dist_to_boundary, host_dist, is_borderline))
                         except Exception as crop_err:
                             logger.error(f"Failed to create crop for mark {word_text}: {crop_err}")
                             # Still record the programmatic result without location
@@ -1045,6 +1080,9 @@ async def cv_detector_node(state: CostmateState) -> dict:
                                 "location": "",
                                 "opening_mode": opening_mode,
                                 "int_ext": "Exterior" if is_perimeter else "Interior",
+                                "dist_to_boundary": dist_to_boundary,
+                                "host_dist": host_dist,
+                                "is_borderline": is_borderline,
                                 "floor_no": str(floor_no),
                                 "floor_name": floor_name,
                                 "page_no": str(page_idx),
@@ -1058,24 +1096,38 @@ async def cv_detector_node(state: CostmateState) -> dict:
         # Run location LLM tasks concurrently
         logger.info(f"CV Detector: Running {len(location_tasks)} location-detection LLM tasks...")
         
-        async def run_location_task(mark, floor_no, floor_name, crop_path, programmatic_mode, is_perimeter, w_cx, w_cy, bbox, page_idx):
+        async def run_location_task(mark, floor_no, floor_name, crop_path, programmatic_mode, is_perimeter, w_cx, w_cy, bbox, page_idx, dist_to_boundary, host_dist, is_borderline):
             vlm_res = await classify_door_crop_vlm(crop_path, mark, floor_no, semaphore)
             
             vlm_mode = vlm_res.get("matched_code", "UNKNOWN")
             opening_mode = vlm_mode if vlm_mode != "UNKNOWN" else programmatic_mode
             
             vlm_wall = vlm_res.get("wall_type", "UNKNOWN")
-            int_ext = "Exterior" if (is_perimeter or vlm_wall in ["EXT", "EXTERIOR"]) else "Interior"
+            
+            # Disable Shapely 2D distance hull per user directive; rely on VLM, wall tags, schedule facts, and specs
+            USE_SHAPELY_GEOMETRY = False
+            
+            if USE_SHAPELY_GEOMETRY and dist_to_boundary <= 25.0:
+                int_ext = "Exterior"
+            elif USE_SHAPELY_GEOMETRY and 25.0 < dist_to_boundary <= 85.0:
+                int_ext = "Exterior"
+            elif vlm_wall in ["EXT", "EXTERIOR"]:
+                int_ext = "Exterior"
+            else:
+                int_ext = "Interior"
                 
             return {
                 "mark": mark,
                 "location": vlm_res.get("location", "Unknown"),
                 "opening_mode": opening_mode,
                 "int_ext": int_ext,
+                "dist_to_boundary": dist_to_boundary,
+                "host_dist": host_dist,
+                "is_borderline": is_borderline,
                 "vlm_opening_mode": vlm_mode,
                 "vlm_wall_type": vlm_wall,
                 "vlm_confidence": vlm_res.get("confidence", "low"),
-                "vlm_reasoning": f"Geometric perimeter check (is_perimeter={is_perimeter}). VLM wall type guess: {vlm_wall}",
+                "vlm_reasoning": f"Shapely 2D Geometry (dist={dist_to_boundary:.1f}pt, host_dist={host_dist:.1f}pt, is_borderline={is_borderline}). VLM wall type guess: {vlm_wall}",
                 "floor_no": str(floor_no),
                 "floor_name": floor_name,
                 "page_no": str(page_idx),
@@ -1085,7 +1137,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
             }
         
         location_results = await asyncio.gather(
-            *[run_location_task(m, f, fn, cp, om, ip, cx, cy, box, p_idx) for m, f, fn, cp, om, ip, cx, cy, box, p_idx in location_tasks]
+            *[run_location_task(m, f, fn, cp, om, ip, cx, cy, box, p_idx, db, hd, ib) for m, f, fn, cp, om, ip, cx, cy, box, p_idx, db, hd, ib in location_tasks]
         )
         detections.extend(location_results)
         
@@ -1105,7 +1157,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
         return {"cv_results": {"detections": detections}}
         
     except Exception as e:
-        logger.error(f"CV Detector overall failure: {e}")
+        logger.critical(f"CV Detector overall failure: {e}", exc_info=True)
         traceback.print_exc()
         # Clean up all temp files
         for temp_file in downloaded_temps:
@@ -1116,4 +1168,4 @@ async def cv_detector_node(state: CostmateState) -> dict:
             if os.path.exists(crop_file):
                 try: os.remove(crop_file)
                 except: pass
-        return {"cv_results": {"detections": []}}
+        return {"cv_results": {"detections": [], "error": str(e)}}

@@ -17,4 +17,5 @@ pycryptodome
 sqlalchemy 
 asyncpg 
 alembic
-rapidfuzz 
+rapidfuzz
+shapely>=2.1.0 

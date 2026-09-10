@@ -930,11 +930,53 @@ class EstimationService:
         restored = await session_manager.restore_session_if_needed(session_id, user_id=user_id)
         if not restored:
             raise NotFoundException("Session not found or expired.")
+
+        config = {"configurable": {"thread_id": session_id}}
+        
+        # 1. Update LangGraph state checkpoint if possible
+        try:
+            from app.services.graph.graph import costmate_graph
+            await costmate_graph.aupdate_state(
+                config,
+                {
+                    "qa_verified": verified_qa,
+                    "status": "completed",
+                    "current_step": "completed"
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[{session_id}] Failed to update costmate_graph state directly: {e}")
+
+        # 2. Update session manager state and DB
+        session_manager.update_state(session_id, {
+            "qa_verified": verified_qa,
+            "status": "completed",
+            "current_step": "completed"
+        })
+
+        # 3. Regenerate Excel file dynamically with updated QA parameters
+        try:
+            from app.services.agents.layer5_output.excel_writer_node import excel_writer_node
+            state_snapshot = await costmate_graph.aget_state(config)
+            full_state = {**(state_snapshot.values or {}), "qa_verified": verified_qa, "session_id": session_id}
+            excel_res = await excel_writer_node(full_state)
+            if excel_res.get("excel_file_path"):
+                session_manager.update_state(session_id, {"excel_file_path": excel_res["excel_file_path"]})
+                try:
+                    await costmate_graph.aupdate_state(config, {"excel_file_path": excel_res["excel_file_path"]})
+                except Exception:
+                    pass
+        except Exception as exc_err:
+            logger.error(f"[{session_id}] Failed to regenerate excel in submit_qa: {exc_err}")
+
+        # Resume graph if queue is active
         queue = session_manager.get_queue(session_id)
-        if not queue:
-            raise NotFoundException("Session not found or expired.")
-            
-        session_manager.resume_session(session_id, verified_qa)
-        return {"status": "resumed"}
+        if queue:
+            try:
+                session_manager.resume_session(session_id, verified_qa)
+            except Exception as resume_err:
+                logger.warning(f"[{session_id}] Graph resume error (may already be completed): {resume_err}")
+
+        return {"status": "success", "qa_verified": verified_qa}
 
 estimation_service = EstimationService()

@@ -332,10 +332,10 @@ export default function TabEditor({
       if (hasVerified) {
         const parsedVerified = JSON.parse(JSON.stringify(verified));
         finalForm = { ...finalForm, ...parsedVerified };
-        if (!parsedVerified.doors || parsedVerified.doors.length === 0) {
+        if (parsedVerified.doors === undefined) {
           finalForm.doors = prefilled?.doors || [];
         }
-        if (!parsedVerified.windows || parsedVerified.windows.length === 0) {
+        if (parsedVerified.windows === undefined) {
           finalForm.windows = prefilled?.windows || [];
         }
       }

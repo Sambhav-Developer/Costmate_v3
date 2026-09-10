@@ -96,8 +96,15 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   ]);
   
   const [activeFloorId, setActiveFloorId] = useState(1);
-  const activeFloorIndex = floors.findIndex(f => f.id === activeFloorId);
-  const activeFloor = floors[activeFloorIndex];
+  const activeFloorIndex = Math.max(0, floors.findIndex(f => f.id === activeFloorId));
+  const activeFloor = floors[activeFloorIndex] || floors[0] || {
+    id: 1,
+    name: 'Ground Floor',
+    fileName: null,
+    file: null,
+    floorSpecs: { floorHeight: '3.0m', footings: [], columns: [], beams: [] },
+    rooms: []
+  };
 
   const [activeTab, setActiveTab] = useState<'rooms' | 'floorSpecs'>('rooms');
   const [expandedRoomId, setExpandedRoomId] = useState<number | null>(null);
@@ -340,13 +347,30 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
 
     const mapped = extractedItems.map((item) => {
       const newItem: any = { _schedule_type: cropType, needs_review: false };
+      let userMarkValue = "";
+
       Object.keys(item).forEach((oldKey) => {
         if (oldKey === '_schedule_type' || oldKey === 'needs_review') return;
         const newKey = headerMappings[oldKey]?.trim() || oldKey;
-        newItem[newKey] = item[oldKey];
+        const val = item[oldKey];
+        newItem[newKey] = val;
+
+        // Track user edited mark value from mapped columns
+        const nkLower = newKey.toLowerCase();
+        if (oldKey === 'mark' || nkLower === 'mark' || nkLower === 'door number' || nkLower === 'door no' || nkLower === 'door mark') {
+          if (val && String(val).trim()) {
+            userMarkValue = String(val).trim().upper ? String(val).trim().toUpperCase() : String(val).trim();
+          }
+        }
       });
+
+      // Synchronize primary mark key with user's edited cell value
+      if (userMarkValue) {
+        newItem["mark"] = userMarkValue;
+      }
       return newItem;
     });
+
 
     setGlobalSettings(prev => {
       const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };

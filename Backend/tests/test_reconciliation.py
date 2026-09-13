@@ -289,5 +289,48 @@ class TestReconciliation(unittest.TestCase):
         doors = res["qa_prefilled"]["doors"]
         self.assertEqual(doors[0]["_reconciled_opening_mode"], "SGL")
 
+    def test_deduplicate_same_mark_same_room(self):
+        # Multiple crop detections scanning the same door callout bubble (e.g. HE210L) in the same room location
+        state_duplicates = {
+            "schedule_data": [
+                {
+                    "mark": "HE210L",
+                    "location": "CONFERENCE ROOM",
+                    "door material": "WD/GLASS",
+                    "frame material": "HM",
+                    "comments": "WOOD DOOR WITH VISION LITE"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "HE210L",
+                        "location": "CONFERENCE ROOM",
+                        "page_no": "0",
+                        "w_cx": 100.0,
+                        "w_cy": 100.0,
+                        "floor_no": "1"
+                    },
+                    {
+                        "mark": "HE210L",
+                        "location": "CONFERENCE ROOM",
+                        "page_no": "0",
+                        "w_cx": 115.0,
+                        "w_cy": 110.0,
+                        "floor_no": "1"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_duplicates))
+        doors = res["qa_prefilled"]["doors"]
+        audit = res["reconciliation_audit"]
+        
+        # Count should be reconciled down to 1
+        self.assertEqual(doors[0]["count"], 1)
+        self.assertEqual(len(audit["deduplicated_rows"]), 1)
+        self.assertEqual(audit["deduplicated_rows"][0]["mark"], "HE210L")
+
 if __name__ == "__main__":
     unittest.main()

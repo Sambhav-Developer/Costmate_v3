@@ -136,28 +136,34 @@ async def classify_door_crop_vlm(crop_path: str, mark: str, floor_no: int, semap
         logger.warning(f"VLM Guardrails: Failed to normalize crop resolution for {crop_path}: {resize_err}")
 
     async with semaphore:
-        try:
-            res = await openrouter_client.generate_chat(
-                prompt=SYSTEM_PROMPT,
-                image_paths=[
-                    f"data:image/png;base64,{reference_b64}" if REFERENCE_CATALOG_PATH.endswith(".png") else f"data:image/jpeg;base64,{reference_b64}",
-                    crop_path
-                ],
-                json_mode=True,
-                temperature=0.1,
-                model_name="qwen/qwen2.5-vl-72b-instruct"
-            )
-            data = parse_json_response(res)
-            return validate_vlm_output(data)
-        except Exception as e:
-            logger.error(f"VLM: Vision classification failed for mark {mark} on Floor {floor_no}: {e}")
-            return {
-                "matched_code": "UNKNOWN",
-                "wall_type": "UNKNOWN",
-                "location": "Unknown",
-                "confidence": "low",
-                "reasoning": f"Vision API error: {str(e)}"
-            }
+        max_vlm_retries = 3
+        for attempt in range(max_vlm_retries):
+            try:
+                res = await openrouter_client.generate_chat(
+                    prompt=SYSTEM_PROMPT,
+                    image_paths=[
+                        f"data:image/png;base64,{reference_b64}" if REFERENCE_CATALOG_PATH.endswith(".png") else f"data:image/jpeg;base64,{reference_b64}",
+                        crop_path
+                    ],
+                    json_mode=True,
+                    temperature=0.1,
+                    model_name="qwen/qwen2.5-vl-72b-instruct"
+                )
+                data = parse_json_response(res)
+                return validate_vlm_output(data)
+            except Exception as e:
+                if attempt < max_vlm_retries - 1:
+                    logger.warning(f"VLM: Mark {mark} Floor {floor_no} failed (Attempt {attempt+1}/{max_vlm_retries}): {e}. Retrying in 2s...")
+                    await asyncio.sleep(2.0)
+                else:
+                    logger.error(f"VLM: Vision classification exhausted retries for mark {mark} on Floor {floor_no}: {e}")
+                    return {
+                        "matched_code": "UNKNOWN",
+                        "wall_type": "UNKNOWN",
+                        "location": "Unknown",
+                        "confidence": "low",
+                        "reasoning": f"Vision API error: {str(e)}"
+                    }
 
 
 # Common room keywords to filter out room name labels from door/window callouts
@@ -249,8 +255,40 @@ def is_block_room_label(blocks, block_no, line_no, clean_mark) -> bool:
             if any(kw in line_words for kw in ROOM_KEYWORDS):
                 return True
         return False
-    except:
+    except Exception:
         return False
+
+def is_stacked_door_callout(w, words_on_page) -> bool:
+    """
+    Checks if candidate word `w` is part of a multi-cell door callout tag stack (e.g. D1 / 36" / MARK).
+    Looks for door type/width indicator words ('D1', 'D2', '36"', '45') stacked directly above `w`.
+    """
+    w_cx = (w[0] + w[2]) / 2.0
+    w_top = w[1]
+    for other_w in words_on_page:
+        other_txt = other_w[4].strip(".,()[]{}-_#*").upper()
+        if any(tag in other_txt for tag in ["D1", "D2", "D3", "36", "45", "MARK"]):
+            other_cx = (other_w[0] + other_w[2]) / 2.0
+            other_bot = other_w[3]
+            if abs(other_cx - w_cx) <= 25.0 and 0.0 <= (w_top - other_bot) <= 35.0:
+                return True
+    return False
+
+def is_room_center_label_word(w, words_on_page) -> bool:
+    """
+    Checks if candidate word `w` is a room number label printed under room name text (e.g. OFFICE / HE210P).
+    """
+    font_h = w[3] - w[1]
+    w_cx = (w[0] + w[2]) / 2.0
+    w_top = w[1]
+    for other_w in words_on_page:
+        other_txt = other_w[4].strip(".,()[]{}-_#*/").lower()
+        if any(kw in other_txt for kw in ROOM_KEYWORDS):
+            other_cx = (other_w[0] + other_w[2]) / 2.0
+            other_bot = other_w[3]
+            if abs(other_cx - w_cx) <= 45.0 and 0.0 <= (w_top - other_bot) <= 35.0:
+                return True
+    return font_h >= 11.5
 
 def is_enclosed_in_tag_circle(w_cx, w_cy, nearby_drawings) -> bool:
     """
@@ -275,6 +313,71 @@ def is_enclosed_in_tag_circle(w_cx, w_cy, nearby_drawings) -> bool:
                 if has_curve:
                     return True
     return False
+
+def validate_vector_opening_geometry(page, point, radius=40.0) -> bool:
+    """
+    Validates if candidate text at `point` (fitz.Point or (cx, cy)) represents a genuine door opening tag.
+    Checks 3 complementary CAD/PDF vector drawing criteria within tight `radius` (40pt ~ 0.55 inches):
+      Criterion A: Swing Arcs (single or pair cubic Bezier curves 'c', 'v', 'y' or panel lines 'l')
+      Criterion B: Cased Opening Frame Lines & Wall Gap Terminations
+      Criterion C: Vector Callout Bubble Shape (circle/oval/hexagon) or Leader Line
+    """
+    import fitz
+    cx = point.x if hasattr(point, 'x') else point[0]
+    cy = point.y if hasattr(point, 'y') else point[1]
+    
+    search_rect = fitz.Rect(cx - radius, cy - radius, cx + radius, cy + radius)
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return True # Fallback if drawings stream unavailable
+        
+    has_arc = False
+    has_cased_jamb = False
+    has_callout_shape = False
+    
+    for path in drawings:
+        p_rect = fitz.Rect(path["rect"])
+        if not search_rect.intersects(p_rect):
+            continue
+            
+        w = p_rect.x1 - p_rect.x0
+        h = p_rect.y1 - p_rect.y0
+        
+        # Criterion C: Enclosed Callout Symbol / Bubble around text (width/height 10 - 65 pt)
+        if 10.0 <= w <= 65.0 and 10.0 <= h <= 65.0:
+            d_cx = (p_rect.x0 + p_rect.x1) / 2.0
+            d_cy = (p_rect.y0 + p_rect.y1) / 2.0
+            if ((d_cx - cx)**2 + (d_cy - cy)**2)**0.5 <= 35.0:
+                items = path.get("items", [])
+                has_curve = any(it[0] in ("c", "qu", "v", "y") for it in items)
+                if has_curve:
+                    has_callout_shape = True
+                
+        for item in path.get("items", []):
+            cmd = item[0]
+            # Criterion A: Swing arcs (single or pair Bezier curves)
+            if cmd in ("c", "v", "y"):
+                p1 = item[1]
+                p3 = item[3] if len(item) > 3 else item[2]
+                c_len = ((p3.x - p1.x)**2 + (p3.y - p1.y)**2)**0.5
+                if 12.0 <= c_len <= 160.0:
+                    arc_cx = (p1.x + p3.x) / 2.0
+                    arc_cy = (p1.y + p3.y) / 2.0
+                    dist_to_arc = ((arc_cx - cx)**2 + (arc_cy - cy)**2)**0.5
+                    if dist_to_arc <= 55.0:
+                        has_arc = True
+            # Criterion B: Straight lines for door panel or cased opening frame jambs
+            elif cmd == "l":
+                p1, p2 = item[1], item[2]
+                l_len = ((p2.x - p1.x)**2 + (p2.y - p1.y)**2)**0.5
+                if 15.0 <= l_len <= 140.0:
+                    line_cx = (p1.x + p2.x) / 2.0
+                    line_cy = (p1.y + p2.y) / 2.0
+                    if ((line_cx - cx)**2 + (line_cy - cy)**2)**0.5 <= 45.0:
+                        has_cased_jamb = True
+
+    return has_arc or has_cased_jamb or has_callout_shape
 
 def normalize_opening_mode(val: str) -> str:
     val_clean = str(val).strip().upper()
@@ -902,6 +1005,12 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             
                         import fitz as fz
                         inst_rect = fz.Rect(w[0], w[1], w[2], w[3])
+                        
+                        # Validate opening vector geometry (Criterion A: swing arcs, Criterion B: cased jamb lines, Criterion C: callout symbol)
+                        if not validate_vector_opening_geometry(page, (w_cx, w_cy), radius=40.0):
+                            logger.info(f"CV Detector: Skipping text '{word_text}' at ({w_cx:.1f}, {w_cy:.1f}) (No vector opening geometry nearby)")
+                            continue
+
                         search_rect = inst_rect + (-70, -70, 70, 70)
                         nearby_drawings = [
                             d for d in drawings_on_page
@@ -972,13 +1081,34 @@ async def cv_detector_node(state: CostmateState) -> dict:
                     logger.warning("Shapely engine disabled (SHAPELY_AVAILABLE=False). All detections will be flagged for review.")
 
                 for word_text, matches in candidates_by_mark.items():
-                    # Disambiguate true door tags (in circles next to swing arcs) from room numbers (in boxes in center of room)
-                    has_circle_candidate = any(is_enclosed_in_tag_circle(m["w_cx"], m["w_cy"], m["nearby_drawings"]) for m in matches)
-                    if has_circle_candidate:
-                        matches = [m for m in matches if is_enclosed_in_tag_circle(m["w_cx"], m["w_cy"], m["nearby_drawings"])]
+                    # Disambiguate true door callout tags (stacked D1/36"/Mark grids or circle tags near arcs) from room numbers
+                    for m in matches:
+                        w = m["word"]
+                        m["is_stacked"] = is_stacked_door_callout(w, words_on_page)
+                        m["is_room_label"] = is_room_center_label_word(w, words_on_page)
+                        m["font_h"] = w[3] - w[1]
 
-                    # Sort matches by arc count descending so those with door arcs are prioritized
-                    sorted_matches = sorted(matches, key=lambda x: x["arc_count"], reverse=True)
+                    # Genuine door opening candidate priority (stacked callout tag or arc curve or small font tag)
+                    genuine_door_matches = [
+                        m for m in matches 
+                        if m["is_stacked"] or m["arc_count"] > 0 or (not m["is_room_label"] and m["font_h"] < 11.0)
+                    ]
+                    
+                    if genuine_door_matches:
+                        # Keep ONLY genuine door callout matches! Drop naked room center labels!
+                        matches = genuine_door_matches
+                    else:
+                        # If no genuine door tag exists, filter out candidates that are directly under room keywords
+                        filtered = [m for m in matches if not m["is_room_label"]]
+                        if filtered:
+                            matches = filtered
+
+                    # Sort matches prioritizing stacked callout tags, arc counts, and smaller font sizes
+                    sorted_matches = sorted(
+                        matches,
+                        key=lambda x: (1 if x["is_stacked"] else 0, x["arc_count"], -x["font_h"]),
+                        reverse=True
+                    )
                         
                     # Also apply simple spatial deduplication: within 8pt
                     final_matches = []
@@ -1136,9 +1266,22 @@ async def cv_detector_node(state: CostmateState) -> dict:
                 "bbox": bbox
             }
         
-        location_results = await asyncio.gather(
-            *[run_location_task(m, f, fn, cp, om, ip, cx, cy, box, p_idx, db, hd, ib) for m, f, fn, cp, om, ip, cx, cy, box, p_idx, db, hd, ib in location_tasks]
-        )
+        # Strict Sequential Batching (B=3): Execute 1 batch of 3 requests, await full completion before proceeding to next batch
+        BATCH_SIZE = 3
+        location_results = []
+        total_batches = (len(location_tasks) + BATCH_SIZE - 1) // BATCH_SIZE if location_tasks else 0
+        
+        for batch_idx, i in enumerate(range(0, len(location_tasks), BATCH_SIZE), 1):
+            batch = location_tasks[i:i + BATCH_SIZE]
+            logger.info(f"CV Detector VLM: Dispatching Batch {batch_idx}/{total_batches} ({len(batch)} requests)...")
+            b_res = await asyncio.gather(
+                *[run_location_task(m, f, fn, cp, om, ip, cx, cy, box, p_idx, db, hd, ib) for m, f, fn, cp, om, ip, cx, cy, box, p_idx, db, hd, ib in batch]
+            )
+            location_results.extend(b_res)
+            logger.info(f"CV Detector VLM: Batch {batch_idx}/{total_batches} fulfilled successfully ({len(b_res)} responses).")
+            if i + BATCH_SIZE < len(location_tasks):
+                await asyncio.sleep(0.5)
+                
         detections.extend(location_results)
         
         # Cleanup temporary raw downloads

@@ -16,8 +16,8 @@ class OpenRouterClient:
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         if self._semaphore is None:
-            # Allow up to 6 concurrent requests for fast parallel passes
-            self._semaphore = asyncio.Semaphore(6)
+            # Enforce maximum 3 concurrent requests to OpenRouter
+            self._semaphore = asyncio.Semaphore(3)
         return self._semaphore
 
     def _encode_image(self, image_path: str) -> str:

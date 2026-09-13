@@ -26,3 +26,5 @@ htmlcov/
 .venv/
 venv/
 ENV/
+
+Assets

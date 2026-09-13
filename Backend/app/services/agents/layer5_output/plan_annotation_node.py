@@ -227,11 +227,7 @@ async def plan_annotation_node(state: CostmateState) -> dict:
         from app.core.cloud import upload_to_cloudinary
         cloud_url = upload_to_cloudinary(out_path, resource_type="raw") or out_path
         
-        if cloud_url != out_path and os.path.exists(out_path):
-            try:
-                os.remove(out_path)
-            except:
-                pass
+        # Keep local out_path intact for reliable local FileResponse downloads
                 
         for temp_file in downloaded_temps:
             if os.path.exists(temp_file):

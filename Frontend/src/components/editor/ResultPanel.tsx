@@ -65,218 +65,211 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
 
     const items = [...doors, ...windows];
 
+    const getDictVal = (d: any, targetKey: string): string => {
+      if (!d || typeof d !== 'object' || !targetKey) return '';
+      if (d[targetKey] !== undefined && d[targetKey] !== null && String(d[targetKey]).trim() !== '') {
+        return String(d[targetKey]);
+      }
+      const tkLower = targetKey.toLowerCase().trim();
+      for (const k of Object.keys(d)) {
+        if (k.toLowerCase().trim() === tkLower && d[k] !== undefined && d[k] !== null && String(d[k]).trim() !== '') {
+          return String(d[k]);
+        }
+      }
+      if (['mark', 'marks', 'door mark', 'door no', 'number', 'type'].includes(tkLower)) {
+        for (const k of ['mark', 'MARK', 'type', 'TYPE', 'door_mark', 'number', '_original_mark']) {
+          if (d[k] && String(d[k]).trim() !== '') return String(d[k]);
+        }
+      }
+      return '';
+    };
+
+    const getItemLocation = (d: any): string => {
+      if (!d || typeof d !== 'object') return '';
+      const locKeys = ['location', 'location name', 'room', 'room name', 'room no', 'room number', 'room/location', 'room / location', 'room_name', 'room_no'];
+      for (const k of Object.keys(d)) {
+        if (locKeys.includes(k.toLowerCase().trim()) && d[k] && String(d[k]).trim() !== '') {
+          return String(d[k]);
+        }
+      }
+      return '';
+    };
+
     const generateRawSheet = (sheetItems: any[], sheetName: string, color: string, order: number) => {
-      const allKeys = new Set<string>();
-      sheetItems.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
-      const rawHeaders = Array.from(allKeys).filter(k => {
-        if (k.startsWith('_')) return false;
-        const kl = k.toLowerCase().trim();
-        return kl !== 'count' && kl !== 'qty' &&
-          kl !== 'needs_review' && kl !== 'needs review' &&
-          kl !== 'need_review' && kl !== 'need review' &&
-          kl !== 'opening_mode' && kl !== 'opening mode' &&
-          kl !== 'int/ext' && kl !== 'int_ext';
-      });
+      const excludedKeys = new Set([
+        'count', 'qty', 'needs_review', 'needs review', 'need_review', 'need review',
+        'is_borderline', 'is borderline', 'review_reason', 'review reason',
+        'section', 'reason', 'reconciled', 'excluded', 'opening_mode', 'opening mode',
+        'int/ext', 'int_ext'
+      ]);
+      const rawHeadersInput = prefilled?.raw_schedule_headers || (sheetItems.length > 0 ? Object.keys(sheetItems[0]) : []);
+      const rawSchedCols = rawHeadersInput.filter((k: string) => !String(k).startsWith('_') && !excludedKeys.has(String(k).toLowerCase().trim()));
 
       const celldata: any[] = [];
-      rawHeaders.forEach((h, c) => {
-        const displayHeader = (h.toLowerCase() === 'type' || h.toLowerCase() === 'mark' || h.toLowerCase() === 'marks') ? 'MARK' : h;
-        celldata.push({ r: 0, c, v: { v: displayHeader, m: displayHeader, bl: 1, bg: '#333333', fc: '#ffffff' } });
+
+      // Metadata Block (Rows 0 to 3)
+      const metaItems = [
+        ["PROJECT NAME:", sessionState?.project_name || "Costmate Project Takeoff"],
+        ["TAKEOFF DONE BY:", "Costmate AI Takeoff"],
+        ["PLANS DATE:", "07.09.2026"],
+        ["TAKEOFF DATE:", new Date().toLocaleDateString('en-GB')]
+      ];
+      metaItems.forEach(([label, val], rIdx) => {
+        celldata.push({ r: rIdx, c: 0, v: { v: label, m: label, bl: 1 } });
+        celldata.push({ r: rIdx, c: 1, v: { v: val, m: String(val), bg: '#FFFF00' } });
       });
 
+      // Header Row (Row 4 = Excel Row 5)
+      rawSchedCols.forEach((h: string, c: number) => {
+        celldata.push({ r: 4, c, v: { v: h, m: h, bl: 1, bg: '#2F5496', fc: '#ffffff', ht: 1, vt: 1 } });
+      });
+
+      // Data Rows (Row 5+ = Excel Row 6+)
       sheetItems.forEach((item, rIdx) => {
-        rawHeaders.forEach((h, cIdx) => {
-          const val = item[h] || '';
-          celldata.push({ r: rIdx + 1, c: cIdx, v: { v: val, m: String(val) } });
+        const r = rIdx + 5;
+        rawSchedCols.forEach((h: string, c: number) => {
+          const val = getDictVal(item, h);
+          celldata.push({ r, c, v: { v: val, m: String(val), ht: 1, vt: 1 } });
         });
       });
-
-      celldata.push({ r: 99, c: 25, v: { v: '', m: '' } });
 
       return {
         name: sheetName,
         color,
         status: order === 0 ? 1 : 0,
         order,
-        row: 100,
-        column: 26,
+        row: Math.max(100, sheetItems.length + 10),
+        column: Math.max(26, rawSchedCols.length + 2),
         celldata,
-        config: { columnlen: Object.fromEntries(rawHeaders.map((_, i) => [i, 130])) }
+        config: { columnlen: Object.fromEntries(rawSchedCols.map((_: any, i: number) => [i, 140])) }
       };
     };
 
     const generateEstimationSheet = (order: number) => {
-      const allKeys = new Set<string>();
-      items.forEach(item => Object.keys(item).forEach(k => allKeys.add(k)));
-      const rawHeaders = Array.from(allKeys);
+      const excludedKeys = new Set([
+        'count', 'qty', 'needs_review', 'needs review', 'need_review', 'need review',
+        'is_borderline', 'is borderline', 'review_reason', 'review reason',
+        'section', 'reason', 'reconciled', 'excluded', 'opening_mode', 'opening mode',
+        'int/ext', 'int_ext'
+      ]);
+      const rawHeadersInput = prefilled?.raw_schedule_headers || (items.length > 0 ? Object.keys(items[0]) : []);
+      const rawSchedCols = rawHeadersInput.filter((k: string) => !String(k).startsWith('_') && !excludedKeys.has(String(k).toLowerCase().trim()));
 
-      const estimationHeaders = ['QTY', 'MARKS', 'LOCATION', 'ESTIMATOR NOTES', 'FLOOR NO', 'OPENING MODE', 'INT/EXT'];
-      const dynamicHeaders = rawHeaders.filter(k => {
-        if (k.startsWith('_')) return false;
-        const kl = k.toLowerCase().trim();
-        return kl !== 'mark' && kl !== 'marks' && kl !== 'type' &&
-          kl !== 'count' && kl !== 'qty' &&
-          kl !== 'needs_review' && kl !== 'needs review' &&
-          kl !== 'need_review' && kl !== 'need review' &&
-          kl !== 'opening_mode' && kl !== 'opening mode' &&
-          kl !== 'int/ext' && kl !== 'int_ext';
+      const hasFloor = rawSchedCols.some((c: string) => String(c).toLowerCase().includes('floor') || String(c).toLowerCase().includes('level'));
+      const hasLoc = rawSchedCols.some((c: string) => String(c).toLowerCase().includes('location') || String(c).toLowerCase().includes('room'));
+
+      const estCols: string[] = ['Qty'];
+      if (!hasFloor) estCols.push('FLOOR / LEVEL');
+      if (!hasLoc) estCols.push('LOCATION');
+      estCols.push('Opening mode', 'Int/Ext');
+
+      rawSchedCols.forEach((col: string) => {
+        if (!estCols.some(c => c.toLowerCase().trim() === String(col).toLowerCase().trim())) {
+          estCols.push(col);
+        }
       });
-      const finalHeaders = [...estimationHeaders, ...dynamicHeaders];
+      if (!estCols.some(c => c.toLowerCase().includes('takeoff notes') || c.toLowerCase().includes('estimator notes'))) {
+        estCols.push('Takeoff Notes');
+      }
 
       const celldata: any[] = [];
-      finalHeaders.forEach((h, c) => {
-        celldata.push({ r: 0, c, v: { v: h, m: h, bl: 1, bg: '#333333', fc: '#ffffff' } });
+
+      // Metadata Block (Rows 0 to 3)
+      const metaItems = [
+        ["PROJECT NAME:", sessionState?.project_name || "Costmate Project Takeoff"],
+        ["TAKEOFF DONE BY:", "Costmate AI Takeoff"],
+        ["PLANS DATE:", "07.09.2026"],
+        ["TAKEOFF DATE:", new Date().toLocaleDateString('en-GB')]
+      ];
+      metaItems.forEach(([label, val], rIdx) => {
+        celldata.push({ r: rIdx, c: 0, v: { v: label, m: label, bl: 1 } });
+        celldata.push({ r: rIdx, c: 1, v: { v: val, m: String(val), bg: '#FFFF00' } });
       });
 
-      const detections = sessionState?.cv_results?.detections || [];
-      let rowIdx = 0;
+      // Section Title (Row 7 = Excel Row 8)
+      celldata.push({ r: 7, c: 0, v: { v: "Door & Window Takeoff Estimation", m: "Door & Window Takeoff Estimation", bl: 1, fs: 12 } });
 
-      items.forEach((item) => {
-        const mark = getItemMark(item);
-        const origMark = String(item._original_mark || item.mark || item.type || '').trim().toUpperCase();
-        const itemMarks = Array.from(new Set([mark, origMark].filter(Boolean)));
+      // Header Row (Row 8 = Excel Row 9)
+      estCols.forEach((h: string, c: number) => {
+        celldata.push({ r: 8, c, v: { v: h, m: h, bl: 1, bg: '#2F5496', fc: '#ffffff', ht: 1, vt: 1 } });
+      });
 
-        // Find all detected instances for this mark or original mark
-        const instances = detections.filter((d: any) => {
-          const dMark = String(d.mark || '').trim().toUpperCase();
-          return itemMarks.includes(dMark);
+      // Group items by floor
+      const floorsDict: Record<string, any[]> = {};
+      items.forEach(item => {
+        const fl = String(item["FLOOR / LEVEL"] || item.floor || item.level || "1ST FLOOR").trim().toUpperCase();
+        if (!floorsDict[fl]) floorsDict[fl] = [];
+        floorsDict[fl].push(item);
+      });
+
+      let currRow = 9;
+      Object.entries(floorsDict).forEach(([flName, flItems]) => {
+        // Floor Banner Row
+        celldata.push({ r: currRow, c: 0, v: { v: flName, m: flName, bl: 1, bg: '#2F5496', fc: '#ffffff', ht: 0, vt: 1 } });
+        currRow++;
+
+        const flStartRow = currRow;
+        flItems.forEach(item => {
+          const doorMat = String(item["DOOR MATERIAL"] || item.door_material || "").trim();
+          const frameMat = String(item["FRAME MATERIAL"] || item.frame_material || "").trim();
+          const ieStatus = String(item["INT/EXT"] || item._reconciled_int_ext || item.int_ext || "Interior");
+          const opMode = String(item["Opening Mode"] || item._reconciled_opening_mode || item.opening_mode || "Single");
+
+          const isStorefront = (doorMat === "-" || frameMat === "-" || opMode === "STOREFRONT" || ieStatus === "Not in Scope");
+          let markFill = '#FFFF00'; // Default interior yellow
+          if (isStorefront) markFill = '#FF00FF'; // Pink
+          else if (ieStatus === 'Exterior') markFill = '#007FFF'; // Blue
+          else if (ieStatus === 'Soft Exterior') markFill = '#92D050'; // Green
+          else if (ieStatus === 'Window') markFill = '#FFC000'; // Orange
+
+          estCols.forEach((colName, cIdx) => {
+            const cnLower = colName.toLowerCase().trim();
+            let val: any = '';
+            if (cnLower === 'qty') {
+              val = item.qty ?? item.QTY ?? item.count ?? 1;
+            } else if (['floor / level', 'floor', 'level'].includes(cnLower)) {
+              val = flName;
+            } else if (['location', 'room name'].includes(cnLower)) {
+              val = getItemLocation(item);
+            } else if (['opening mode', 'opening_mode'].includes(cnLower)) {
+              val = isStorefront ? 'STOREFRONT' : opMode;
+            } else if (['int/ext', 'int_ext'].includes(cnLower)) {
+              val = isStorefront ? 'Not in Scope' : ieStatus;
+            } else if (['takeoff notes', 'takeoff_notes', 'estimator notes'].includes(cnLower)) {
+              val = item["Takeoff Notes"] || item["COMMENTS"] || (isStorefront ? "SEE STOREFRONT SCHEDULE." : "");
+            } else {
+              val = getDictVal(item, colName);
+            }
+
+            const cellObj: any = { v: val, m: String(val), ht: 1, vt: 1 };
+            if (['mark', 'type', 'number', 'door mark', 'door no'].includes(cnLower)) {
+              cellObj.bg = markFill;
+            }
+            celldata.push({ r: currRow, c: cIdx, v: cellObj });
+          });
+          currRow++;
         });
 
-        // Construct concise spec notes summary from structured insights
-        const specificationsInsights = sessionState?.specifications_insights || {};
-        let specNotes = '';
-        if (specificationsInsights && Object.keys(specificationsInsights).length > 0) {
-          const notesList: string[] = [];
-          const exclusions = specificationsInsights.exclusions || [];
-          if (exclusions && exclusions.length > 0) {
-            notesList.push(`Exclusions: ${exclusions.join(', ')}`);
-          }
-          const defaults = specificationsInsights.door_defaults || {};
-          if (defaults && Object.keys(defaults).length > 0) {
-            const defParts = Object.entries(defaults)
-              .filter(([_, v]) => v)
-              .map(([k, v]) => `${k}: ${v}`);
-            if (defParts.length > 0) {
-              notesList.push(`Defaults: ${defParts.join(', ')}`);
-            }
-          }
-          const features = specificationsInsights.special_features || [];
-          if (features && features.length > 0) {
-            notesList.push(`Spec Rules: ${features.join('; ')}`);
-          }
-          specNotes = notesList.join(' | ');
-        }
-
-        // Determine material for Estimator Notes
-        let material = '';
-        for (const k of Object.keys(item)) {
-          if (k.toLowerCase().includes('material')) {
-            material = String(item[k]).toUpperCase();
-            break;
-          }
-        }
-        const notesParts: string[] = [];
-        const matWords = material.split(/\s+/).map(w => w.trim());
-        const isAlumGlass = material.includes('ALUMINUM') || material.includes('GLASS') || material.includes('ALUMINIUM') || material.includes('ALUM') || material.includes('GLAZING') || material.includes('AL/GL') || material.includes('GL/AL') || matWords.includes('AL') || matWords.includes('GL') || matWords.includes('GLZ');
-        if (isAlumGlass) {
-          notesParts.push('Door is of Aluminium/Glass material.');
-          if (specNotes && (specNotes.toUpperCase().includes('EXCLUDE') || specNotes.toUpperCase().includes('EXCLUDED'))) {
-            notesParts.push('EXCLUDED per specifications (Aluminium door exclusion).');
-          }
-        }
-        const notes = notesParts.join(' | ');
-        const isStorefront = isAlumGlass || item._reconciled_opening_mode === 'STOREFRONT' || item._is_ad_system;
-
-        if (instances.length > 0) {
-          // Write one row for each detected instance
-          instances.forEach((d: any) => {
-            let floorNo = d.floor_no || '';
-            if (!floorNo) {
-              for (const char of mark) {
-                if (char >= '0' && char <= '9') {
-                  floorNo = char;
-                  break;
-                }
-              }
-            }
-
-            finalHeaders.forEach((h, cIdx) => {
-              let val = '';
-              if (h === 'QTY') val = '1';
-              else if (h === 'MARKS') val = mark;
-              else if (h === 'LOCATION') {
-                let itemLoc = '';
-                for (const key of Object.keys(item)) {
-                  const kl = key.toLowerCase().trim();
-                  if (['location', 'location name', 'room', 'room name', 'room no', 'room number', 'room/location', 'room / location'].includes(kl)) {
-                    if (item[key]) { itemLoc = String(item[key]); break; }
-                  }
-                }
-                val = d.location || itemLoc || '';
-              }
-              else if (h === 'ESTIMATOR NOTES') val = notes;
-              else if (h === 'FLOOR NO' || h === 'FLOOR / LEVEL') {
-                let itemFloor = '';
-                for (const key of Object.keys(item)) {
-                  const kl = key.toLowerCase().trim();
-                  if (['floor', 'level', 'floor / level', 'floor/level', 'floor level', 'floor no', 'floor number', 'level no', 'level number'].includes(kl)) {
-                    if (item[key]) { itemFloor = String(item[key]); break; }
-                  }
-                }
-                val = itemFloor || d.floor_name || d.floor_no || floorNo || '';
-              }
-              else if (h === 'OPENING MODE') val = isStorefront ? '' : (item._reconciled_opening_mode || item._schedule_opening_mode || d.opening_mode || 'Single');
-              else if (h === 'INT/EXT') val = isStorefront ? '' : (item._reconciled_int_ext || d.int_ext || 'Interior');
-              else val = item[h] || '';
-
-              celldata.push({ r: rowIdx + 1, c: cIdx, v: { v: val, m: String(val) } });
-            });
-            rowIdx++;
-          });
-        } else {
-          // Write one placeholder row with QTY = 0 if not found in plan
-          let floorNo = '';
-          for (const char of mark) {
-            if (char >= '0' && char <= '9') {
-              floorNo = char;
-              break;
-            }
-          }
-
-          finalHeaders.forEach((h, cIdx) => {
-            let val = '';
-            if (h === 'QTY') val = '0';
-            else if (h === 'MARKS') val = mark;
-            else if (h === 'LOCATION') val = '';
-            else if (h === 'ESTIMATOR NOTES') val = notes;
-            else if (h === 'FLOOR NO') val = floorNo;
-            else if (h === 'OPENING MODE') val = '';
-            else if (h === 'INT/EXT') val = '';
-            else val = item[h] || '';
-
-            celldata.push({ r: rowIdx + 1, c: cIdx, v: { v: val, m: String(val) } });
-          });
-          rowIdx++;
-        }
+        // Floor Subtotal Row
+        celldata.push({ r: currRow, c: 0, v: { v: `=SUM(A${flStartRow + 1}:A${currRow})`, m: "", bl: 1 } });
+        celldata.push({ r: currRow, c: 1, v: { v: `${flName} TOTAL`, m: `${flName} TOTAL`, bl: 1 } });
+        currRow += 2;
       });
 
-      celldata.push({ r: 99, c: 29, v: { v: '', m: '' } });
-
       return {
-        name: 'ESTIMATION SCHEDULE',
+        name: 'Estimation',
         color: '#ffaa00',
         status: order === 0 ? 1 : 0,
         order,
-        row: 100,
-        column: 30,
+        row: Math.max(100, currRow + 10),
+        column: Math.max(30, estCols.length + 2),
         celldata,
-        config: { columnlen: Object.fromEntries(finalHeaders.map((_, i) => [i, 150])) }
+        config: { columnlen: Object.fromEntries(estCols.map((_: any, i: number) => [i, 140])) }
       };
     };
 
     const sheets = [];
-    if (doors.length > 0) sheets.push(generateRawSheet(doors, 'DOOR SCHEDULE', '#4caf50', sheets.length));
-    if (windows.length > 0) sheets.push(generateRawSheet(windows, 'WINDOW SCHEDULE', '#2196f3', sheets.length));
+    if (items.length > 0) sheets.push(generateRawSheet(items, 'Schedule', '#4caf50', sheets.length));
     if (items.length > 0) sheets.push(generateEstimationSheet(sheets.length));
 
     return sheets;

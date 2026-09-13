@@ -11,6 +11,7 @@ from app.modules.estimations.repository import estimation_repo
 from app.services.graph.session_manager import session_manager
 from app.services.graph.graph import costmate_graph
 from app.config import settings
+from app.core.logging import logger
 
 router = APIRouter(prefix="/api", tags=["Estimations"])
 
@@ -175,11 +176,27 @@ async def download_custom_excel(
     payload: dict,
     current_user: dict = Depends(get_current_user)
 ):
-    import openpyxl
-    from openpyxl.styles import Font, Alignment, PatternFill
-    from fastapi.responses import FileResponse
-    import tempfile
-    
+    restored = await session_manager.restore_session_if_needed(session_id, user_id=current_user["id"])
+    if restored:
+        config = {"configurable": {"thread_id": session_id}}
+        state_snapshot = await costmate_graph.aget_state(config)
+        if state_snapshot and state_snapshot.values:
+            from app.services.agents.layer5_output.excel_writer_node import excel_writer_node
+            try:
+                res = await excel_writer_node(state_snapshot.values)
+                excel_path = res.get("excel_file_path")
+                if excel_path and os.path.exists(excel_path):
+                    filename = f"Costmate_Estimate_{session_id}.xlsx"
+                    media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    return FileResponse(
+                        path=excel_path,
+                        media_type=media_type,
+                        filename=filename,
+                        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+                    )
+            except Exception as e:
+                logger.error(f"custom-excel endpoint fallback error: {e}")
+                
     sheets_data = payload.get("sheets", [])
     if not sheets_data:
         raise HTTPException(status_code=400, detail="No sheet data provided.")
@@ -303,35 +320,61 @@ async def download_annotated_plan(session_id: str, current_user: dict = Depends(
     filename = f"Costmate_Annotated_Plan_{session_id}.pdf"
     media_type = "application/pdf"
     
+    # 1. If annotated_path is a local path and exists, serve it directly
+    if not annotated_path.startswith("http") and os.path.exists(annotated_path):
+        return FileResponse(
+            path=annotated_path, 
+            media_type=media_type, 
+            filename=filename,
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+        )
+
+    # 2. If annotated_path is a Cloudinary HTTP URL, attempt to download it
     if annotated_path.startswith("http"):
         import httpx
-        from fastapi.responses import StreamingResponse
-        async def stream_external_file():
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                async with client.stream("GET", annotated_path) as response:
-                    if response.status_code != 200:
-                        raise HTTPException(status_code=404, detail="Failed to fetch annotated plan from cloud storage")
-                    async for chunk in response.aiter_bytes():
-                        yield chunk
-        
-        return StreamingResponse(
-            stream_external_file(),
-            media_type=media_type,
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
-            }
-        )
-        
-    if not os.path.exists(annotated_path):
-        raise HTTPException(status_code=404, detail="Annotated plan PDF not ready or not found.")
-        
-    return FileResponse(
-        path=annotated_path, 
-        media_type=media_type, 
-        filename=filename,
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
-    )
+        from fastapi.responses import Response
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                resp = await client.get(annotated_path)
+                if resp.status_code == 200:
+                    return Response(
+                        content=resp.content,
+                        media_type=media_type,
+                        headers={
+                            "Content-Disposition": f"attachment; filename={filename}",
+                            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+                        }
+                    )
+                else:
+                    logger.warning(f"Cloudinary URL {annotated_path} returned status {resp.status_code}. Attempting project local fallback...")
+        except Exception as net_err:
+            logger.warning(f"Network error fetching Cloudinary URL {annotated_path}: {net_err}. Attempting local fallback...")
+
+    # 3. Fallback: Search OUTPUT_DIR for local annotated PDF matching the current project name or session ID
+    proj_title = state_snapshot.values.get("project_name") or ""
+    clean_proj_name = "".join(c for c in proj_title if c.isalnum() or c in [' ', '_', '-']).strip().replace(' ', '_') if proj_title else ""
+    
+    if os.path.exists(settings.OUTPUT_DIR):
+        for pdf_f in sorted(os.listdir(settings.OUTPUT_DIR), reverse=True):
+            if pdf_f.endswith(".pdf") and "MarkedUp" in pdf_f:
+                if clean_proj_name and clean_proj_name.lower() in pdf_f.lower():
+                    local_match = os.path.join(settings.OUTPUT_DIR, pdf_f)
+                    return FileResponse(
+                        path=local_match,
+                        media_type=media_type,
+                        filename=filename,
+                        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+                    )
+                elif session_id in pdf_f:
+                    local_match = os.path.join(settings.OUTPUT_DIR, pdf_f)
+                    return FileResponse(
+                        path=local_match,
+                        media_type=media_type,
+                        filename=filename,
+                        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+                    )
+
+    raise HTTPException(status_code=404, detail="Annotated plan PDF not ready or not found on server.")
 
 @router.get("/files/{session_id}/plan")
 async def get_plan_image(session_id: str, current_user: dict = Depends(get_current_user)):

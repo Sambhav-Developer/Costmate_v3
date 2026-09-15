@@ -332,5 +332,99 @@ class TestReconciliation(unittest.TestCase):
         self.assertEqual(len(audit["deduplicated_rows"]), 1)
         self.assertEqual(audit["deduplicated_rows"][0]["mark"], "HE210L")
 
+    def test_deep_interior_geometry_priority(self):
+        # Step 5 Test: Door deep inside footprint (dist_to_boundary > 85pt) must classify Interior even if VLM guesses EXT
+        state_deep_interior = {
+            "schedule_data": [
+                {
+                    "mark": "HE210V",
+                    "location": "OFFICE 101",
+                    "door material": "WD",
+                    "frame material": "HM"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "HE210V",
+                        "location": "OFFICE 101",
+                        "dist_to_boundary": 150.0,  # Deep inside footprint
+                        "vlm_wall_type": "EXT",     # VLM guessed EXT based on double line
+                        "int_ext": "Interior",
+                        "w_cx": 500,
+                        "w_cy": 500,
+                        "floor_no": "1"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_deep_interior))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["INT/EXT"], "Interior")
+
+    def test_perimeter_zone_vlm_tiebreaker(self):
+        # Step 5 Test: Perimeter door (dist_to_boundary <= 85pt) with VLM EXT and no interior room name -> Exterior
+        state_perimeter_ext = {
+            "schedule_data": [
+                {
+                    "mark": "EXT-01",
+                    "location": "MAIN ENTRY",
+                    "door material": "AL",
+                    "frame material": "AL"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "EXT-01",
+                        "location": "MAIN ENTRY",
+                        "dist_to_boundary": 30.0,   # Perimeter zone
+                        "vlm_wall_type": "EXT",
+                        "int_ext": "Exterior",
+                        "w_cx": 50,
+                        "w_cy": 50,
+                        "floor_no": "1"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_perimeter_ext))
+        doors = res["qa_prefilled"]["doors"]
+        # Aluminum storefront entry -> Not in Scope or Exterior
+        self.assertIn(doors[0]["INT/EXT"], ["Exterior", "Not in Scope"])
+
+    def test_missing_location_geometry_fallback(self):
+        # Step 5 Test: LOCATION fails to resolve upstream (Unknown), deep geometry distance -> Interior
+        state_missing_loc = {
+            "schedule_data": [
+                {
+                    "mark": "HE210L",
+                    "location": "",
+                    "door material": "WD",
+                    "frame material": "HM"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "HE210L",
+                        "location": "Unknown",
+                        "dist_to_boundary": 200.0,
+                        "vlm_wall_type": "EXT",
+                        "int_ext": "Interior",
+                        "w_cx": 600,
+                        "w_cy": 600,
+                        "floor_no": "1"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_missing_loc))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["INT/EXT"], "Interior")
+
 if __name__ == "__main__":
     unittest.main()

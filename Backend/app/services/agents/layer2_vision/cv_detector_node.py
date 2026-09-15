@@ -67,9 +67,10 @@ Please classify the following fields:
 - "wall_type": Classify whether the wall the door is sitting in is "INT" or "EXT".
   Tips for accuracy:
   * Read any wall tag symbols printed near the wall/door on the plan (e.g., tags like "6A.AL.EXT", "CMU.EXT", "6A.AL", "6A").
-  * If the tag contains ".EXT" or "EXT" suffix, it is "EXT" (Exterior).
-  * If the tag has no "EXT" suffix (e.g., "6A.AL", "6A", "8A.WD"), it is "INT" (Interior).
-  * Otherwise, look at wall graphics: exterior walls are typically thick envelope/perimeter walls (often with insulation hatching), while interior partitions are thin, uniform double lines. If it cannot be determined, return "UNKNOWN".
+  * If the tag contains ".EXT" or "EXT" suffix, it is "EXT" (Exterior). If tag has ".INT", ".W", or no "EXT" suffix, it is "INT" (Interior).
+  * Look for exterior-specific visual indicators: storefront systems, glazing/curtain wall framing, louvers, weatherstripping symbols, or exterior paving/ground hatching beyond the wall.
+  * DO NOT rely on wall line thickness or line weight to determine interior vs exterior.
+  * If no clear exterior features are present, return "INT" or "UNKNOWN".
 - "location": Identify the room name/corridor name label printed inside or near the door opening space (e.g. "Office 101", "Corridor", "Staff Toilet"). If not visible, return "Unknown".
 - "confidence": "high" | "medium" | "low" based on classification clarity.
 - "reasoning": A short sentence explaining the graphic feature driving your matched_code match.
@@ -274,21 +275,149 @@ def is_stacked_door_callout(w, words_on_page) -> bool:
                 return True
     return False
 
-def is_room_center_label_word(w, words_on_page) -> bool:
+def is_combined_room_name_and_mark(w, words_on_page) -> bool:
     """
-    Checks if candidate word `w` is a room number label printed under room name text (e.g. OFFICE / HE210P).
+    STEP 2 Sub-Pattern 2A Pre-Filter:
+    Checks if candidate word `w` is part of a combined Room Name + Mark string on the same text line
+    (e.g., 'OFFICE HE210V', 'SOCIAL WORK OFFICE 103', 'EXAM 300-08', 'IT ROOM 105B').
     """
-    font_h = w[3] - w[1]
     w_cx = (w[0] + w[2]) / 2.0
-    w_top = w[1]
+    w_cy = (w[1] + w[3]) / 2.0
+    
     for other_w in words_on_page:
+        if other_w == w:
+            continue
         other_txt = other_w[4].strip(".,()[]{}-_#*/").lower()
         if any(kw in other_txt for kw in ROOM_KEYWORDS):
+            other_cy = (other_w[1] + other_w[3]) / 2.0
             other_cx = (other_w[0] + other_w[2]) / 2.0
-            other_bot = other_w[3]
-            if abs(other_cx - w_cx) <= 45.0 and 0.0 <= (w_top - other_bot) <= 35.0:
+            # Same line vertical alignment (within 6pt) and close horizontal proximity (within 120pt)
+            if abs(other_cy - w_cy) <= 6.0 and abs(other_cx - w_cx) <= 120.0:
                 return True
-    return font_h >= 11.5
+    return False
+
+def is_room_container_area_block(w_rect, words_on_page) -> bool:
+    """
+    STEP 2 Sub-Pattern 2B Pre-Filter & Unit-Type Differentiator:
+    Checks if candidate word `w` is part of a multi-cell Room Tag container box (e.g. '105B' paired with '7 SF').
+    Differentiates Room Blocks from Genuine Door Grid-Tables by inspecting secondary cell unit types:
+      - ROOM BLOCK (DROP): Secondary cell contains area units ('SF', 'SQ FT', 'SQFT', 'M2', 'S.F.').
+      - DOOR GRID-TABLE (KEEP): Secondary cell contains door dimensions ('36"', '3\'-0"', '45"', 'D1', 'D2', 'MARK').
+    """
+    import fitz
+    search_rect = fitz.Rect(w_rect) + (-35.0, -35.0, 35.0, 35.0)
+    
+    AREA_UNITS = {"sf", "sqft", "sq ft", "sq.ft", "m2", "sq m", "s.f.", "area"}
+    DOOR_UNITS = {"d1", "d2", "d3", "36", "45", "30", "mark", "type", "leaf"}
+    
+    found_area_unit = False
+    found_door_unit = False
+    
+    for other_w in words_on_page:
+        r_other = fitz.Rect(other_w[:4])
+        if search_rect.intersects(r_other):
+            txt = other_w[4].strip(".,()[]{}-_#*/\"'").lower()
+            if txt in AREA_UNITS or any(au in txt for au in ["sf", "sqft", "sq.ft"]):
+                found_area_unit = True
+            if txt in DOOR_UNITS or any(du in txt for du in ["36\"", "3'-0\"", "d1", "d2"]):
+                found_door_unit = True
+                
+    # If explicit door dimension unit is present (e.g. D1 / 36" / mark), NEVER treat as room block
+    if found_door_unit:
+        return False
+    return found_area_unit
+
+def is_hinge_anchor_dot_connected(w_rect, drawings, r_min=1.0, r_max=4.0) -> bool:
+    """
+    STEP 3 Attachment & Anchor Test Rule 3C:
+    Checks if a small circular marker (radius r in [1.0, 4.0] pt, diameter 2.0-8.0 pt) sits at the arc hinge/springpoint
+    and is connected via leader line to candidate text w_rect (e.g. RS030, RS036).
+    """
+    import fitz
+    search_rect = fitz.Rect(w_rect) + (-60.0, -60.0, 60.0, 60.0)
+    if not drawings:
+        return False
+    
+    for d in drawings:
+        rect = d.get("rect")
+        if not rect:
+            continue
+        r = fitz.Rect(rect)
+        if not search_rect.intersects(r):
+            continue
+            
+        w, h = r.width, r.height
+        radius = (w + h) / 4.0
+        if r_min <= radius <= r_max and abs(w - h) <= 2.0:
+            items = d.get("items", [])
+            has_curve = any(it[0] in ("c", "qu", "v", "y") for it in items)
+            if has_curve:
+                return True
+    return False
+
+def detect_wall_endcap_jamb_signature(crop_rect, drawings) -> bool:
+    """
+    STEP 3 Cased Opening Jamb Signature:
+    Detects parallel wall jamb lines WITH short perpendicular end-cap / return lines
+    closing wall thickness at opening boundary.
+    """
+    import fitz
+    if not drawings:
+        return False
+    c_rect = fitz.Rect(crop_rect)
+    short_perp_segments = 0
+    
+    for d in drawings:
+        rect = d.get("rect")
+        if not rect:
+            continue
+        r = fitz.Rect(rect)
+        if c_rect.intersects(r):
+            w, h = r.width, r.height
+            # End-cap return lines are very short wall-break perpendicular segments (width/height <= 12pt)
+            if (w <= 12.0 and h <= 4.0) or (h <= 12.0 and w <= 4.0):
+                short_perp_segments += 1
+                
+    return short_perp_segments >= 2
+
+def compute_min_dist_to_door_arc(w_cx, w_cy, drawings) -> float:
+    """
+    Computes minimum Euclidean distance from candidate text center (w_cx, w_cy) to nearest swing arc curve item.
+    """
+    min_dist = 999.0
+    if not drawings:
+        return min_dist
+
+    # Polyline chain arcs check
+    poly_arcs = find_polyline_chain_arcs(drawings, (w_cx, w_cy), radius=60.0)
+    for arc in poly_arcs:
+        arc_cx, arc_cy = arc["center"]
+        dist = ((arc_cx - w_cx)**2 + (arc_cy - w_cy)**2)**0.5
+        min_dist = min(min_dist, dist)
+        for pt in arc["points"]:
+            pt_d = ((pt.x - w_cx)**2 + (pt.y - w_cy)**2)**0.5
+            min_dist = min(min_dist, pt_d)
+
+    for d in drawings:
+        items = d.get("items", [])
+        has_curve = any(it[0] in ("c", "qu", "v", "y") for it in items)
+        rect = d.get("rect")
+        if not rect:
+            continue
+            
+        rx0, ry0, rx1, ry1 = rect[0], rect[1], rect[2], rect[3]
+        dx = max(rx0 - w_cx, 0, w_cx - rx1)
+        dy = max(ry0 - w_cy, 0, w_cy - ry1)
+        rect_dist = (dx**2 + dy**2)**0.5
+        
+        if has_curve:
+            arc_cx = (rx0 + rx1) / 2.0
+            arc_cy = (ry0 + ry1) / 2.0
+            center_dist = ((arc_cx - w_cx) ** 2 + (arc_cy - w_cy) ** 2) ** 0.5
+            effective_dist = min(rect_dist, center_dist)
+            if effective_dist < min_dist:
+                min_dist = effective_dist
+    return min_dist
 
 def is_enclosed_in_tag_circle(w_cx, w_cy, nearby_drawings) -> bool:
     """
@@ -314,11 +443,358 @@ def is_enclosed_in_tag_circle(w_cx, w_cy, nearby_drawings) -> bool:
                     return True
     return False
 
-def validate_vector_opening_geometry(page, point, radius=40.0) -> bool:
+def find_door_tag_shapes(drawings, proximity_threshold: float = 4.0) -> list:
+    """
+    Detect Door Tag Shapes via Vector Path Spatial Clustering & Merging.
+    Groups adjacent/overlapping vector paths and line segments (internal cell dividers + outer boxes)
+    within proximity_threshold into composite candidate rects before filtering by size & attachment.
+    Shape-agnostic: handles grid tables, circles, ovals, hexagons, and rectangles uniformly without branching.
+    Returns list of composite fitz.Rect regions.
+    """
+    import fitz
+    if not drawings:
+        return []
+    
+    # 1. Collect individual vector path bounding boxes within reasonable segment size limits
+    raw_rects = []
+    for d in drawings:
+        rect = d.get("rect")
+        if not rect:
+            continue
+        r = fitz.Rect(rect)
+        w, h = r.width, r.height
+        if 2.0 <= w <= 90.0 and 2.0 <= h <= 90.0:
+            has_fill = d.get("fill") is not None
+            items = d.get("items", [])
+            # Exclude solid-color filled pills/rounded rectangles with no internal cell lines
+            if has_fill and len(items) <= 2:
+                continue
+            raw_rects.append(r)
+            
+    if not raw_rects:
+        return []
+        
+    # 2. Spatial Clustering: Merge overlapping/adjacent rects within proximity_threshold
+    clusters = []
+    for r in raw_rects:
+        expanded_r = r + (-proximity_threshold, -proximity_threshold, proximity_threshold, proximity_threshold)
+        matching_indices = []
+        for i, c in enumerate(clusters):
+            if c.intersects(expanded_r):
+                matching_indices.append(i)
+                
+        if not matching_indices:
+            clusters.append(r)
+        else:
+            # Union all matching clusters with current rect
+            merged = r
+            for i in reversed(matching_indices):
+                merged = merged | clusters.pop(i)
+            clusters.append(merged)
+            
+    # 3. Filter composite merged candidate rects
+    candidate_rects = []
+    for c in clusters:
+        if 10.0 <= c.width <= 90.0 and 10.0 <= c.height <= 90.0:
+            candidate_rects.append(c)
+            
+    return candidate_rects
+
+
+def point_dist_to_rect(p, r) -> float:
+    """Computes minimum distance between a point (fitz.Point or tuple) and a fitz.Rect."""
+    px = p.x if hasattr(p, 'x') else p[0]
+    py = p.y if hasattr(p, 'y') else p[1]
+    dx = max(r.x0 - px, 0, px - r.x1)
+    dy = max(r.y0 - py, 0, py - r.y1)
+    return (dx**2 + dy**2)**0.5
+
+def safe_extract_curve_points(item):
+    """Safely extracts endpoint fitz.Point objects from PyMuPDF curve commands."""
+    import fitz
+    if len(item) < 3:
+        return None, None
+    p1 = item[1]
+    p3 = item[3] if len(item) > 3 else item[2]
+    if not hasattr(p1, 'x') and isinstance(p1, (list, tuple)) and len(p1) >= 2:
+        p1 = fitz.Point(p1[0], p1[1])
+    if not hasattr(p3, 'x') and isinstance(p3, (list, tuple)) and len(p3) >= 2:
+        p3 = fitz.Point(p3[0], p3[1])
+    if hasattr(p1, 'x') and hasattr(p3, 'x'):
+        return p1, p3
+    return None, None
+
+def safe_extract_line_points(item):
+    """Safely extracts endpoint fitz.Point objects from PyMuPDF line commands."""
+    import fitz
+    if len(item) < 3:
+        return None, None
+    p1, p2 = item[1], item[2]
+    if not hasattr(p1, 'x') and isinstance(p1, (list, tuple)) and len(p1) >= 2:
+        p1 = fitz.Point(p1[0], p1[1])
+    if not hasattr(p2, 'x') and isinstance(p2, (list, tuple)) and len(p2) >= 2:
+        p2 = fitz.Point(p2[0], p2[1])
+    if hasattr(p1, 'x') and hasattr(p2, 'x'):
+        return p1, p2
+    return None, None
+
+def find_polyline_chain_arcs(drawings, center_pt, radius=50.0) -> list:
+    """
+    Reconstructs polyline-approximated door swing arcs from chains of short 'l' line segments.
+    Applies:
+      1. Density pre-check: requires >= 8 short 'l' segments (len <= 6.0pt) within search radius.
+      2. Endpoint chaining: links consecutive 'l' segments matching endpoints within <= 1.5pt.
+      3. Total chain length filter: 12.0 <= chain_length <= 160.0 pt.
+      4. Monotonic curvature check: >= 68% uniform turn direction & cumulative rotation >= 0.18 rad (rejects hatching/fill grids).
+    Returns list of dicts describing valid reconstructed polyline arcs:
+      [{"rect": fitz.Rect, "points": [p0, p1, ...], "total_length": float, "center": (cx, cy)}]
+    """
+    import fitz
+    import math
+
+    cx = center_pt.x if hasattr(center_pt, 'x') else center_pt[0]
+    cy = center_pt.y if hasattr(center_pt, 'y') else center_pt[1]
+    search_rect = fitz.Rect(cx - radius, cy - radius, cx + radius, cy + radius)
+
+    if not drawings:
+        return []
+
+    # Step 1: Cheap density pre-check
+    short_segments = []
+    all_candidate_lines = []
+
+    for d in drawings:
+        d_rect = d.get("rect")
+        if not d_rect:
+            continue
+        r = fitz.Rect(d_rect)
+        if not search_rect.intersects(r):
+            continue
+
+        for item in d.get("items", []):
+            if item[0] == "l":
+                p1, p2 = safe_extract_line_points(item)
+                if p1 and p2:
+                    l_len = ((p2.x - p1.x)**2 + (p2.y - p1.y)**2)**0.5
+                    if search_rect.contains(p1) or search_rect.contains(p2):
+                        all_candidate_lines.append((p1, p2, l_len))
+                        if l_len <= 6.0:
+                            short_segments.append((p1, p2, l_len))
+
+    # Fast signal density proxy: require >= 8 short segments within radius
+    if len(short_segments) < 8:
+        return []
+
+    # Step 2: Chain Reconstruction (link consecutive 'l' segments with matching endpoints within 1.5pt)
+    lines_pool = list(all_candidate_lines)
+    used = [False] * len(lines_pool)
+    chains = []
+
+    def pt_dist(ptA, ptB):
+        return ((ptA.x - ptB.x)**2 + (ptA.y - ptB.y)**2)**0.5
+
+    for i in range(len(lines_pool)):
+        if used[i]:
+            continue
+
+        p1, p2, l_len = lines_pool[i]
+        used[i] = True
+        curr_chain = [p1, p2]
+        chain_len = l_len
+
+        # Grow forward from curr_chain[-1]
+        growing = True
+        while growing:
+            growing = False
+            tip = curr_chain[-1]
+            best_idx = -1
+            best_dist = 1.6  # 1.5pt tolerance
+            best_flip = False
+
+            for j in range(len(lines_pool)):
+                if used[j]:
+                    continue
+                lp1, lp2, llen = lines_pool[j]
+                d1 = pt_dist(tip, lp1)
+                d2 = pt_dist(tip, lp2)
+                if d1 < best_dist:
+                    best_dist = d1
+                    best_idx = j
+                    best_flip = False
+                if d2 < best_dist:
+                    best_dist = d2
+                    best_idx = j
+                    best_flip = True
+
+            if best_idx != -1:
+                used[best_idx] = True
+                lp1, lp2, llen = lines_pool[best_idx]
+                nxt_pt = lp1 if best_flip else lp2
+                curr_chain.append(nxt_pt)
+                chain_len += llen
+                growing = True
+
+        # Grow backward from curr_chain[0]
+        growing = True
+        while growing:
+            growing = False
+            tail = curr_chain[0]
+            best_idx = -1
+            best_dist = 1.6  # 1.5pt tolerance
+            best_flip = False
+
+            for j in range(len(lines_pool)):
+                if used[j]:
+                    continue
+                lp1, lp2, llen = lines_pool[j]
+                d1 = pt_dist(tail, lp1)
+                d2 = pt_dist(tail, lp2)
+                if d1 < best_dist:
+                    best_dist = d1
+                    best_idx = j
+                    best_flip = True
+                if d2 < best_dist:
+                    best_dist = d2
+                    best_idx = j
+                    best_flip = False
+
+            if best_idx != -1:
+                used[best_idx] = True
+                lp1, lp2, llen = lines_pool[best_idx]
+                prev_pt = lp2 if best_flip else lp1
+                curr_chain.insert(0, prev_pt)
+                chain_len += llen
+                growing = True
+
+        if len(curr_chain) >= 4 and 12.0 <= chain_len <= 160.0:
+            chains.append((curr_chain, chain_len))
+
+    # Step 3: Curvature check (monotonically changing turn angles)
+    valid_arcs = []
+    for chain_pts, total_len in chains:
+        angles = []
+        for k in range(len(chain_pts) - 1):
+            dx = chain_pts[k+1].x - chain_pts[k].x
+            dy = chain_pts[k+1].y - chain_pts[k].y
+            if dx == 0 and dy == 0:
+                continue
+            angles.append(math.atan2(dy, dx))
+
+        if len(angles) < 3:
+            continue
+
+        turn_angles = []
+        for k in range(len(angles) - 1):
+            diff = angles[k+1] - angles[k]
+            while diff > math.pi: diff -= 2 * math.pi
+            while diff < -math.pi: diff += 2 * math.pi
+            turn_angles.append(diff)
+
+        if not turn_angles:
+            continue
+
+        pos_turns = sum(1 for t in turn_angles if t > 0.01)
+        neg_turns = sum(1 for t in turn_angles if t < -0.01)
+        non_zero = pos_turns + neg_turns
+        if non_zero == 0:
+            continue
+
+        dominant_ratio = max(pos_turns, neg_turns) / float(non_zero)
+        cum_rotation = abs(sum(turn_angles))
+
+        if dominant_ratio >= 0.68 and cum_rotation >= 0.18:
+            xs = [p.x for p in chain_pts]
+            ys = [p.y for p in chain_pts]
+            arc_rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+            arc_cx = sum(xs) / len(xs)
+            arc_cy = sum(ys) / len(ys)
+            valid_arcs.append({
+                "rect": arc_rect,
+                "points": chain_pts,
+                "total_length": total_len,
+                "center": (arc_cx, arc_cy)
+            })
+
+    return valid_arcs
+
+def is_tag_attached_to_door_opening(tag_rect, drawings, radius=45.0) -> bool:
+    """
+    STEP 2: Confirm candidate tag region is structurally attached to door opening geometry.
+    Tests if tag_rect touches or overlaps:
+      a) Wall-break / jamb hardware tick icon at arc origin
+      b) Actual arc curve polyline / Bezier points
+      c) Cased opening jamb lines
+    """
+    import fitz
+    search_rect = tag_rect + (-radius, -radius, radius, radius)
+    if not drawings:
+        return False
+
+    # Check polyline-chain arcs first
+    tag_center = ((tag_rect.x0 + tag_rect.x1) / 2.0, (tag_rect.y0 + tag_rect.y1) / 2.0)
+    poly_arcs = find_polyline_chain_arcs(drawings, tag_center, radius=radius)
+    if poly_arcs:
+        for arc in poly_arcs:
+            if point_dist_to_rect(fitz.Point(arc["center"]), tag_rect) <= 45.0:
+                return True
+            for pt in arc["points"]:
+                if point_dist_to_rect(pt, tag_rect) <= 30.0:
+                    return True
+
+    for d in drawings:
+        d_rect = fitz.Rect(d.get("rect", [0, 0, 0, 0]))
+        if not search_rect.intersects(d_rect):
+            continue
+            
+        items = d.get("items", [])
+        for item in items:
+            cmd = item[0]
+            # Check a) Curve path points (Bezier or arc)
+            if cmd in ("c", "v", "y", "qu"):
+                p1, p3 = safe_extract_curve_points(item)
+                if p1 and p3:
+                    c_len = ((p3.x - p1.x)**2 + (p3.y - p1.y)**2)**0.5
+                    if 10.0 <= c_len <= 180.0:
+                        p_mid = fitz.Point((p1.x + p3.x)/2, (p1.y + p3.y)/2)
+                        if point_dist_to_rect(p1, tag_rect) <= 35.0 or point_dist_to_rect(p3, tag_rect) <= 35.0 or point_dist_to_rect(p_mid, tag_rect) <= 35.0:
+                            return True
+            # Check b) Jamb lines / double-tick hardware icons
+            elif cmd == "l":
+                p1, p2 = safe_extract_line_points(item)
+                if p1 and p2:
+                    l_len = ((p2.x - p1.x)**2 + (p2.y - p1.y)**2)**0.5
+                    if 8.0 <= l_len <= 140.0:
+                        p_mid = fitz.Point((p1.x + p2.x)/2, (p1.y + p2.y)/2)
+                        if point_dist_to_rect(p_mid, tag_rect) <= 30.0:
+                            return True
+    return False
+
+def is_solid_color_room_pill(inst_rect, drawings_on_page) -> bool:
+    """
+    STEP 5 Rule: Returns True if inst_rect is inside a solid-color filled pill/bubble 
+    with no internal cell lines and is not attached to door opening geometry.
+    """
+    import fitz
+    if not drawings_on_page:
+        return False
+    for d in drawings_on_page:
+        rect = d.get("rect")
+        if not rect:
+            continue
+        d_r = fitz.Rect(rect)
+        if d_r.intersects(inst_rect):
+            has_fill = d.get("fill") is not None
+            items = d.get("items", [])
+            if has_fill and len(items) <= 2:
+                if not is_tag_attached_to_door_opening(d_r, drawings_on_page):
+                    return True
+    return False
+
+def validate_vector_opening_geometry(page, point, radius=40.0, return_details=False):
     """
     Validates if candidate text at `point` (fitz.Point or (cx, cy)) represents a genuine door opening tag.
     Checks 3 complementary CAD/PDF vector drawing criteria within tight `radius` (40pt ~ 0.55 inches):
-      Criterion A: Swing Arcs (single or pair cubic Bezier curves 'c', 'v', 'y' or panel lines 'l')
+      Criterion A: Swing Arcs (single or pair cubic Bezier curves 'c', 'v', 'y' or polyline-chain arcs)
       Criterion B: Cased Opening Frame Lines & Wall Gap Terminations
       Criterion C: Vector Callout Bubble Shape (circle/oval/hexagon) or Leader Line
     """
@@ -330,11 +806,18 @@ def validate_vector_opening_geometry(page, point, radius=40.0) -> bool:
     try:
         drawings = page.get_drawings()
     except Exception:
+        if return_details:
+            return True, 0, 0.0, 0, 0.0
         return True # Fallback if drawings stream unavailable
         
     has_arc = False
     has_cased_jamb = False
     has_callout_shape = False
+
+    n_line_segments = 0
+    max_l_len = 0.0
+    n_curve_segments = 0
+    max_c_len = 0.0
     
     for path in drawings:
         p_rect = fitz.Rect(path["rect"])
@@ -358,26 +841,41 @@ def validate_vector_opening_geometry(page, point, radius=40.0) -> bool:
             cmd = item[0]
             # Criterion A: Swing arcs (single or pair Bezier curves)
             if cmd in ("c", "v", "y"):
-                p1 = item[1]
-                p3 = item[3] if len(item) > 3 else item[2]
-                c_len = ((p3.x - p1.x)**2 + (p3.y - p1.y)**2)**0.5
-                if 12.0 <= c_len <= 160.0:
-                    arc_cx = (p1.x + p3.x) / 2.0
-                    arc_cy = (p1.y + p3.y) / 2.0
-                    dist_to_arc = ((arc_cx - cx)**2 + (arc_cy - cy)**2)**0.5
-                    if dist_to_arc <= 55.0:
-                        has_arc = True
+                n_curve_segments += 1
+                p1, p3 = safe_extract_curve_points(item)
+                if p1 and p3:
+                    c_len = ((p3.x - p1.x)**2 + (p3.y - p1.y)**2)**0.5
+                    if c_len > max_c_len:
+                        max_c_len = c_len
+                    if 12.0 <= c_len <= 160.0:
+                        arc_cx = (p1.x + p3.x) / 2.0
+                        arc_cy = (p1.y + p3.y) / 2.0
+                        dist_to_arc = ((arc_cx - cx)**2 + (arc_cy - cy)**2)**0.5
+                        if dist_to_arc <= 55.0:
+                            has_arc = True
             # Criterion B: Straight lines for door panel or cased opening frame jambs
             elif cmd == "l":
-                p1, p2 = item[1], item[2]
-                l_len = ((p2.x - p1.x)**2 + (p2.y - p1.y)**2)**0.5
-                if 15.0 <= l_len <= 140.0:
-                    line_cx = (p1.x + p2.x) / 2.0
-                    line_cy = (p1.y + p2.y) / 2.0
-                    if ((line_cx - cx)**2 + (line_cy - cy)**2)**0.5 <= 45.0:
-                        has_cased_jamb = True
+                n_line_segments += 1
+                p1, p2 = safe_extract_line_points(item)
+                if p1 and p2:
+                    l_len = ((p2.x - p1.x)**2 + (p2.y - p1.y)**2)**0.5
+                    if l_len > max_l_len:
+                        max_l_len = l_len
+                    if 15.0 <= l_len <= 140.0:
+                        line_cx = (p1.x + p2.x) / 2.0
+                        line_cy = (p1.y + p2.y) / 2.0
+                        if ((line_cx - cx)**2 + (line_cy - cy)**2)**0.5 <= 45.0:
+                            has_cased_jamb = True
 
-    return has_arc or has_cased_jamb or has_callout_shape
+    # Also check polyline chain arcs (CAD exporter polyline-approximated arcs)
+    polyline_arcs = find_polyline_chain_arcs(drawings, (cx, cy), radius=radius)
+    if polyline_arcs:
+        has_arc = True
+
+    valid = has_arc or has_cased_jamb or has_callout_shape
+    if return_details:
+        return valid, n_line_segments, max_l_len, n_curve_segments, max_c_len
+    return valid
 
 def normalize_opening_mode(val: str) -> str:
     val_clean = str(val).strip().upper()
@@ -464,8 +962,8 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
             logger.info(f"CV Drawing Analysis: Schedule indicates single Width A -> SGL")
             return "SGL"
 
-        # Check for Cased Opening (CO) in schedule (no door panel)
-        if mat in ["-", "", "NONE", "N/A", "CASED OPENING"] and dtype in ["-", "", "CO", "NONE", "N/A", "CASED OPENING", "CASED"]:
+        # Check for Cased Opening (CO) in schedule (explicitly stated as Cased Opening or None/NA)
+        if mat in ["NONE", "N/A", "CASED OPENING"] and dtype in ["CO", "NONE", "N/A", "CASED OPENING", "CASED"]:
             logger.info(f"CV Drawing Analysis: Schedule indicates Cased Opening for mark (mat={mat!r}, type={dtype!r}) -> CO")
             return "CO"
         if dtype in ["CO", "CASED OPENING", "CASED"]:
@@ -530,6 +1028,15 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
 
     # 3. Rule 3: Collect arc curves for single vs double leaf counting (tight 65pt radius)
     arc_paths = []
+
+    # Check polyline-chain arcs first
+    poly_arcs = find_polyline_chain_arcs(drawings_near, (mark_cx, mark_cy), radius=65.0)
+    for arc in poly_arcs:
+        arc_cx, arc_cy = arc["center"]
+        dist = ((arc_cx - mark_cx) ** 2 + (arc_cy - mark_cy) ** 2) ** 0.5
+        if dist <= 50:
+            arc_paths.append({"rect": arc["rect"], "cx": arc_cx, "cy": arc_cy, "dist": dist})
+
     for d in drawings_near:
         items = d.get("items", [])
         has_curve = any(it[0] in ("c", "qu") for it in items)
@@ -630,16 +1137,27 @@ async def get_location_from_crop(crop_path: str, mark: str, floor_no: int, semap
 def get_item_mark(item: dict) -> str:
     if not isinstance(item, dict):
         return ""
+    # 1. Primary check: exact door/window mark column headers
     for k, v in item.items():
         kl = str(k).lower().strip()
-        if kl in ["mark", "type", "marks", "door mark", "door no", "door no.", "window mark", "window no", "window no.", "id", "mark / type", "mark/type"]:
+        if kl in ["mark", "mark no", "mark no.", "door mark", "door mark no", "dr mark", "window mark", "opening mark", "mark id", "tag", "mark / type", "mark/type"]:
             if v and str(v).strip():
                 return str(v).strip().upper()
+                
+    # 2. Key contains 'mark' (excluding panel mark or finish mark)
     for k, v in item.items():
         kl = str(k).lower().strip()
-        if ("mark" in kl or "type" in kl) and kl not in ["hardware group no", "door type", "frame type", "opening mode", "type of door", "type of frame"]:
+        if "mark" in kl and not any(ex in kl for ex in ["panel", "finish", "frame", "hardware"]):
             if v and str(v).strip():
                 return str(v).strip().upper()
+                
+    # 3. Fallback: Key equals 'type' or 'id'
+    for k, v in item.items():
+        kl = str(k).lower().strip()
+        if kl in ["type", "id", "no", "no."]:
+            if v and str(v).strip():
+                return str(v).strip().upper()
+                
     return ""
 
 def run_opencv_geometric_detection(page, floor_no, page_idx, sched_marks, temp_dir):
@@ -980,45 +1498,54 @@ async def cv_detector_node(state: CostmateState) -> dict:
                         w_cx = (w[0] + w[2]) / 2
                         w_cy = (w[1] + w[3]) / 2
                         
-                        # Filter out gridline bubbles and sheet borders in the outer 10% margins
+                        # Filter out gridline bubbles and sheet borders in the outer 3% margins
                         W = page.rect.width
                         H = page.rect.height
-                        if w_cx < 0.10 * W or w_cx > 0.90 * W or w_cy < 0.10 * H or w_cy > 0.90 * H:
+                        if w_cx < 0.03 * W or w_cx > 0.97 * W or w_cy < 0.03 * H or w_cy > 0.97 * H:
                             logger.info(f"CV Detector: Skipping margin word '{w[4]}' at ({w_cx:.1f}, {w_cy:.1f})")
                             continue
                         
-                        # Skip if the match falls inside a masked schedule table area
+                        # Skip if the match falls inside a masked schedule table area (unless attached to genuine door opening geometry)
                         is_inside_table = False
                         for tr in table_rects:
                             if w_cx >= tr.x0 and w_cx <= tr.x1 and w_cy >= tr.y0 and w_cy <= tr.y1:
                                 is_inside_table = True
                                 break
-                        if is_inside_table:
+                        
+                        # Validate opening vector geometry (Criterion A: swing arcs, Criterion B: cased jamb lines, Criterion C: callout symbol)
+                        has_vector_geometry, n_line_segments, max_l_len, n_curve_segments, max_c_len = validate_vector_opening_geometry(page, (w_cx, w_cy), radius=40.0, return_details=True)
+                        
+                        # If text is inside table area and has NO door vector geometry, skip it (table cell)
+                        if is_inside_table and not has_vector_geometry:
                             continue
                             
-                        # Skip if block is room label block
-                        block_no = w[5]
-                        line_no = w[6]
-                        if is_block_room_label(blocks, block_no, line_no, word_text):
-                            logger.info(f"CV Detector: Skipping block {block_no} line {line_no} for mark {word_text} (room label keyword)")
+                        # If text is outside table area and has NO door vector geometry, skip it
+                        if not has_vector_geometry:
+                            logger.info(
+                                f"CV Detector: Skipping text '{word_text}' at ({w_cx:.1f}, {w_cy:.1f}) — "
+                                f"found {n_line_segments} line segments (max_len={max_l_len:.1f}pt) and "
+                                f"{n_curve_segments} curve segments (max_len={max_c_len:.1f}pt) within radius, "
+                                f"none passed arc/jamb length or distance thresholds"
+                            )
                             continue
                             
                         import fitz as fz
                         inst_rect = fz.Rect(w[0], w[1], w[2], w[3])
-                        
-                        # Validate opening vector geometry (Criterion A: swing arcs, Criterion B: cased jamb lines, Criterion C: callout symbol)
-                        if not validate_vector_opening_geometry(page, (w_cx, w_cy), radius=40.0):
-                            logger.info(f"CV Detector: Skipping text '{word_text}' at ({w_cx:.1f}, {w_cy:.1f}) (No vector opening geometry nearby)")
-                            continue
-
                         search_rect = inst_rect + (-70, -70, 70, 70)
                         nearby_drawings = [
                             d for d in drawings_on_page
                             if d.get("rect") and fz.Rect(d["rect"]).intersects(search_rect)
                         ]
                         
-                        # Count nearby arc curves
+                        # Count nearby arc curves (both Bezier and polyline-chain arcs)
                         arc_paths = []
+                        poly_arcs = find_polyline_chain_arcs(nearby_drawings, (w_cx, w_cy), radius=50.0)
+                        for arc in poly_arcs:
+                            arc_cx, arc_cy = arc["center"]
+                            dist = ((arc_cx - w_cx) ** 2 + (arc_cy - w_cy) ** 2) ** 0.5
+                            if dist <= 50:
+                                arc_paths.append(arc)
+
                         for d in nearby_drawings:
                             items = d.get("items", [])
                             has_curve = any(it[0] in ("c", "qu") for it in items)
@@ -1081,39 +1608,51 @@ async def cv_detector_node(state: CostmateState) -> dict:
                     logger.warning("Shapely engine disabled (SHAPELY_AVAILABLE=False). All detections will be flagged for review.")
 
                 for word_text, matches in candidates_by_mark.items():
-                    # Disambiguate true door callout tags (stacked D1/36"/Mark grids or circle tags near arcs) from room numbers
+                    valid_matches_for_mark = []
                     for m in matches:
                         w = m["word"]
-                        m["is_stacked"] = is_stacked_door_callout(w, words_on_page)
-                        m["is_room_label"] = is_room_center_label_word(w, words_on_page)
-                        m["font_h"] = w[3] - w[1]
-
-                    # Genuine door opening candidate priority (stacked callout tag or arc curve or small font tag)
-                    genuine_door_matches = [
-                        m for m in matches 
-                        if m["is_stacked"] or m["arc_count"] > 0 or (not m["is_room_label"] and m["font_h"] < 11.0)
-                    ]
-                    
-                    if genuine_door_matches:
-                        # Keep ONLY genuine door callout matches! Drop naked room center labels!
-                        matches = genuine_door_matches
-                    else:
-                        # If no genuine door tag exists, filter out candidates that are directly under room keywords
-                        filtered = [m for m in matches if not m["is_room_label"]]
-                        if filtered:
-                            matches = filtered
-
-                    # Sort matches prioritizing stacked callout tags, arc counts, and smaller font sizes
-                    sorted_matches = sorted(
-                        matches,
-                        key=lambda x: (1 if x["is_stacked"] else 0, x["arc_count"], -x["font_h"]),
-                        reverse=True
-                    )
+                        inst_rect = m["inst_rect"]
                         
-                    # Also apply simple spatial deduplication: within 8pt
+                        # STEP 2 Room Tag Pre-Filter (Drop Sub-Pattern 2A and Sub-Pattern 2B)
+                        is_combined_room = is_combined_room_name_and_mark(w, words_on_page)
+                        is_area_block = is_room_container_area_block(inst_rect, words_on_page)
+                        
+                        if is_combined_room or is_area_block:
+                            logger.info(f"CV Detector Pre-Filter: Dropped candidate '{word_text}' at ({m['w_cx']:.1f}, {m['w_cy']:.1f}) (Room Tag Pre-Filter: combined={is_combined_room}, area_block={is_area_block})")
+                            continue
+                            
+                        # STEP 3 Universal Geometry Validation (Containment, Touch/Intersect, Anchor-Dot, Cased Opening Jambs)
+                        m["min_arc_dist"] = compute_min_dist_to_door_arc(m["w_cx"], m["w_cy"], drawings_on_page)
+                        m["is_attached"] = is_tag_attached_to_door_opening(inst_rect, drawings_on_page)
+                        m["is_anchor_dot"] = is_hinge_anchor_dot_connected(inst_rect, drawings_on_page, r_min=1.0, r_max=4.0)
+                        m["is_cased_jamb"] = detect_wall_endcap_jamb_signature(inst_rect, drawings_on_page)
+                        m["is_inside_tag_circle"] = is_enclosed_in_tag_circle(m["w_cx"], m["w_cy"], m["nearby_drawings"])
+                        m["is_stacked"] = is_stacked_door_callout(w, words_on_page)
+                        m["is_touching_arc"] = m["min_arc_dist"] <= 35.0
+                        
+                        # Attachment Test: Pass if ANY attachment / containment condition holds
+                        is_genuine_door_geometry = (
+                            m["is_attached"] or 
+                            m["is_touching_arc"] or 
+                            m["is_inside_tag_circle"] or 
+                            m["is_anchor_dot"] or 
+                            m["is_cased_jamb"] or 
+                            m["is_stacked"]
+                        )
+                        
+                        if is_genuine_door_geometry:
+                            valid_matches_for_mark.append(m)
+                        else:
+                            logger.info(f"CV Detector Step 3: Dropped text '{word_text}' at ({m['w_cx']:.1f}, {m['w_cy']:.1f}) (Failed geometry validation)")
+
+                    if not valid_matches_for_mark:
+                        # Fallback: if no candidates passed geometry, keep closest candidates for auditing
+                        valid_matches_for_mark = matches
+
+                    # STEP 4 Multi-Match Preservation: Deduplicate spatially (within 8pt) but preserve distinct physical door matches
                     final_matches = []
-                    for m in sorted_matches:
-                        if any(abs(fm["w_cx"] - m["w_cx"]) < 8 and abs(fm["w_cy"] - m["w_cy"]) < 8 for fm in final_matches):
+                    for m in valid_matches_for_mark:
+                        if any(abs(fm["w_cx"] - m["w_cx"]) < 8.0 and abs(fm["w_cy"] - m["w_cy"]) < 8.0 for fm in final_matches):
                             continue
                         final_matches.append(m)
                         
@@ -1234,15 +1773,15 @@ async def cv_detector_node(state: CostmateState) -> dict:
             
             vlm_wall = vlm_res.get("wall_type", "UNKNOWN")
             
-            # Disable Shapely 2D distance hull per user directive; rely on VLM, wall tags, schedule facts, and specs
-            USE_SHAPELY_GEOMETRY = False
-            
-            if USE_SHAPELY_GEOMETRY and dist_to_boundary <= 25.0:
-                int_ext = "Exterior"
-            elif USE_SHAPELY_GEOMETRY and 25.0 < dist_to_boundary <= 85.0:
-                int_ext = "Exterior"
+            # STEP 1 & 2 Rule: 2D Building Geometry is PRIMARY physical signal. Geometry beats vision.
+            # Doors deep inside building footprint (dist_to_boundary > 85.0 pt) are deterministically Interior.
+            if dist_to_boundary > 85.0:
+                int_ext = "Interior"
+                logger.info(f"CV Detector INT/EXT: Mark '{mark}' at ({w_cx:.1f},{w_cy:.1f}) is deep inside footprint (dist={dist_to_boundary:.1f}pt > 85pt) -> Classified INTERIOR by 2D Geometry (VLM wall guess '{vlm_wall}' bypassed).")
+            # Perimeter Zone (dist_to_boundary <= 85.0 pt): VLM tiebreaker invoked only in perimeter zone
             elif vlm_wall in ["EXT", "EXTERIOR"]:
                 int_ext = "Exterior"
+                logger.info(f"CV Detector INT/EXT: Mark '{mark}' in perimeter zone (dist={dist_to_boundary:.1f}pt <= 85pt) with VLM wall guess '{vlm_wall}' -> Classified EXTERIOR tiebreaker.")
             else:
                 int_ext = "Interior"
                 
@@ -1257,7 +1796,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
                 "vlm_opening_mode": vlm_mode,
                 "vlm_wall_type": vlm_wall,
                 "vlm_confidence": vlm_res.get("confidence", "low"),
-                "vlm_reasoning": f"Shapely 2D Geometry (dist={dist_to_boundary:.1f}pt, host_dist={host_dist:.1f}pt, is_borderline={is_borderline}). VLM wall type guess: {vlm_wall}",
+                "vlm_reasoning": f"2D Geometry Primary Signal (dist={dist_to_boundary:.1f}pt, host_dist={host_dist:.1f}pt, is_borderline={is_borderline}). VLM wall type guess: {vlm_wall}",
                 "floor_no": str(floor_no),
                 "floor_name": floor_name,
                 "page_no": str(page_idx),
@@ -1296,8 +1835,14 @@ async def cv_detector_node(state: CostmateState) -> dict:
                 try: os.remove(crop_file)
                 except: pass
                 
-        logger.info(f"CV Detector: Completed. Found and classified {len(detections)} marks on drawings.")
-        return {"cv_results": {"detections": detections}}
+        # Log OpenRouter API rate-limit run metrics
+        vlm_metrics = openrouter_client.get_metrics_summary()
+        logger.info(
+            f"CV Detector: Completed. Found and classified {len(detections)} marks on drawings. "
+            f"OpenRouter VLM API Metrics: {vlm_metrics}"
+        )
+        return {"cv_results": {"detections": detections, "vlm_metrics": vlm_metrics}}
+
         
     except Exception as e:
         logger.critical(f"CV Detector overall failure: {e}", exc_info=True)

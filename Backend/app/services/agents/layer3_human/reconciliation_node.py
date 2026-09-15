@@ -262,6 +262,24 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 obj[canonical_key] = "True" if v else "False"
             else:
                 obj[canonical_key] = v
+
+        # Automatically populate LOCATION, bbox, and drawing coordinates from CV plan detections
+        if mark_dets:
+            det = mark_dets[0]
+            det_loc = str(det.get("location", "")).strip()
+            if det_loc and det_loc not in ["Unknown", "unknown", "NONE", ""]:
+                if not obj.get("LOCATION") or str(obj.get("LOCATION")).strip() in ["", "Unknown", "unknown"]:
+                    obj["LOCATION"] = det_loc
+                    obj["location"] = det_loc
+            if det.get("bbox"):
+                obj["bbox"] = det.get("bbox")
+            if det.get("w_cx") is not None:
+                obj["w_cx"] = det.get("w_cx")
+                obj["w_cy"] = det.get("w_cy")
+            if det.get("floor_no"):
+                obj["floor_no"] = det.get("floor_no")
+                obj["floor_name"] = det.get("floor_name")
+                obj["page_no"] = det.get("page_no")
         
         # Check Panel 2 presence in the schedule row
         panel_2_keys = []
@@ -383,12 +401,15 @@ async def reconciliation_node(state: CostmateState) -> dict:
             # 3. Window Material mapping
             is_wm = ("window" in kl or "glazing" in kl) and ("material" in kl or "mat'l" in kl or "matl" in kl)
             
-            if is_dm:
-                door_material = val_str
-            elif is_fm:
-                frame_material = val_str
-            elif is_wm:
-                window_material = val_str
+            if is_dm and val_str:
+                if not door_material or "panel 1" in kl or "door material" in kl:
+                    door_material = val_str
+            elif is_fm and val_str:
+                if not frame_material or "frame material" in kl:
+                    frame_material = val_str
+            elif is_wm and val_str:
+                if not window_material:
+                    window_material = val_str
                 
             # 4. Door Type mapping
             is_dt = False
@@ -404,20 +425,26 @@ async def reconciliation_node(state: CostmateState) -> dict:
             elif "type" in kl and "frame" in kl:
                 is_ft = True
                 
-            if is_dt:
-                sched_dtype = val_str
-            elif is_ft:
-                sched_ftype = val_str
-            elif any(ck in kl for ck in ["comments", "remarks", "estimator notes", "description"]):
-                sched_comments = val_str
+            if is_dt and val_str:
+                if not sched_dtype or "door type" in kl:
+                    sched_dtype = val_str
+            elif is_ft and val_str:
+                if not sched_ftype or "frame type" in kl:
+                    sched_ftype = val_str
+            elif any(ck in kl for ck in ["comments", "remarks", "estimator notes", "description"]) and val_str:
+                if not sched_comments:
+                    sched_comments = val_str
 
         sched_mat = door_material
 
         # Cased Opening check
-        if sched_mat in ["-", "", "NONE", "N/A", "CASED OPENING"] and sched_dtype in ["-", "", "CO", "NONE", "N/A", "CASED OPENING", "CASED"]:
+        # BOTH sched_mat and sched_dtype being empty strings "" is NOT a cased opening!
+        if sched_mat in ["-", "CASED OPENING"] and sched_dtype in ["-", "CO", "CASED OPENING", "CASED"]:
             is_sched_co = True
         elif sched_dtype in ["CO", "CASED OPENING", "CASED"]:
             is_sched_co = True
+        else:
+            is_sched_co = False
 
         # Storefront material check
         is_storefront_opening = False
@@ -478,6 +505,16 @@ async def reconciliation_node(state: CostmateState) -> dict:
         elif is_sf_mat(dm_val) or is_sf_mat(fm_val) or is_sf_mat(wm_val):
             is_storefront_opening = True
 
+        # Wood / Hollow Metal Frame Guard:
+        # If frame_type or door_type explicitly contains Hollow Metal (HM) or Wood (WD/WOOD/SCWD), force storefront to False unless explicitly AL/ALUM/STOREFRONT
+        combined_mat_text = (sched_ftype + " " + sched_dtype + " " + door_material + " " + frame_material).upper()
+        tokens_mat = [t.strip() for t in re.split(r'[^A-Z0-9]', combined_mat_text) if t.strip()]
+        is_explicit_wood_hm = any(w in tokens_mat for w in ["HM", "WD", "WOOD", "STEEL", "SCWD", "FG", "FIBERGLASS"]) or "HM" in sched_ftype.upper()
+        is_explicit_al_sf = any(w in tokens_mat for w in ["ALUM", "ALUMINUM", "STOREFRONT", "CURTAINWALL"]) or "(CW)" in sched_ftype.upper()
+        
+        if is_explicit_wood_hm and not is_explicit_al_sf:
+            is_storefront_opening = False
+
         logger.info(f"Storefront material check: mark={mark}, door={door_material}, frame={frame_material}, window={window_material}, frame_type={sched_ftype} -> is_storefront={is_storefront_opening}")
 
 
@@ -503,6 +540,10 @@ async def reconciliation_node(state: CostmateState) -> dict:
             resolved_mode = "DA"
         elif has_panel_2:
             resolved_mode = "PR"
+        elif mark_dets and mark_dets[0].get("opening_mode"):
+            resolved_mode = mark_dets[0].get("opening_mode")
+        else:
+            resolved_mode = "SGL"
             
         final_opening_mode = resolved_mode
         final_int_ext = "Exterior" if is_explicit_exterior else "Interior"
@@ -523,10 +564,10 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 if is_invalid_co or is_invalid_rev:
                     vlm_mode_cleaned = "PR" if has_panel_2 else "SGL"
                     logger.info(f"Reconciliation: Overriding invalid VLM {vlm_mode} for mark {mark} to {vlm_mode_cleaned} (has hardware/material).")
-                elif vlm_mode == "PR" and not has_panel_2 and resolved_mode == "SGL":
+                elif vlm_mode in ["PR", "PAIR", "DOUBLE", "DBL"] and not has_panel_2 and resolved_mode == "SGL":
                     vlm_mode_cleaned = "SGL"
-                    logger.info(f"Reconciliation: Overriding VLM PR for mark {mark} to SGL (no Panel 2 in schedule).")
- 
+                    logger.info(f"Reconciliation: Overriding VLM {vlm_mode} for mark {mark} to SGL (no Panel 2 in schedule & CAD arc = 1 leaf).")
+
                 if resolved_mode == vlm_mode_cleaned:
                     final_opening_mode = resolved_mode
                 elif resolved_mode == "PR" and vlm_mode_cleaned in ["DE", "DA"]:
@@ -551,6 +592,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
             geom_int_ext = det.get("int_ext", "Interior")
             vlm_wall = det.get("vlm_wall_type", "UNKNOWN")
 
+            # Priority 1: Explicit Schedule Facts (Highest Confidence)
             if is_explicit_exterior or is_curtain_wall:
                 final_int_ext = "Exterior"
             elif is_explicit_interior:
@@ -562,13 +604,33 @@ async def reconciliation_node(state: CostmateState) -> dict:
                         "detected_value": "Exterior",
                         "resolution": "Interior (Schedule Priority of Evidence)"
                     })
-                    unresolved_queue.append({
-                        "type": "int_ext_conflict",
+            # Priority 2: 2D Geometry Building Footprint (Primary CAD Physical Signal)
+            elif dist_val > 85.0:
+                final_int_ext = "Interior"
+                if vlm_wall in ["EXT", "EXTERIOR"]:
+                    reconciliation_audit["int_ext_conflicts"].append({
                         "mark": mark,
-                        "context": f"INT/EXT Conflict: Schedule specifies Interior for mark '{mark}', but floor plan crop suggested Exterior. Resolved to Interior per Schedule Priority of Evidence."
+                        "schedule_value": "Interior",
+                        "detected_value": "Exterior",
+                        "resolution": f"Interior (Resolved by 2D CAD Building Footprint at {dist_val:.1f}pt)"
                     })
+            # Priority 3: Perimeter Zone (dist_val <= 85.0 pt) — VLM Tiebreaker & Secondary Room Name QA Corroboration
             elif vlm_wall in ["EXT", "EXTERIOR"]:
-                final_int_ext = "Exterior"
+                loc_upper = str(obj.get("LOCATION") or det.get("location") or "").upper()
+                interior_kws = ["OFFICE", "CORRIDOR", "STORAGE", "TOILET", "SHOWER", "CONFERENCE", "HALL", "LOUNGE", "STAIR", "CLOSET", "RECEPTION", "WAITING", "PANTRY", "EXAM", "CARE", "UTILITY", "ELEC", "MECH", "JANITOR", "HOLDING"]
+                has_interior_loc = any(kw in loc_upper for kw in interior_kws)
+                has_exterior_loc = any(kw in loc_upper for kw in ["ROOF", "PATIO", "COURTYARD", "OUTDOOR", "EXTERIOR", "PARKING", "DOCK"])
+                
+                if has_interior_loc and not has_exterior_loc:
+                    final_int_ext = "Interior"
+                    reconciliation_audit["int_ext_conflicts"].append({
+                        "mark": mark,
+                        "schedule_value": "Interior",
+                        "detected_value": "Exterior",
+                        "resolution": f"Interior (Resolved by Room Location '{loc_upper}')"
+                    })
+                else:
+                    final_int_ext = "Exterior"
             else:
                 final_int_ext = "Interior"
         else:
@@ -579,6 +641,8 @@ async def reconciliation_node(state: CostmateState) -> dict:
             obj["needs_review"] = True
             obj["is_borderline"] = True
             obj["review_reason"] = "mark_not_located_on_drawing"
+            if not obj.get("Takeoff Notes"):
+                obj["Takeoff Notes"] = "Schedule mark not located on drawing; Qty verified by estimator."
             
             reconciliation_audit["borderline_unlocated_marks"].append({
                 "mark": mark,

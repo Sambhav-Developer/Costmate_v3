@@ -7,6 +7,15 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     MODEL_NAME: str = "qwen/qwen3-vl-235b-a22b-instruct"
 
+    # OpenRouter Rate Limiting & Concurrency Settings
+    OPENROUTER_CONCURRENCY_LIMIT: int = 3
+    OPENROUTER_MAX_RETRIES: int = 5
+    OPENROUTER_BASE_BACKOFF_SECONDS: float = 1.0
+    OPENROUTER_MAX_BACKOFF_SECONDS: float = 30.0
+    OPENROUTER_JITTER_RATIO: float = 0.2
+    VLM_BATCH_SIZE: int = 3
+
+
     # App settings
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"

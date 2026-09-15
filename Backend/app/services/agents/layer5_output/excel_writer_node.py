@@ -30,10 +30,38 @@ def get_dict_val_case_insensitive(d: dict, target_key: str, default="") -> str:
         if str(k).lower().strip() == tk_lower and v is not None and str(v).strip() != "":
             return v
     # Specific fallback for mark / type
-    if tk_lower in ["mark", "marks", "door mark", "door no", "number", "type"]:
-        for k in ["mark", "MARK", "type", "TYPE", "door_mark", "number", "_original_mark"]:
+    if tk_lower in ["mark", "marks", "door mark", "door no", "number", "type", "id", "mark / type", "mark/type"]:
+        for k in ["mark", "MARK", "type", "TYPE", "door_mark", "number", "_original_mark", "door no", "door mark"]:
             if k in d and d[k] and str(d[k]).strip() != "":
                 return d[k]
+    # Specific fallbacks for head, jamb, sill details
+    if "head" in tk_lower or tk_lower in ["head", "detail head", "detail_head", "sections head", "sections_head", "head detail", "head/jamb"]:
+        head_aliases = ["head", "HEAD", "Head", "Detail Head", "detail_head", "Sections Head", "detail head", "Head Detail", "Head/Jamb", "Detail - Head", "Detail (Head)"]
+        for k in head_aliases:
+            if k in d and d[k] and str(d[k]).strip() != "":
+                return d[k]
+        for k, v in d.items():
+            if "head" in str(k).lower() and v and str(v).strip() != "":
+                return v
+
+    if "jamb" in tk_lower or tk_lower in ["jamb", "detail jamb", "detail_jamb", "sections jamb", "sections_jamb", "jamb detail"]:
+        jamb_aliases = ["jamb", "JAMB", "Jamb", "Detail Jamb", "detail_jamb", "Sections Jamb", "detail jamb", "Jamb Detail", "Detail - Jamb", "Detail (Jamb)"]
+        for k in jamb_aliases:
+            if k in d and d[k] and str(d[k]).strip() != "":
+                return d[k]
+        for k, v in d.items():
+            if "jamb" in str(k).lower() and v and str(v).strip() != "":
+                return v
+
+    if "sill" in tk_lower or tk_lower in ["sill", "detail sill", "detail_sill", "sections sill", "sections_sill", "sill detail"]:
+        sill_aliases = ["sill", "SILL", "Sill", "Detail Sill", "detail_sill", "detail sill", "Sill Detail"]
+        for k in sill_aliases:
+            if k in d and d[k] and str(d[k]).strip() != "":
+                return d[k]
+        for k, v in d.items():
+            if "sill" in str(k).lower() and v and str(v).strip() != "":
+                return v
+
     return default
 
 def get_raw_schedule_columns(items: list) -> list:
@@ -104,11 +132,17 @@ def get_item_mark(item: dict) -> str:
 def get_item_location(item: dict) -> str:
     if not isinstance(item, dict):
         return ""
-    loc_keys = ["location", "location name", "room", "room name", "room no", "room number", "room/location", "room / location", "room_name", "room_no"]
+    loc_keys = ["location", "location name", "room", "room name", "room no", "room number", "room/location", "room / location", "room_name", "room_no", "space", "area", "d.location", "room_label", "LOCATION"]
     for k, v in item.items():
-        if str(k).lower().strip() in loc_keys:
-            if v and str(v).strip():
-                return str(v).strip()
+        if str(k).lower().strip() in [lk.lower() for lk in loc_keys]:
+            val = str(v).strip() if v else ""
+            if val and val.lower() not in ["unknown", "none", "n/a", ""]:
+                return val
+    for k, v in item.items():
+        if ("location" in str(k).lower() or "room" in str(k).lower()) and v:
+            val = str(v).strip()
+            if val and val.lower() not in ["unknown", "none", "n/a", ""]:
+                return val
     return ""
 
 async def excel_writer_node(state: CostmateState) -> dict:

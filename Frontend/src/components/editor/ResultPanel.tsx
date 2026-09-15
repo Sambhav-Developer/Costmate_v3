@@ -76,9 +76,33 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
           return String(d[k]);
         }
       }
-      if (['mark', 'marks', 'door mark', 'door no', 'number', 'type'].includes(tkLower)) {
-        for (const k of ['mark', 'MARK', 'type', 'TYPE', 'door_mark', 'number', '_original_mark']) {
+      if (['mark', 'marks', 'door mark', 'door no', 'number', 'type', 'id', 'mark / type', 'mark/type'].includes(tkLower)) {
+        for (const k of ['mark', 'MARK', 'type', 'TYPE', 'door_mark', 'number', '_original_mark', 'door no', 'door mark']) {
           if (d[k] && String(d[k]).trim() !== '') return String(d[k]);
+        }
+      }
+      if (tkLower.includes('head') || ['head', 'detail head', 'detail_head', 'sections head', 'sections_head', 'head detail', 'head/jamb'].includes(tkLower)) {
+        for (const k of ['head', 'HEAD', 'Head', 'Detail Head', 'detail_head', 'Sections Head', 'detail head', 'Head Detail', 'Head/Jamb', 'Detail - Head', 'Detail (Head)']) {
+          if (d[k] && String(d[k]).trim() !== '') return String(d[k]);
+        }
+        for (const k of Object.keys(d)) {
+          if (k.toLowerCase().includes('head') && d[k] && String(d[k]).trim() !== '') return String(d[k]);
+        }
+      }
+      if (tkLower.includes('jamb') || ['jamb', 'detail jamb', 'detail_jamb', 'sections jamb', 'sections_jamb', 'jamb detail'].includes(tkLower)) {
+        for (const k of ['jamb', 'JAMB', 'Jamb', 'Detail Jamb', 'detail_jamb', 'Sections Jamb', 'detail jamb', 'Jamb Detail', 'Detail - Jamb', 'Detail (Jamb)']) {
+          if (d[k] && String(d[k]).trim() !== '') return String(d[k]);
+        }
+        for (const k of Object.keys(d)) {
+          if (k.toLowerCase().includes('jamb') && d[k] && String(d[k]).trim() !== '') return String(d[k]);
+        }
+      }
+      if (tkLower.includes('sill') || ['sill', 'detail sill', 'detail_sill', 'sections sill', 'sections_sill', 'sill detail'].includes(tkLower)) {
+        for (const k of ['sill', 'SILL', 'Sill', 'Detail Sill', 'detail_sill', 'detail sill', 'Sill Detail']) {
+          if (d[k] && String(d[k]).trim() !== '') return String(d[k]);
+        }
+        for (const k of Object.keys(d)) {
+          if (k.toLowerCase().includes('sill') && d[k] && String(d[k]).trim() !== '') return String(d[k]);
         }
       }
       return '';
@@ -86,9 +110,14 @@ export default function ResultPanel({ sessionState, sessionId, downloadUrl }: Re
 
     const getItemLocation = (d: any): string => {
       if (!d || typeof d !== 'object') return '';
-      const locKeys = ['location', 'location name', 'room', 'room name', 'room no', 'room number', 'room/location', 'room / location', 'room_name', 'room_no'];
+      const locKeys = ['location', 'location name', 'room', 'room name', 'room no', 'room number', 'room/location', 'room / location', 'room_name', 'room_no', 'space', 'area', 'd.location', 'room_label'];
       for (const k of Object.keys(d)) {
         if (locKeys.includes(k.toLowerCase().trim()) && d[k] && String(d[k]).trim() !== '') {
+          return String(d[k]);
+        }
+      }
+      for (const k of Object.keys(d)) {
+        if ((k.toLowerCase().includes('location') || k.toLowerCase().includes('room')) && d[k] && String(d[k]).trim() !== '') {
           return String(d[k]);
         }
       }

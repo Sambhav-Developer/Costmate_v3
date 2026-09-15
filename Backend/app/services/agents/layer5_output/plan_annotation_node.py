@@ -122,8 +122,10 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                 
             highlighted_count = 0
             
-            # Filter detections for this floor
-            floor_dets = [d for d in detections if str(d.get("floor_no")) == str(floor_no)]
+            # Filter detections for this floor (with fallback if floor_no is unset)
+            floor_dets = [d for d in detections if str(d.get("floor_no")) == str(floor_no) or not d.get("floor_no")]
+            if not floor_dets and detections:
+                floor_dets = detections
             
             for page_num, page in enumerate(doc):
                 page_dets = [d for d in floor_dets if str(d.get("page_no", "0")) == str(page_num)]
@@ -145,8 +147,6 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                                 sched_info = item_data
                                 break
                     
-                    # Case-insensitive material column lookup
-                    material = ""
                     # 5 SKILL.md Color Standard definitions (RGB normalized 0-1 for fitz)
                     # 🟡 Yellow (#FFFF00, RGB 255, 255, 0): Interior opening
                     color_interior = (1.0, 1.0, 0.0)
@@ -160,8 +160,8 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                     color_storefront = (1.0, 0.0, 1.0)
 
                     # Determine classification status for highlight color branching
-                    raw_mode = str(sched_info.get("_reconciled_opening_mode") or sched_info.get("OPENING MODE") or "").strip().upper()
-                    raw_ie = str(sched_info.get("_reconciled_int_ext") or sched_info.get("INT/EXT") or "").strip().upper()
+                    raw_mode = str(sched_info.get("_reconciled_opening_mode") or sched_info.get("OPENING MODE") or sched_info.get("Opening Mode") or sched_info.get("opening_mode") or "").strip().upper()
+                    raw_ie = str(sched_info.get("_reconciled_int_ext") or sched_info.get("INT/EXT") or sched_info.get("Int/Ext") or sched_info.get("int_ext") or "").strip().upper()
                     wall_rating = str(sched_info.get("WALL RATING") or sched_info.get("FIRE RATING") or sched_info.get("WALL TYPE") or sched_info.get("RATING") or sched_info.get("COMMENTS") or "").strip().upper()
                     
                     if raw_ie == "NOT IN SCOPE" or sched_info.get("excluded") or raw_mode == "STOREFRONT" or "STOREFRONT" in wall_rating or "BARRIER" in wall_rating:

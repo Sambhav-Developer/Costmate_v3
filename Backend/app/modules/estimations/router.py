@@ -146,9 +146,15 @@ async def download_output(session_id: str, current_user: dict = Depends(get_curr
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream("GET", excel_path) as response:
                     if response.status_code != 200:
-                        raise HTTPException(status_code=404, detail="Failed to fetch Excel from cloud storage")
-                    async for chunk in response.aiter_bytes():
-                        yield chunk
+                        local_fallback = os.path.join(settings.OUTPUT_DIR, filename)
+                        if os.path.exists(local_fallback):
+                            with open(local_fallback, "rb") as f:
+                                yield f.read()
+                        else:
+                            raise HTTPException(status_code=404, detail="Failed to fetch Excel from cloud storage and local fallback not found")
+                    else:
+                        async for chunk in response.aiter_bytes():
+                            yield chunk
         
         return StreamingResponse(
             stream_external_file(),
@@ -310,9 +316,19 @@ async def download_annotated_plan(session_id: str, current_user: dict = Depends(
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream("GET", annotated_path) as response:
                     if response.status_code != 200:
-                        raise HTTPException(status_code=404, detail="Failed to fetch annotated plan from cloud storage")
-                    async for chunk in response.aiter_bytes():
-                        yield chunk
+                        # Fallback: Check if we have it locally in the output dir
+                        import urllib.parse
+                        parsed_url = urllib.parse.urlparse(annotated_path)
+                        url_filename = os.path.basename(parsed_url.path)
+                        local_fallback = os.path.join(settings.OUTPUT_DIR, url_filename)
+                        if os.path.exists(local_fallback):
+                            with open(local_fallback, "rb") as f:
+                                yield f.read()
+                        else:
+                            raise HTTPException(status_code=404, detail="Failed to fetch annotated plan from cloud storage and local fallback not found")
+                    else:
+                        async for chunk in response.aiter_bytes():
+                            yield chunk
         
         return StreamingResponse(
             stream_external_file(),

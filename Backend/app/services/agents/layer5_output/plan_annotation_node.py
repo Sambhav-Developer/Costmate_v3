@@ -98,12 +98,12 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                     downloaded_temps.append(temp_local_file)
                 except Exception as dl_err:
                     logger.error(f"Failed to download drawing {idx} ({file_source}): {dl_err}")
-                    continue
+                    raise ValueError(f"Failed to download drawing {file_source}: {dl_err}")
             else:
                 local_raw_path = file_source
                 if not os.path.exists(local_raw_path):
                     logger.warning(f"Local drawing path does not exist: {local_raw_path}")
-                    continue
+                    raise ValueError(f"Local drawing path does not exist: {local_raw_path}")
                     
             # Open/Convert to PDF
             try:
@@ -118,15 +118,15 @@ async def plan_annotation_node(state: CostmateState) -> dict:
                     doc = fitz.open(local_raw_path)
             except Exception as open_err:
                 logger.error(f"Failed to open drawing {local_raw_path}: {open_err}")
-                continue
+                raise ValueError(f"Failed to open drawing {local_raw_path}: {open_err}")
                 
             highlighted_count = 0
             
-            # Filter detections for this floor
-            floor_dets = [d for d in detections if str(d.get("floor_no")) == str(floor_no)]
-            
             for page_num, page in enumerate(doc):
-                page_dets = [d for d in floor_dets if str(d.get("page_no", "0")) == str(page_num)]
+                effective_floor_idx = page_num if len(raw_drawings) == 1 and len(doc) > 1 else idx
+                current_floor_no = effective_floor_idx + 1
+                
+                page_dets = [d for d in detections if str(d.get("floor_no")) == str(current_floor_no) and str(d.get("page_no", "0")) == str(page_num)]
                 for d in page_dets:
                     bbox = d.get("bbox")
                     if not bbox:
@@ -209,7 +209,10 @@ async def plan_annotation_node(state: CostmateState) -> dict:
         file_name = f"{clean_proj_name}_Division8_Takeoff_MarkedUp_{today_str}.pdf"
         
         out_path = os.path.join(settings.OUTPUT_DIR, file_name)
-        master_doc.save(out_path)
+        if master_doc.page_count > 0:
+            master_doc.save(out_path)
+        else:
+            raise ValueError("Consolidated PDF has zero pages. No drawings were annotated.")
         master_doc.close()
         logger.info(f"Consolidated annotated PDF successfully saved at {out_path}")
         
@@ -228,10 +231,8 @@ async def plan_annotation_node(state: CostmateState) -> dict:
         cloud_url = upload_to_cloudinary(out_path, resource_type="raw") or out_path
         
         if cloud_url != out_path and os.path.exists(out_path):
-            try:
-                os.remove(out_path)
-            except:
-                pass
+            # We will no longer delete the local file so you have a local copy as well
+            logger.info(f"Keeping local file: {out_path}")
                 
         for temp_file in downloaded_temps:
             if os.path.exists(temp_file):

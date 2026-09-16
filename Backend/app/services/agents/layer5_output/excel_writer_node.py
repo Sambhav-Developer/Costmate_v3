@@ -392,10 +392,8 @@ async def excel_writer_node(state: CostmateState) -> dict:
     cloud_url = upload_to_cloudinary(file_path, resource_type="raw") or file_path
     
     if os.path.exists(file_path):
-        try:
-            os.remove(file_path)
-        except:
-            pass
+        logger.info(f"Keeping local excel file: {file_path}")
             
     return {"excel_file_path": cloud_url, "status": "completed", "current_step": "completed"}
+
 

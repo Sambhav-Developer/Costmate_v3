@@ -33,19 +33,19 @@ async def main():
     cv_res = await cv_detector_node(state)
     state["cv_results"] = cv_res.get("cv_results", {})
     res = await reconciliation_node(state)
-    for r in res.get("reconciled_items", []):
+    
+    doors = res.get("bifurcated_schedule") or res.get("qa_prefilled", {}).get("doors", [])
+    print(f"\n================ 3-LAYER CLASSIFICATION BREAKDOWN ({len(doors)} items) ================")
+    print(f"{'MARK':5s} | {'L1 SCHEDULE':12s} | {'L2 VECTOR':10s} | {'L3 VLM':10s} | {'FINAL':8s} | {'REVIEW'}")
+    print("-" * 75)
+    for r in doors:
         m = r.get("type") or r.get("mark")
-        if m in ["99A", "97"]:
-            print(f"\n================ MARK {m} ================")
-            print(f"  needs_review = {r.get('needs_review')}")
-            print(f"  review_reason = {r.get('review_reason')}")
-            print(f"  is_borderline = {r.get('is_borderline')}")
-            print(f"  Takeoff Notes = {r.get('Takeoff Notes')}")
-            print(f"  RECONCILED OPENING MODE = {r.get('RECONCILED OPENING MODE')}")
-
-    print("\n================ UNRESOLVED QUEUE ================")
-    for u in state.get("unresolved_queue", []):
-        print(f"  {u}")
+        l1 = r.get("layer1_schedule_mode")
+        l2 = r.get("layer2_vector_mode")
+        l3 = r.get("layer3_vlm_mode")
+        fin = r.get("final_reconciled_mode") or r.get("_reconciled_opening_mode")
+        rev = "CHECK" if r.get("needs_review") else "OK"
+        print(f"{m:5s} | {str(l1):12s} | {str(l2):10s} | {str(l3):10s} | {str(fin):8s} | {rev}")
 
 if __name__ == "__main__":
     asyncio.run(main())

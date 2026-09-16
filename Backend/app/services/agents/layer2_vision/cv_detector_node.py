@@ -46,6 +46,47 @@ def get_reference_catalog_b64() -> str:
 VALID_OPENING_MODES = {"SGL", "PR", "CO", "DA", "SLD", "PKT", "BIFOLD", "OHD", "REV", "BYPASS", "UNKNOWN"}
 VALID_WALL_TYPES = {"INT", "EXT", "UNKNOWN"}
 
+NON_DOOR_TAG_KEYWORDS = {
+    "ROOM", "OFFICE", "WORKROOM", "CORRIDOR", "CORR", "STORAGE", "STO",
+    "STAIR", "STA", "BEV", "BEVERAGE", "KITCHEN", "KIT", "RESTROOM", "RR",
+    "TOILET", "BATH", "BATHROOM", "MECH", "MECHANICAL", "ELEC", "ELECTRICAL",
+    "JAN", "JANITOR", "CLOSET", "CLO", "VEST", "VESTIBULE", "LOBBY", "HALL",
+    "HALLWAY", "UTILITY", "UTIL", "BREAK", "CONF", "CONFERENCE", "ENTRY",
+    "ENTRANCE", "WAITING", "RECEPTION", "SUITE", "DECK", "PATIO", "BALCONY",
+    "GARAGE", "BASEMENT", "ATTIC", "ROOF", "ELEV", "ELEVATOR", "SHAFT",
+    "PLAN", "DEVICES", "SYMBOLS", "AREAS", "FILL", "PATTERN", "WITH", "IN",
+    "NO", "EX", "EXIST", "EXISTING", "NEW", "TYP", "TYPICAL", "SIM", "SIMILAR",
+    "SDP", "CL", "N/A", "SEE", "NOTE", "NOTES", "DETAIL", "SECTION", "ELEVATION",
+    "SCALE", "DATE", "DRAWN", "CHECKED", "SHEET", "NORTH", "SOUTH", "EAST",
+    "WEST", "KEY", "LEGEND", "MARK", "MARKS", "QTY", "SIZE", "TYPE", "WALL",
+    "DOOR", "DOORS", "FRAME", "FRAMES", "JAMB", "HEAD", "SILL", "FINISH",
+    "SCHEDULE", "SPEC", "SPECS", "SPECIFICATION", "SPECIFICATIONS",
+    "HARDWARE", "HW", "HDWR", "SET", "SETS", "BUTTS", "HINGES", "CLOSER",
+    "CLOSERS", "LOCK", "LOCKSET", "LATCH", "STRIKE", "BOLT", "PANIC",
+    "AND", "FOR", "THE", "ALL", "NOT", "PER", "BY", "FROM", "TO", "ON", "AT",
+    "UP", "DN", "DOWN", "TOP", "BOT", "BOTTOM", "MAX", "MIN", "TOTAL",
+    "ITEM", "ITEMS", "TAG", "TAGS", "REV", "REVISION", "RATING", "FIRE"
+}
+
+def is_valid_orphan_tag_candidate(word: str, sched_marks: set) -> bool:
+    """Check if a word is a plausible orphan plan door tag candidate."""
+    import re
+    word_upper = word.upper().strip(".,()[]{}-_#*")
+    if word_upper in NON_DOOR_TAG_KEYWORDS:
+        return False
+    if any(c in word for c in ['"', "'", '=', '/', '\\', '°']):
+        return False
+    if re.match(r'^[A-Z]?-\d+\.\d+$', word_upper) or re.match(r'^\d+\.\d+$', word_upper):
+        return False
+    if re.match(r'^[A-Z]\.\d+$', word_upper):
+        return False
+    if len(word_upper) == 1 and word_upper not in sched_marks:
+        return False
+    if re.match(r'^S\d+T\d+$', word_upper):
+        return False
+    return True
+
+
 SYSTEM_PROMPT = """You are an expert civil construction estimation assistant.
 
 You will be given two images:
@@ -790,7 +831,7 @@ def is_solid_color_room_pill(inst_rect, drawings_on_page) -> bool:
                     return True
     return False
 
-def validate_vector_opening_geometry(page, point, radius=40.0, return_details=False):
+def validate_vector_opening_geometry(page, point, radius=40.0, return_details=False, drawings=None):
     """
     Validates if candidate text at `point` (fitz.Point or (cx, cy)) represents a genuine door opening tag.
     Checks 3 complementary CAD/PDF vector drawing criteria within tight `radius` (40pt ~ 0.55 inches):
@@ -803,12 +844,13 @@ def validate_vector_opening_geometry(page, point, radius=40.0, return_details=Fa
     cy = point.y if hasattr(point, 'y') else point[1]
     
     search_rect = fitz.Rect(cx - radius, cy - radius, cx + radius, cy + radius)
-    try:
-        drawings = page.get_drawings()
-    except Exception:
-        if return_details:
-            return True, 0, 0.0, 0, 0.0
-        return True # Fallback if drawings stream unavailable
+    if drawings is None:
+        try:
+            drawings = page.get_drawings()
+        except Exception:
+            if return_details:
+                return True, 0, 0.0, 0, 0.0
+            return True # Fallback if drawings stream unavailable
         
     has_arc = False
     has_cased_jamb = False
@@ -827,7 +869,7 @@ def validate_vector_opening_geometry(page, point, radius=40.0, return_details=Fa
         w = p_rect.x1 - p_rect.x0
         h = p_rect.y1 - p_rect.y0
         
-        # Criterion C: Enclosed Callout Symbol / Bubble around text (width/height 10 - 65 pt)
+        # Criterion C: Enclosed Callout Symbol / Bubble around text or Leader Line
         if 10.0 <= w <= 65.0 and 10.0 <= h <= 65.0:
             d_cx = (p_rect.x0 + p_rect.x1) / 2.0
             d_cy = (p_rect.y0 + p_rect.y1) / 2.0
@@ -836,6 +878,26 @@ def validate_vector_opening_geometry(page, point, radius=40.0, return_details=Fa
                 has_curve = any(it[0] in ("c", "qu", "v", "y") for it in items)
                 if has_curve:
                     has_callout_shape = True
+                    
+        # Check item-level callout curves and leader lines attached to tag
+        for item in path.get("items", []):
+            cmd = item[0]
+            if cmd in ("c", "qu", "v", "y"):
+                p1, p3 = safe_extract_curve_points(item)
+                if p1 and p3:
+                    c_len = ((p3.x - p1.x)**2 + (p3.y - p1.y)**2)**0.5
+                    d1 = ((p1.x - cx)**2 + (p1.y - cy)**2)**0.5
+                    d3 = ((p3.x - cx)**2 + (p3.y - cy)**2)**0.5
+                    if min(d1, d3) <= 30.0 and 5.0 <= c_len <= 35.0:
+                        has_callout_shape = True
+            elif cmd == "l":
+                p1, p2 = safe_extract_line_points(item)
+                if p1 and p2:
+                    l_len = ((p2.x - p1.x)**2 + (p2.y - p1.y)**2)**0.5
+                    d1 = ((p1.x - cx)**2 + (p1.y - cy)**2)**0.5
+                    d2 = ((p2.x - cx)**2 + (p2.y - cy)**2)**0.5
+                    if min(d1, d2) <= 35.0 and l_len >= 15.0:
+                        has_callout_shape = True
                 
         for item in path.get("items", []):
             cmd = item[0]
@@ -1342,8 +1404,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
         for s in sample:
             logger.info(f"CV Detector DEBUG: sample item keys={list(s.keys())}, extracted_mark={get_item_mark(s)!r}")
     if not items:
-        logger.warning("No schedule items found in state to locate.")
-        return {"cv_results": {"detections": []}}
+        logger.warning("No schedule items found in state — scanning floor plans for Orphan Plan Tags...")
 
     sched_marks = set()
     sched_items_by_mark = {}
@@ -1492,16 +1553,29 @@ async def cv_detector_node(state: CostmateState) -> dict:
                     raw_word = w[4].strip(".,()[]{}-_#*").upper()
                     
                     matched_mark = find_closest_schedule_mark(raw_word, sched_marks)
+                    
+                    # Scenario 2 (SKILL.md): Discover Orphan Plan Tags (tags touching valid door geometry missing from schedule)
+                    # ONLY run orphan tag discovery when NO schedule marks were provided in intake (schedule-less mode)!
+                    if not matched_mark and not sched_marks and 1 <= len(raw_word) <= 8 and (raw_word.isalnum() or "-" in raw_word):
+                        if is_valid_orphan_tag_candidate(raw_word, sched_marks):
+                            if not is_combined_room_name_and_mark(w, words_on_page) and not is_room_container_area_block((w[0], w[1], w[2], w[3]), words_on_page):
+                                w_cx = (w[0] + w[2]) / 2.0
+                                w_cy = (w[1] + w[3]) / 2.0
+                                if validate_vector_opening_geometry(page, (w_cx, w_cy), radius=40.0, drawings=drawings_on_page):
+                                    matched_mark = raw_word
+                                    logger.info(f"CV Detector: Discovered Orphan Plan Tag '{raw_word}' at ({w_cx:.1f}, {w_cy:.1f}) touching door geometry")
+
                     if matched_mark:
                         word_text = matched_mark
                         w_x, w_y = w[0], w[1]
                         w_cx = (w[0] + w[2]) / 2
                         w_cy = (w[1] + w[3]) / 2
                         
-                        # Filter out gridline bubbles and sheet borders in the outer 3% margins
-                        W = page.rect.width
-                        H = page.rect.height
-                        if w_cx < 0.03 * W or w_cx > 0.97 * W or w_cy < 0.03 * H or w_cy > 0.97 * H:
+                        # Filter out gridline bubbles and sheet borders in the outer 3% margins (using cropbox coordinate space)
+                        crop_box = getattr(page, "cropbox", page.rect)
+                        crop_W = crop_box.width
+                        crop_H = crop_box.height
+                        if w_cx < 0.03 * crop_W or w_cx > 0.97 * crop_W or w_cy < 0.03 * crop_H or w_cy > 0.97 * crop_H:
                             logger.info(f"CV Detector: Skipping margin word '{w[4]}' at ({w_cx:.1f}, {w_cy:.1f})")
                             continue
                         
@@ -1513,20 +1587,10 @@ async def cv_detector_node(state: CostmateState) -> dict:
                                 break
                         
                         # Validate opening vector geometry (Criterion A: swing arcs, Criterion B: cased jamb lines, Criterion C: callout symbol)
-                        has_vector_geometry, n_line_segments, max_l_len, n_curve_segments, max_c_len = validate_vector_opening_geometry(page, (w_cx, w_cy), radius=40.0, return_details=True)
+                        has_vector_geometry, n_line_segments, max_l_len, n_curve_segments, max_c_len = validate_vector_opening_geometry(page, (w_cx, w_cy), radius=40.0, return_details=True, drawings=drawings_on_page)
                         
                         # If text is inside table area and has NO door vector geometry, skip it (table cell)
                         if is_inside_table and not has_vector_geometry:
-                            continue
-                            
-                        # If text is outside table area and has NO door vector geometry, skip it
-                        if not has_vector_geometry:
-                            logger.info(
-                                f"CV Detector: Skipping text '{word_text}' at ({w_cx:.1f}, {w_cy:.1f}) — "
-                                f"found {n_line_segments} line segments (max_len={max_l_len:.1f}pt) and "
-                                f"{n_curve_segments} curve segments (max_len={max_c_len:.1f}pt) within radius, "
-                                f"none passed arc/jamb length or distance thresholds"
-                            )
                             continue
                             
                         import fitz as fz
@@ -1570,7 +1634,8 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             "w_cy": w_cy,
                             "inst_rect": inst_rect,
                             "nearby_drawings": nearby_drawings,
-                            "arc_count": len(arc_paths)
+                            "arc_count": len(arc_paths),
+                            "has_vector_geometry": has_vector_geometry
                         })
                         
                 # Construct 2D Concave Outer Hull Polygon using Shapely (if available)
@@ -1608,30 +1673,38 @@ async def cv_detector_node(state: CostmateState) -> dict:
                     logger.warning("Shapely engine disabled (SHAPELY_AVAILABLE=False). All detections will be flagged for review.")
 
                 for word_text, matches in candidates_by_mark.items():
-                    valid_matches_for_mark = []
+                    # STEP 2 Occurrence-Count-Based Gating Algorithm
+                    filtered_matches = []
                     for m in matches:
                         w = m["word"]
                         inst_rect = m["inst_rect"]
                         
-                        # STEP 2 Room Tag Pre-Filter (Drop Sub-Pattern 2A and Sub-Pattern 2B)
+                        # Room Tag Pre-Filter (Drop Sub-Pattern 2A and Sub-Pattern 2B)
                         is_combined_room = is_combined_room_name_and_mark(w, words_on_page)
                         is_area_block = is_room_container_area_block(inst_rect, words_on_page)
                         
                         if is_combined_room or is_area_block:
                             logger.info(f"CV Detector Pre-Filter: Dropped candidate '{word_text}' at ({m['w_cx']:.1f}, {m['w_cy']:.1f}) (Room Tag Pre-Filter: combined={is_combined_room}, area_block={is_area_block})")
                             continue
-                            
-                        # STEP 3 Universal Geometry Validation (Containment, Touch/Intersect, Anchor-Dot, Cased Opening Jambs)
+                        filtered_matches.append(m)
+                        
+                    N_rem = len(filtered_matches)
+                    valid_matches_for_mark = []
+                    
+                    if N_rem == 1:
+                        # RULE 1: Single occurrence remaining after room-tag pre-filter -> Treat as genuine door mark immediately for LOCATION!
+                        m = filtered_matches[0]
+                        inst_rect = m["inst_rect"]
                         m["min_arc_dist"] = compute_min_dist_to_door_arc(m["w_cx"], m["w_cy"], drawings_on_page)
                         m["is_attached"] = is_tag_attached_to_door_opening(inst_rect, drawings_on_page)
                         m["is_anchor_dot"] = is_hinge_anchor_dot_connected(inst_rect, drawings_on_page, r_min=1.0, r_max=4.0)
                         m["is_cased_jamb"] = detect_wall_endcap_jamb_signature(inst_rect, drawings_on_page)
                         m["is_inside_tag_circle"] = is_enclosed_in_tag_circle(m["w_cx"], m["w_cy"], m["nearby_drawings"])
-                        m["is_stacked"] = is_stacked_door_callout(w, words_on_page)
+                        m["is_stacked"] = is_stacked_door_callout(m["word"], words_on_page)
                         m["is_touching_arc"] = m["min_arc_dist"] <= 35.0
                         
-                        # Attachment Test: Pass if ANY attachment / containment condition holds
-                        is_genuine_door_geometry = (
+                        is_genuine_geom = (
+                            m.get("has_vector_geometry", False) or 
                             m["is_attached"] or 
                             m["is_touching_arc"] or 
                             m["is_inside_tag_circle"] or 
@@ -1639,15 +1712,47 @@ async def cv_detector_node(state: CostmateState) -> dict:
                             m["is_cased_jamb"] or 
                             m["is_stacked"]
                         )
+                        m["has_highlight"] = is_genuine_geom
+                        valid_matches_for_mark = [m]
+                        logger.info(f"CV Detector Rule 1: Single occurrence for mark '{word_text}' at ({m['w_cx']:.1f}, {m['w_cy']:.1f}) -> Location resolved (has_highlight={is_genuine_geom})")
                         
-                        if is_genuine_door_geometry:
-                            valid_matches_for_mark.append(m)
-                        else:
-                            logger.info(f"CV Detector Step 3: Dropped text '{word_text}' at ({m['w_cx']:.1f}, {m['w_cy']:.1f}) (Failed geometry validation)")
-
-                    if not valid_matches_for_mark:
-                        # Fallback: if no candidates passed geometry, keep closest candidates for auditing
-                        valid_matches_for_mark = matches
+                    elif N_rem > 1:
+                        # RULE 3: Multiple occurrences remaining -> Run full geometry validation pipeline to disambiguate
+                        for m in filtered_matches:
+                            inst_rect = m["inst_rect"]
+                            m["min_arc_dist"] = compute_min_dist_to_door_arc(m["w_cx"], m["w_cy"], drawings_on_page)
+                            m["is_attached"] = is_tag_attached_to_door_opening(inst_rect, drawings_on_page)
+                            m["is_anchor_dot"] = is_hinge_anchor_dot_connected(inst_rect, drawings_on_page, r_min=1.0, r_max=4.0)
+                            m["is_cased_jamb"] = detect_wall_endcap_jamb_signature(inst_rect, drawings_on_page)
+                            m["is_inside_tag_circle"] = is_enclosed_in_tag_circle(m["w_cx"], m["w_cy"], m["nearby_drawings"])
+                            m["is_stacked"] = is_stacked_door_callout(m["word"], words_on_page)
+                            m["is_touching_arc"] = m["min_arc_dist"] <= 35.0
+                            
+                            is_genuine_geom = (
+                                m.get("has_vector_geometry", False) or 
+                                m["is_attached"] or 
+                                m["is_touching_arc"] or 
+                                m["is_inside_tag_circle"] or 
+                                m["is_anchor_dot"] or 
+                                m["is_cased_jamb"] or 
+                                m["is_stacked"]
+                            )
+                            m["has_highlight"] = is_genuine_geom
+                            if is_genuine_geom:
+                                valid_matches_for_mark.append(m)
+                            else:
+                                logger.info(f"CV Detector Rule 3: Dropped candidate '{word_text}' at ({m['w_cx']:.1f}, {m['w_cy']:.1f}) (Multi-occurrence geometry validation failed)")
+                                
+                        if not valid_matches_for_mark:
+                            best_m = min(filtered_matches, key=lambda x: x.get("min_arc_dist", 999.0))
+                            best_m["has_highlight"] = False
+                            valid_matches_for_mark = [best_m]
+                    else:
+                        # N_rem == 0: Fallback if all matches were room tags
+                        if word_text in sched_marks and matches:
+                            best_m = min(matches, key=lambda x: compute_min_dist_to_door_arc(x["w_cx"], x["w_cy"], drawings_on_page))
+                            best_m["has_highlight"] = False
+                            valid_matches_for_mark = [best_m]
 
                     # STEP 4 Multi-Match Preservation: Deduplicate spatially (within 8pt) but preserve distinct physical door matches
                     final_matches = []
@@ -1769,7 +1874,9 @@ async def cv_detector_node(state: CostmateState) -> dict:
             vlm_res = await classify_door_crop_vlm(crop_path, mark, floor_no, semaphore)
             
             vlm_mode = vlm_res.get("matched_code", "UNKNOWN")
-            opening_mode = vlm_mode if vlm_mode != "UNKNOWN" else programmatic_mode
+            # Programmatic mode (CAD vector swing arcs & schedule facts) is PRIMARY physical signal.
+            # VLM vision guess is only fallback if programmatic mode is UNKNOWN.
+            opening_mode = programmatic_mode if programmatic_mode != "UNKNOWN" else (vlm_mode if vlm_mode != "UNKNOWN" else "SGL")
             
             vlm_wall = vlm_res.get("wall_type", "UNKNOWN")
             

@@ -133,6 +133,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
         "quantity_discrepancies": [],
         "borderline_unlocated_marks": [],
         "int_ext_conflicts": [],
+        "opening_mode_conflicts": [],
         "excluded_scope_items": [],
         "deduplicated_rows": []
     }
@@ -573,13 +574,13 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 elif resolved_mode == "PR" and vlm_mode_cleaned in ["DE", "DA"]:
                     final_opening_mode = "PR"
                 else:
-                    unresolved_queue.append({
-                        "type": "opening_mode_conflict",
+                    reconciliation_audit["opening_mode_conflicts"].append({
                         "mark": mark,
-                        "context": f"Opening Mode Conflict: Schedule suggests '{resolved_mode}' but floor plan crop reads as '{vlm_mode_cleaned}'. (Reasoning: {det.get('vlm_reasoning', 'VLM detection discrepancy')})"
+                        "resolved_mode": resolved_mode,
+                        "vlm_mode": vlm_mode_cleaned,
+                        "resolution": f"Resolved to '{resolved_mode}' by Schedule Facts & CAD Geometry (VLM guess '{vlm_mode_cleaned}' bypassed)."
                     })
-                    obj["needs_review"] = True
-                    # Prioritize schedule-resolved mode over wrong VLM guess for final output
+                    # Prioritize schedule & CAD resolved mode over VLM vision guess for final output (no needs_review flag)
                     final_opening_mode = resolved_mode
             else:
                 final_opening_mode = resolved_mode

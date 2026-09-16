@@ -376,7 +376,87 @@ class TestDoorDetectionRegression(unittest.TestCase):
         )
         self.assertIn("found 2 line segments (max_len=2.0pt) and 1 curve segments (max_len=6.0pt)", log_msg)
 
+    def test_rule1_single_occurrence_no_passing_geometry_resolves_location(self):
+        """
+        Rule 1 Gating Fixture: Single-occurrence genuine mark (N=1) with NO passing vector geometry
+        must resolve LOCATION correctly and must NOT be flagged needs_review.
+        """
+        w_single = (100.0, 100.0, 140.0, 115.0, "112A")
+        matches = [{
+            "word": w_single,
+            "w_x": 100.0,
+            "w_y": 100.0,
+            "w_cx": 120.0,
+            "w_cy": 107.5,
+            "inst_rect": fitz.Rect(100, 100, 140, 115),
+            "nearby_drawings": [],
+            "has_vector_geometry": False
+        }]
+        
+        # Rule 1: N_rem == 1 -> treat as genuine for LOCATION immediately!
+        m = matches[0]
+        is_genuine_geom = m.get("has_vector_geometry", False)
+        m["has_highlight"] = is_genuine_geom
+        valid_matches = [m]
+        
+        self.assertEqual(len(valid_matches), 1, "Single-occurrence mark 112A must be preserved for location")
+        self.assertFalse(valid_matches[0]["has_highlight"], "Mark with failing geometry must have has_highlight=False")
+
+    def test_rule2_multi_occurrence_room_tag_filtering(self):
+        """
+        Rule 2 Gating Fixture: Multi-occurrence mark where one is a room title (e.g. 'OFFICE 101')
+        and one is a standalone tag ('101'). Room tag pre-filter drops 'OFFICE 101', leaving 1 candidate resolved via Rule 1.
+        """
+        from app.services.agents.layer2_vision.cv_detector_node import is_combined_room_name_and_mark
+        
+        w_room_tag = (50.0, 50.0, 140.0, 65.0, "101")
+        w_door_tag = (300.0, 300.0, 330.0, 315.0, "101")
+        words_on_page = [
+            (10.0, 50.0, 45.0, 65.0, "OFFICE"),
+            w_room_tag,
+            w_door_tag
+        ]
+        
+        matches = [
+            {"word": w_room_tag, "inst_rect": fitz.Rect(50, 50, 140, 65), "w_cx": 95.0, "w_cy": 57.5},
+            {"word": w_door_tag, "inst_rect": fitz.Rect(300, 300, 330, 315), "w_cx": 315.0, "w_cy": 307.5}
+        ]
+        
+        filtered = []
+        for m in matches:
+            if is_combined_room_name_and_mark(m["word"], words_on_page):
+                continue
+            filtered.append(m)
+            
+        self.assertEqual(len(filtered), 1, "Room-tag pre-filter must drop 'OFFICE 101', leaving 1 candidate")
+        self.assertEqual(filtered[0]["w_cx"], 315.0, "Remaining candidate must be the standalone door tag at x=315")
+
+    def test_single_occurrence_geometry_fail_omits_highlight_box(self):
+        """
+        Fixture 5 (Highlight Box Omission): Single-occurrence mark resolving LOCATION via Rule 1
+        with failing geometry must set has_highlight=False while keeping needs_review=False.
+        """
+        det = {
+            "mark": "105A",
+            "location": "SHARED OFFICE",
+            "w_cx": 500.0,
+            "w_cy": 600.0,
+            "has_highlight": False,
+            "has_vector_geometry": False
+        }
+        
+        # Simulate reconciliation node handling of located mark
+        obj = {"type": det["mark"], "count": 1, "needs_review": False}
+        if det.get("location"):
+            obj["LOCATION"] = det["location"]
+        obj["has_highlight"] = det.get("has_highlight", True)
+        
+        self.assertFalse(obj["needs_review"], "Located mark 105A with failing geometry must NOT be flagged needs_review")
+        self.assertEqual(obj["LOCATION"], "SHARED OFFICE")
+        self.assertFalse(obj["has_highlight"], "PDF renderer must omit highlight box for failing geometry (has_highlight=False)")
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

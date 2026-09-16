@@ -27,8 +27,8 @@ async def schedule_parser_node(state: CostmateState) -> dict:
     if isinstance(schedule_data, dict):
         schedule_data = schedule_data.get("instance_schedule") or schedule_data.get("data") or []
         
+    unique_rows = []
     if schedule_data and isinstance(schedule_data, list) and len(schedule_data) > 0:
-        unique_rows = []
         seen_marks = set()
         for row in schedule_data:
             if not isinstance(row, dict):

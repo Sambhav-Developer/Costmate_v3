@@ -969,84 +969,92 @@ def _rects_overlap_x(r1, r2, tolerance=30.0):
     return overlap / min_span > 0.5
 
 
-def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
+def classify_opening_from_schedule(item: dict) -> str:
     """
-    Classify a door's opening mode from nearby PDF path drawings and raw schedule facts.
-    - CO:  cased opening / double-leaf (no door leaf in schedule, or 2+ distinct leaf arc groups)
-    - DA:  double-acting / anti-barricade (indicated by schedule type/comments 'F AB'/'Anti-Barricade' or dashed stroke)
-    - SGL: single-leaf (one solid swing arc)
+    Layer 1 Schedule Fact Classifier: Evaluates user-confirmed schedule specs.
+    Returns: 'STOREFRONT', 'PR', 'CO', 'DA', 'SGL', or 'UNKNOWN'
+    """
+    if not item or not isinstance(item, dict):
+        return "UNKNOWN"
+        
+    mat = ""
+    dtype = ""
+    ftype = ""
+    comments = ""
+    w_a = ""
+    w_b = ""
+    p2_type = ""
+    frame_mat = ""
+    for k, v in item.items():
+        kl = str(k).lower().strip()
+        val_str = str(v).strip().upper()
+        if not val_str or val_str in ["-", "N/A", "NONE", "NA"]:
+            continue
 
-    Returns: ("SGL" | "DA" | "CO")
+        if "material" in kl and "door" in kl:
+            mat = val_str
+        elif "material" in kl and "frame" in kl:
+            frame_mat = val_str
+        elif "material" in kl and not mat:
+            mat = val_str
+        elif kl in ["door type", "type", "door panel 1 type", "panel 1 type"]:
+            dtype = val_str
+        elif kl in ["door panel 2 type", "panel 2 type", "panel type 2"]:
+            p2_type = val_str
+        elif "frame type" in kl:
+            ftype = val_str
+        elif kl in ["comments", "remarks", "estimator notes", "description"]:
+            comments = val_str
+        elif any(x in kl for x in ["width 1", "panel 1 width", "door panel 1 width", "leaf 1", "width a", "width_a", "w_a", "wa"]) or (kl == "width"):
+            if not w_a: w_a = val_str
+        elif any(x in kl for x in ["width 2", "panel 2 width", "door panel 2 width", "leaf 2", "width b", "width_b", "w_b", "wb"]):
+            if not w_b: w_b = val_str
+
+    storefront_tokens = ["AL", "ALUM", "ALUMINUM", "GLASS", "GL", "STOREFRONT", "CW", "CURTAINWALL"]
+    if mat in storefront_tokens or frame_mat in storefront_tokens or any(tok in comments for tok in ["STOREFRONT", "AD SYSTEM", "ALUMINUM"]):
+        return "STOREFRONT"
+
+    # Pair Door (PR) Detection:
+    # 1. Both Width 1 & Width 2 are populated
+    # 2. Panel 2 Type is populated
+    # 3. Type or comments contain PAIR, PR, DOUBLE, DBL
+    if (w_a and w_b) or p2_type or any(p in dtype for p in ["PR", "PAIR", "DOUBLE", "DBL"]) or any(p in comments for p in ["PR", "PAIR", "DOUBLE"]):
+        return "PR"
+
+    if mat in ["NONE", "N/A", "CASED OPENING"] and dtype in ["CO", "NONE", "N/A", "CASED OPENING", "CASED"]:
+        return "CO"
+    if dtype in ["CO", "CASED OPENING", "CASED"]:
+        return "CO"
+
+    da_phrases = ["DBL ACT", "DBL-ACT", "DOUBLE ACTING", "DOUBLE-ACTING", "DOUBLE ACT", "DOUBLE-ACT", "ANTI-BARRICADE", "ANTI - BARRICADE"]
+    da_exact_words = {"DA", "AB"}
+    dtype_upper = dtype.upper()
+    comments_upper = comments.upper()
+    dtype_words = {w.strip(".,()[]{}-_#*") for w in dtype_upper.split()}
+    comments_words = {w.strip(".,()[]{}-_#*") for w in comments_upper.split()}
+    if (any(p in dtype_upper for p in da_phrases) or 
+        any(p in comments_upper for p in da_phrases) or 
+        da_exact_words.intersection(dtype_words) or 
+        da_exact_words.intersection(comments_words)):
+        return "DA"
+
+    if w_a:
+        return "SGL"
+
+    return "UNKNOWN"
+
+def classify_opening_from_drawings(drawings_near: list, mark_rect, item: dict = None) -> str:
+    """
+    Layer 2 CAD Vector Geometry Classifier: Analyzes raw PDF vector paths in 65pt radius.
     """
     import fitz as fz
 
     # 1. Rule 1: Check raw schedule facts FIRST.
     if item and isinstance(item, dict):
-        mat = ""
-        dtype = ""
-        ftype = ""
-        comments = ""
-        w_a = ""
-        w_b = ""
-        frame_mat = ""
-        for k, v in item.items():
-            kl = str(k).lower().strip()
-            val_str = str(v).strip().upper()
-            if "material" in kl and "door" in kl:
-                mat = val_str
-            elif "material" in kl and "frame" in kl:
-                frame_mat = val_str
-            elif "material" in kl and not mat:
-                mat = val_str
-            elif kl in ["door type", "type"]:
-                dtype = val_str
-            elif "frame type" in kl:
-                ftype = val_str
-            elif kl in ["comments", "remarks", "estimator notes", "description"]:
-                comments = val_str
-            elif kl in ["width a", "width_a", "w_a", "wa"]:
-                w_a = str(v).strip()
-            elif kl in ["width b", "width_b", "w_b", "wb"]:
-                w_b = str(v).strip()
-
-        # Check for Storefront / Aluminum & Glass Opening
-        storefront_tokens = ["AL", "ALUM", "ALUMINUM", "GLASS", "GL", "STOREFRONT"]
-        if mat in storefront_tokens or frame_mat in storefront_tokens or any(tok in comments for tok in ["STOREFRONT", "AD SYSTEM", "ALUMINUM"]):
-            logger.info(f"CV Drawing Analysis: Schedule indicates Storefront / Aluminum Entry (mat={mat!r}, frame_mat={frame_mat!r}) -> STOREFRONT")
-            return "STOREFRONT"
-
-        # If both Width A and Width B are populated in the schedule, it is a Pair door (PR)
-        if w_a and w_b and w_a not in ["-", ""] and w_b not in ["-", ""]:
-            logger.info(f"CV Drawing Analysis: Schedule indicates both Width A ({w_a!r}) and Width B ({w_b!r}) -> PR")
-            return "PR"
-        # If Width A is populated and Width B is empty/dash, it is a single-leaf door (SGL)
-        if w_a and w_a not in ["-", ""] and (not w_b or w_b in ["-", ""]):
-            logger.info(f"CV Drawing Analysis: Schedule indicates single Width A -> SGL")
-            return "SGL"
-
-        # Check for Cased Opening (CO) in schedule (explicitly stated as Cased Opening or None/NA)
-        if mat in ["NONE", "N/A", "CASED OPENING"] and dtype in ["CO", "NONE", "N/A", "CASED OPENING", "CASED"]:
-            logger.info(f"CV Drawing Analysis: Schedule indicates Cased Opening for mark (mat={mat!r}, type={dtype!r}) -> CO")
-            return "CO"
-        if dtype in ["CO", "CASED OPENING", "CASED"]:
-            logger.info(f"CV Drawing Analysis: Schedule indicates Cased Opening type for mark -> CO")
-            return "CO"
-
-        # Check for Double-Acting (DA) / Anti-Barricade in schedule
-        da_phrases = ["DBL ACT", "DBL-ACT", "DOUBLE ACTING", "DOUBLE-ACTING", "DOUBLE ACT", "DOUBLE-ACT", "ANTI-BARRICADE", "ANTI - BARRICADE"]
-        da_exact_words = {"DA", "AB"}
-        
-        dtype_upper = dtype.upper()
-        comments_upper = comments.upper()
-        dtype_words = {w.strip(".,()[]{}-_#*") for w in dtype_upper.split()}
-        comments_words = {w.strip(".,()[]{}-_#*") for w in comments_upper.split()}
-        
-        if (any(p in dtype_upper for p in da_phrases) or 
-            any(p in comments_upper for p in da_phrases) or 
-            da_exact_words.intersection(dtype_words) or 
-            da_exact_words.intersection(comments_words)):
-            logger.info(f"CV Drawing Analysis: Schedule indicates Anti-Barricade / Double-Acting -> DA")
-            return "DA"
+        l1 = classify_opening_from_schedule(item)
+        if l1 != "UNKNOWN":
+            logger.info(f"CV Drawing Analysis: Schedule indicates opening mode -> {l1}")
+            return l1
 
     mark_cx = (mark_rect.x0 + mark_rect.x1) / 2
     mark_cy = (mark_rect.y0 + mark_rect.y1) / 2
@@ -1089,36 +1097,47 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
                     return "DA"
 
     # 3. Rule 3: Collect arc curves for single vs double leaf counting (tight 65pt radius)
+    # 3. Rule 3: Progressive Multi-Radius Arc Collection (25pt baseline -> 45pt -> 65pt fallback)
+    def collect_arcs_for_radius(r_limit):
+        collected = []
+        poly_arcs = find_polyline_chain_arcs(drawings_near, (mark_cx, mark_cy), radius=r_limit)
+        for arc in poly_arcs:
+            arc_cx, arc_cy = arc["center"]
+            dist = ((arc_cx - mark_cx) ** 2 + (arc_cy - mark_cy) ** 2) ** 0.5
+            if dist <= r_limit:
+                collected.append({"rect": arc["rect"], "cx": arc_cx, "cy": arc_cy, "dist": dist})
+
+        for d in drawings_near:
+            items = d.get("items", [])
+            has_curve = any(it[0] in ("c", "qu") for it in items)
+            if not has_curve:
+                continue
+
+            arc_rect = fz.Rect(d.get("rect"))
+            arc_cx = (arc_rect.x0 + arc_rect.x1) / 2
+            arc_cy = (arc_rect.y0 + arc_rect.y1) / 2
+            dist = ((arc_cx - mark_cx) ** 2 + (arc_cy - mark_cy) ** 2) ** 0.5
+
+            if dist > r_limit:
+                continue
+
+            # Skip tiny mark-label annotation bubble arcs
+            arc_area = arc_rect.width * arc_rect.height
+            if dist < 15 and arc_area < 200:
+                continue
+
+            collected.append({"rect": arc_rect, "cx": arc_cx, "cy": arc_cy, "dist": dist})
+        return collected
+
     arc_paths = []
-
-    # Check polyline-chain arcs first
-    poly_arcs = find_polyline_chain_arcs(drawings_near, (mark_cx, mark_cy), radius=65.0)
-    for arc in poly_arcs:
-        arc_cx, arc_cy = arc["center"]
-        dist = ((arc_cx - mark_cx) ** 2 + (arc_cy - mark_cy) ** 2) ** 0.5
-        if dist <= 50:
-            arc_paths.append({"rect": arc["rect"], "cx": arc_cx, "cy": arc_cy, "dist": dist})
-
-    for d in drawings_near:
-        items = d.get("items", [])
-        has_curve = any(it[0] in ("c", "qu") for it in items)
-        if not has_curve:
-            continue
-
-        arc_rect = fz.Rect(d.get("rect"))
-        arc_cx = (arc_rect.x0 + arc_rect.x1) / 2
-        arc_cy = (arc_rect.y0 + arc_rect.y1) / 2
-        dist = ((arc_cx - mark_cx) ** 2 + (arc_cy - mark_cy) ** 2) ** 0.5
-
-        if dist > 50:
-            continue
-
-        # Skip tiny mark-label annotation bubble arcs
-        arc_area = arc_rect.width * arc_rect.height
-        if dist < 15 and arc_area < 200:
-            continue
-
-        arc_paths.append({"rect": arc_rect, "cx": arc_cx, "cy": arc_cy, "dist": dist})
+    used_radius = 25.0
+    for r_check in [25.0, 45.0, 65.0]:
+        candidate_arcs = collect_arcs_for_radius(r_check)
+        if candidate_arcs:
+            arc_paths = candidate_arcs
+            used_radius = r_check
+            logger.info(f"CV Drawing Analysis: Found {len(arc_paths)} arc curve(s) at tight radius {r_check}pt.")
+            break
 
     if not arc_paths:
         return "SGL"
@@ -1138,7 +1157,7 @@ def classify_opening_from_drawings(drawings_near, mark_rect, item: dict = None):
             groups.append([arc])
 
     distinct_leaves = len(groups)
-    logger.info(f"CV Drawing Analysis: {distinct_leaves} distinct door leaf group(s) -> {'PR' if distinct_leaves >= 2 else 'SGL'}")
+    logger.info(f"CV Drawing Analysis: {distinct_leaves} distinct door leaf group(s) at radius {used_radius}pt -> {'PR' if distinct_leaves >= 2 else 'SGL'}")
 
     if distinct_leaves >= 2:
         return "PR"
@@ -1892,9 +1911,17 @@ async def cv_detector_node(state: CostmateState) -> dict:
             else:
                 int_ext = "Interior"
                 
+            sched_item = sched_items_by_mark.get(mark) or {}
+            l1_mode = classify_opening_from_schedule(sched_item)
+            l2_mode = programmatic_mode
+            l3_mode = vlm_mode
+
             return {
                 "mark": mark,
                 "location": vlm_res.get("location", "Unknown"),
+                "layer1_schedule_mode": l1_mode,
+                "layer2_vector_mode": l2_mode,
+                "layer3_vlm_mode": l3_mode,
                 "opening_mode": opening_mode,
                 "int_ext": int_ext,
                 "dist_to_boundary": dist_to_boundary,

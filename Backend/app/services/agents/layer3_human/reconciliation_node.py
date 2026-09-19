@@ -552,36 +552,39 @@ async def reconciliation_node(state: CostmateState) -> dict:
         if mark_dets:
             det = mark_dets[0]
             vlm_mode = det.get("vlm_opening_mode", "UNKNOWN")
-            vlm_wall = det.get("vlm_wall_type", "UNKNOWN")
+            l1_mode = det.get("layer1_schedule_mode") or resolved_mode
+            l2_mode = det.get("layer2_vector_mode") or "UNKNOWN"
+            l3_mode = det.get("layer3_vlm_mode") or vlm_mode
+
+            # Material & hardware sanity cleanup for Layer 3 VLM prediction
+            l3_cleaned = l3_mode
+            if (l3_mode in ["CO", "REV"]) and (has_hardware or has_material):
+                l3_cleaned = "PR" if has_panel_2 else "SGL"
+            elif l3_mode in ["PR", "PAIR", "DOUBLE", "DBL"] and not has_panel_2 and resolved_mode == "SGL":
+                l3_cleaned = "SGL"
+
+            VISUAL_SPECIALTY_MODES = {"SLD", "PKT", "BIFOLD", "OHD", "REV", "BYPASS", "DA"}
             
+            # 3-Layer Weighted Voting
+            votes = {}
+            if l1_mode and l1_mode != "UNKNOWN":
+                votes[l1_mode] = votes.get(l1_mode, 0.0) + 1.0
+            if l2_mode and l2_mode != "UNKNOWN":
+                votes[l2_mode] = votes.get(l2_mode, 0.0) + 1.0
+            if l3_cleaned and l3_cleaned != "UNKNOWN":
+                votes[l3_cleaned] = votes.get(l3_cleaned, 0.0) + 1.0
+
+            # Layer 3 Visual Specialty Bonus: Give Layer 3 +0.5 bonus weight for legend-matched visual types
+            if l3_mode in VISUAL_SPECIALTY_MODES and l3_cleaned == l3_mode:
+                votes[l3_mode] = votes.get(l3_mode, 0.0) + 0.5
+
             if resolved_mode == "STOREFRONT":
                 final_opening_mode = "STOREFRONT"
-            elif vlm_mode != "UNKNOWN":
-                # Sanity check cased openings (CO) and revolving (REV)
-                is_invalid_co = (vlm_mode == "CO") and (has_hardware or has_material)
-                is_invalid_rev = (vlm_mode == "REV") and (has_hardware or has_material)
-                
-                vlm_mode_cleaned = vlm_mode
-                if is_invalid_co or is_invalid_rev:
-                    vlm_mode_cleaned = "PR" if has_panel_2 else "SGL"
-                    logger.info(f"Reconciliation: Overriding invalid VLM {vlm_mode} for mark {mark} to {vlm_mode_cleaned} (has hardware/material).")
-                elif vlm_mode in ["PR", "PAIR", "DOUBLE", "DBL"] and not has_panel_2 and resolved_mode == "SGL":
-                    vlm_mode_cleaned = "SGL"
-                    logger.info(f"Reconciliation: Overriding VLM {vlm_mode} for mark {mark} to SGL (no Panel 2 in schedule & CAD arc = 1 leaf).")
-
-                if resolved_mode == vlm_mode_cleaned:
-                    final_opening_mode = resolved_mode
-                elif resolved_mode == "PR" and vlm_mode_cleaned in ["DE", "DA"]:
-                    final_opening_mode = "PR"
-                else:
-                    reconciliation_audit["opening_mode_conflicts"].append({
-                        "mark": mark,
-                        "resolved_mode": resolved_mode,
-                        "vlm_mode": vlm_mode_cleaned,
-                        "resolution": f"Resolved to '{resolved_mode}' by Schedule Facts & CAD Geometry (VLM guess '{vlm_mode_cleaned}' bypassed)."
-                    })
-                    # Prioritize schedule & CAD resolved mode over VLM vision guess for final output (no needs_review flag)
-                    final_opening_mode = resolved_mode
+            elif votes:
+                sorted_modes = sorted(votes.items(), key=lambda x: x[1], reverse=True)
+                winner_mode = sorted_modes[0][0]
+                final_opening_mode = winner_mode
+                logger.info(f"Reconciliation 3-Layer Voting for Mark {mark}: L1={l1_mode}, L2={l2_mode}, L3={l3_cleaned} -> WINNER={winner_mode} (votes={votes})")
             else:
                 final_opening_mode = resolved_mode
             
@@ -726,6 +729,18 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 obj["_reconciled_int_ext"] = final_int_ext
                 
             obj["INT/EXT"] = final_int_ext
+
+        if mark_dets:
+            det = mark_dets[0]
+            obj["layer1_schedule_mode"] = det.get("layer1_schedule_mode", "UNKNOWN")
+            obj["layer2_vector_mode"] = det.get("layer2_vector_mode", "UNKNOWN")
+            obj["layer3_vlm_mode"] = det.get("layer3_vlm_mode", "UNKNOWN")
+        else:
+            obj["layer1_schedule_mode"] = "UNKNOWN"
+            obj["layer2_vector_mode"] = "UNKNOWN"
+            obj["layer3_vlm_mode"] = "UNKNOWN"
+
+        obj["final_reconciled_mode"] = obj.get("_reconciled_opening_mode", final_opening_mode)
         
         # Shift detail values if they drifted into the FINISH or FRAME FINISH columns
         for finish_key in ["FINISH", "FRAME FINISH"]:

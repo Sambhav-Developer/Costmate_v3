@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   X, Upload, Check, Loader2, Plus, Building2, 
-  ChevronRight, Layers, LayoutGrid, Hammer, 
+  ChevronRight, ChevronLeft, Layers, LayoutGrid, Hammer, 
   Trash2, CheckCircle2, ChevronDown, ChevronUp, FileText, Settings2, Pickaxe, Maximize2
 } from 'lucide-react';
 import { api } from '../lib/api';
@@ -28,7 +28,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   // --- Interactive Crop States ---
   const [isCropModalOpen, setIsCropModalOpen] = useState(false);
   const [cropFile, setCropFile] = useState<File | null>(null);
-  const [cropType, setCropType] = useState<'door' | 'window'>('door');
+  const [cropType, setCropType] = useState<'door' | 'window' | 'unit_matrix' | 'unit_door_schedule'>('door');
   const [cropRect, setCropRect] = useState<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -49,11 +49,12 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   const [headerMappings, setHeaderMappings] = useState<Record<string, string>>({});
   const [editingRowIndex, setEditingRowIndex] = useState<number | null>(null);
   const [editRowData, setEditRowData] = useState<any | null>(null);
+  const [newColumnInput, setNewColumnInput] = useState('');
 
   // --- Global Settings ---
   const [globalSettings, setGlobalSettings] = useState({
     projectName: 'New Project',
-    buildingType: 'Residential',
+    buildingType: 'Multi-Family',
     basementPresent: 'No',
     numBasements: 1,
     numFloors: 1,
@@ -64,6 +65,8 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     beams: [] as any[],
     
     doorScheduleFileName: '' as string,
+    unitMatrixFileName: '' as string,
+    unitDoorScheduleFileName: '' as string,
     windowScheduleFileName: '' as string,
     specificationFileName: '' as string,
     specificationsText: '' as string,
@@ -342,6 +345,65 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     }
   };
 
+  const handleAddColumn = (colName?: string) => {
+    const keys = Object.keys(headerMappings);
+    let newColKey = (colName || newColumnInput || '').trim();
+    if (!newColKey) {
+      let counter = 1;
+      while (keys.includes(`NEW_COLUMN_${counter}`)) {
+        counter++;
+      }
+      newColKey = `NEW_COLUMN_${counter}`;
+    }
+
+    setHeaderMappings(prev => ({
+      ...prev,
+      [newColKey]: newColKey
+    }));
+
+    setExtractedItems(prev =>
+      prev.map(row => ({
+        ...row,
+        [newColKey]: ''
+      }))
+    );
+
+    setNewColumnInput('');
+  };
+
+  const handleMoveColumn = (targetKey: string, direction: 'up' | 'down') => {
+    const keys = Object.keys(headerMappings);
+    const index = keys.indexOf(targetKey);
+    if (index === -1) return;
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= keys.length) return;
+
+    const newKeys = [...keys];
+    const [movedKey] = newKeys.splice(index, 1);
+    newKeys.splice(targetIndex, 0, movedKey);
+
+    const newMappings: Record<string, string> = {};
+    newKeys.forEach(k => {
+      newMappings[k] = headerMappings[k];
+    });
+    setHeaderMappings(newMappings);
+  };
+
+  const handleDeleteColumn = (targetKey: string) => {
+    setHeaderMappings(prev => {
+      const copy = { ...prev };
+      delete copy[targetKey];
+      return copy;
+    });
+    setExtractedItems(prev =>
+      prev.map(row => {
+        const copy = { ...row };
+        delete copy[targetKey];
+        return copy;
+      })
+    );
+  };
+
   const handleConfirmSchema = () => {
     if (extractedItems.length === 0) return;
 
@@ -349,17 +411,16 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       const newItem: any = { _schedule_type: cropType, needs_review: false };
       let userMarkValue = "";
 
-      Object.keys(item).forEach((oldKey) => {
-        if (oldKey === '_schedule_type' || oldKey === 'needs_review') return;
+      Object.keys(headerMappings).forEach((oldKey) => {
         const newKey = headerMappings[oldKey]?.trim() || oldKey;
-        const val = item[oldKey];
+        const val = item[oldKey] !== undefined ? item[oldKey] : '';
         newItem[newKey] = val;
 
         // Track user edited mark value from mapped columns
         const nkLower = newKey.toLowerCase();
         if (oldKey === 'mark' || nkLower === 'mark' || nkLower === 'door number' || nkLower === 'door no' || nkLower === 'door mark') {
           if (val && String(val).trim()) {
-            userMarkValue = String(val).trim().upper ? String(val).trim().toUpperCase() : String(val).trim();
+            userMarkValue = String(val).trim().toUpperCase();
           }
         }
       });
@@ -371,31 +432,55 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       return newItem;
     });
 
-
     setGlobalSettings(prev => {
       const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-      const scheduleNameField = cropType === 'door' ? ('doorScheduleFileName' as const) : ('windowScheduleFileName' as const);
-      
-      let prevNames: string[] = [];
-      if (prev[scheduleNameField]) {
-        prevNames = prev[scheduleNameField].split(", ");
-      }
-      if (!prevNames.includes(cropFile!.name)) {
-        prevNames.push(cropFile!.name);
-      }
 
-      return {
-        ...prev,
-        [scheduleNameField]: prevNames.join(", "),
-        scheduleRegistry: {
-          ...oldReg,
-          type_registry: {
-            doors: [...(oldReg.type_registry?.doors || [])],
-            windows: [...(oldReg.type_registry?.windows || [])]
-          },
-          instance_schedule: [...(oldReg.instance_schedule || []), ...mapped]
+      if (cropType === 'unit_matrix') {
+        let prevNames: string[] = prev.unitMatrixFileName ? prev.unitMatrixFileName.split(", ") : [];
+        if (cropFile && !prevNames.includes(cropFile.name)) {
+          prevNames.push(cropFile.name);
         }
-      };
+        return {
+          ...prev,
+          unitMatrixFileName: prevNames.join(", "),
+          unitMatrix: mapped,
+          unitMixMatrix: mapped
+        };
+      } else if (cropType === 'unit_door_schedule') {
+        let prevNames: string[] = prev.unitDoorScheduleFileName ? prev.unitDoorScheduleFileName.split(", ") : [];
+        if (cropFile && !prevNames.includes(cropFile.name)) {
+          prevNames.push(cropFile.name);
+        }
+        return {
+          ...prev,
+          unitDoorScheduleFileName: prevNames.join(", "),
+          unitDoorSchedule: mapped,
+          unitDoorScheduleData: mapped
+        };
+      } else {
+        const scheduleNameField = cropType === 'door' ? ('doorScheduleFileName' as const) : ('windowScheduleFileName' as const);
+        
+        let prevNames: string[] = [];
+        if (prev[scheduleNameField]) {
+          prevNames = prev[scheduleNameField].split(", ");
+        }
+        if (cropFile && !prevNames.includes(cropFile.name)) {
+          prevNames.push(cropFile.name);
+        }
+
+        return {
+          ...prev,
+          [scheduleNameField]: prevNames.join(", "),
+          scheduleRegistry: {
+            ...oldReg,
+            type_registry: {
+              doors: [...(oldReg.type_registry?.doors || [])],
+              windows: [...(oldReg.type_registry?.windows || [])]
+            },
+            instance_schedule: [...(oldReg.instance_schedule || []), ...mapped]
+          }
+        };
+      }
     });
 
     // Reset native input values to allow uploading the same file again
@@ -403,6 +488,10 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     if (doorEl) doorEl.value = '';
     const winEl = document.getElementById('window-schedule-upload') as HTMLInputElement;
     if (winEl) winEl.value = '';
+    const umEl = document.getElementById('unit-matrix-upload') as HTMLInputElement;
+    if (umEl) umEl.value = '';
+    const udsEl = document.getElementById('unit-door-schedule-upload') as HTMLInputElement;
+    if (udsEl) udsEl.value = '';
 
     // Reset crop modal states
     setIsCropModalOpen(false);
@@ -795,7 +884,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       {renderInput("Project Name", globalSettings.projectName, v => setGlobalSettings({...globalSettings, projectName: v}), "e.g. Skyline Towers")}
                     </div>
                     <div className={`grid grid-cols-3 gap-4`}>
-                      {renderSelect("Building Type", globalSettings.buildingType, v => setGlobalSettings({...globalSettings, buildingType: v}), ['Residential', 'Commercial', 'Apartment', 'Industrial', 'Other'])}
+                      {renderSelect("Building Type", globalSettings.buildingType, v => setGlobalSettings({...globalSettings, buildingType: v}), ['Multi-Family', 'Non Multi-Family'])}
                       {renderSelect("Basement Present", globalSettings.basementPresent, v => setGlobalSettings({...globalSettings, basementPresent: v}), ['No', 'Yes'])}
                       {globalSettings.basementPresent === 'Yes' && (
                         renderInput("Number of Basements", globalSettings.numBasements.toString(), v => setGlobalSettings({...globalSettings, numBasements: parseInt(v) || 0}), "e.g. 2")
@@ -863,6 +952,115 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         </div>
                       )}
                     </div>
+
+                    {/* Multi-Family Specific Schedules: Unit Matrix & Unit Door Schedule */}
+                    {globalSettings.buildingType === 'Multi-Family' && (
+                      <>
+                        {/* Unit Matrix Upload */}
+                        <div className="flex items-center gap-4">
+                          <button 
+                            type="button"
+                            onClick={() => document.getElementById('unit-matrix-upload')?.click()}
+                            disabled={loading}
+                            className="px-4 py-2 rounded-lg bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/30 flex items-center gap-2 text-sm font-medium text-violet-300 transition-colors w-52 disabled:opacity-50"
+                          >
+                            <Upload className="w-4 h-4 text-violet-400" />
+                            Upload Unit Matrix
+                          </button>
+                          <input 
+                            id="unit-matrix-upload"
+                            type="file" 
+                            multiple
+                            className="hidden" 
+                            onChange={async (e) => {
+                              setError(null);
+                              const files = e.target.files;
+                              if (!files || files.length === 0) return;
+                              
+                              const file = files[0];
+                              if (!file.name.toLowerCase().endsWith(".pdf")) {
+                                setError("⚠️ Only PDF files are supported for table crop selection.");
+                                return;
+                              }
+                              
+                              setLoading(true);
+                              try {
+                                let sid = draftSessionId;
+                                if (!sid) {
+                                  const data = await api.createDraftSession(globalSettings.projectName);
+                                  sid = data.session_id;
+                                  setDraftSessionId(sid);
+                                }
+                                setCropFile(file);
+                                setCropType('unit_matrix');
+                                setIsCropModalOpen(true);
+                              } catch (err: any) {
+                                setError('⚠️ Failed to initialize session: ' + (err.message || err));
+                              } finally {
+                                setLoading(false);
+                              }
+                            }} 
+                          />
+                          {globalSettings.unitMatrixFileName && (
+                            <div className="text-sm text-emerald-400 flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20 truncate max-w-xs">
+                              <CheckCircle2 className="w-4 h-4 shrink-0" /> <span className="truncate">{globalSettings.unitMatrixFileName}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Unit Door Schedule Upload */}
+                        <div className="flex items-center gap-4">
+                          <button 
+                            type="button"
+                            onClick={() => document.getElementById('unit-door-schedule-upload')?.click()}
+                            disabled={loading}
+                            className="px-4 py-2 rounded-lg bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/30 flex items-center gap-2 text-sm font-medium text-violet-300 transition-colors w-52 disabled:opacity-50"
+                          >
+                            <Upload className="w-4 h-4 text-violet-400" />
+                            Upload Unit Door Schedule
+                          </button>
+                          <input 
+                            id="unit-door-schedule-upload"
+                            type="file" 
+                            multiple
+                            className="hidden" 
+                            onChange={async (e) => {
+                              setError(null);
+                              const files = e.target.files;
+                              if (!files || files.length === 0) return;
+                              
+                              const file = files[0];
+                              if (!file.name.toLowerCase().endsWith(".pdf")) {
+                                setError("⚠️ Only PDF files are supported for table crop selection.");
+                                return;
+                              }
+                              
+                              setLoading(true);
+                              try {
+                                let sid = draftSessionId;
+                                if (!sid) {
+                                  const data = await api.createDraftSession(globalSettings.projectName);
+                                  sid = data.session_id;
+                                  setDraftSessionId(sid);
+                                }
+                                setCropFile(file);
+                                setCropType('unit_door_schedule');
+                                setIsCropModalOpen(true);
+                              } catch (err: any) {
+                                setError('⚠️ Failed to initialize session: ' + (err.message || err));
+                              } finally {
+                                setLoading(false);
+                              }
+                            }} 
+                          />
+                          {globalSettings.unitDoorScheduleFileName && (
+                            <div className="text-sm text-emerald-400 flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20 truncate max-w-xs">
+                              <CheckCircle2 className="w-4 h-4 shrink-0" /> <span className="truncate">{globalSettings.unitDoorScheduleFileName}</span>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
 
                     {/* Window Schedule */}
                     <div className="flex items-center gap-4">
@@ -970,7 +1168,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                     Upload schedules and specifications here. The system will ingest schedules and align estimations with your project specifications.
                   </p>
                   
-                  {/* Schedule Preview */}
+                  {/* Schedule Previews */}
                   {globalSettings.scheduleRegistry && (
                     <div className="mt-4 p-4 border border-white/10 rounded-lg bg-black overflow-auto max-h-64 custom-scrollbar">
                       <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
@@ -978,6 +1176,30 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       </h4>
                       <pre className="text-xs text-zinc-400 whitespace-pre-wrap select-text" draggable="false" style={{ userSelect: 'text', WebkitUserDrag: 'none' } as any}>
                         {JSON.stringify(globalSettings.scheduleRegistry, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+
+                  {/* Unit Matrix Preview */}
+                  {(globalSettings.unitMatrix || globalSettings.unitMixMatrix) && (
+                    <div className="mt-4 p-4 border border-violet-500/20 rounded-lg bg-black overflow-auto max-h-64 custom-scrollbar">
+                      <h4 className="text-sm font-bold text-violet-400 mb-2 flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-violet-400" /> Parsed Unit Matrix Data (Preview)
+                      </h4>
+                      <pre className="text-xs text-zinc-300 whitespace-pre-wrap select-text" draggable="false" style={{ userSelect: 'text', WebkitUserDrag: 'none' } as any}>
+                        {JSON.stringify(globalSettings.unitMatrix || globalSettings.unitMixMatrix, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+
+                  {/* Unit Door Schedule Preview */}
+                  {(globalSettings.unitDoorSchedule || globalSettings.unitDoorScheduleData) && (
+                    <div className="mt-4 p-4 border border-violet-500/20 rounded-lg bg-black overflow-auto max-h-64 custom-scrollbar">
+                      <h4 className="text-sm font-bold text-violet-400 mb-2 flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-violet-400" /> Parsed Unit Door Schedule Data (Preview)
+                      </h4>
+                      <pre className="text-xs text-zinc-300 whitespace-pre-wrap select-text" draggable="false" style={{ userSelect: 'text', WebkitUserDrag: 'none' } as any}>
+                        {JSON.stringify(globalSettings.unitDoorSchedule || globalSettings.unitDoorScheduleData, null, 2)}
                       </pre>
                     </div>
                   )}
@@ -1070,6 +1292,20 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                           </div>
                         )}
                       </div>
+                      {/* Enlarged Plan Toggle */}
+                      <label className="flex items-center gap-2 cursor-pointer bg-[#18181b] border border-white/10 px-3 py-2 rounded-xl text-xs font-semibold text-zinc-300 hover:border-violet-500/50 transition-all">
+                        <input 
+                          type="checkbox"
+                          checked={!!activeFloor.isEnlarged}
+                          onChange={(e) => {
+                            const nf = [...floors];
+                            nf[activeFloorIndex].isEnlarged = e.target.checked;
+                            setFloors(nf);
+                          }}
+                          className="accent-violet-500 w-4 h-4 rounded cursor-pointer"
+                        />
+                        <span>Enlarged Typical Unit Plan (Stage 1 Matrix)</span>
+                      </label>
                       <div className="h-[280px] bg-[#18181b] border-2 border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
                         <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.png,.jpg" className="hidden" />
                         {uploadingFloorId === activeFloor.id ? (
@@ -1645,18 +1881,74 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
               <div className="flex-1 flex overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                 {/* Left Form: Mappings Editor */}
                 <div className="w-[380px] shrink-0 border-r border-white/10 bg-[#0d0d0f] flex flex-col overflow-hidden">
-                  <div className="p-5 border-b border-white/5 shrink-0">
-                    <h3 className="text-sm font-bold text-white mb-1">Column Schema Editor</h3>
-                    <p className="text-xs text-zinc-500">Provide clean, descriptive names for the detected columns.</p>
+                  <div className="p-5 border-b border-white/5 shrink-0 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-sm font-bold text-white mb-0.5">Column Schema Editor</h3>
+                        <p className="text-xs text-zinc-500">Define column names, add fields & arrange sequence.</p>
+                      </div>
+                    </div>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        handleAddColumn();
+                      }}
+                      className="flex items-center gap-1.5"
+                    >
+                      <input
+                        type="text"
+                        value={newColumnInput}
+                        onChange={(e) => setNewColumnInput(e.target.value)}
+                        placeholder="New column name..."
+                        className="flex-1 bg-[#18181b] border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/50 transition-all"
+                      />
+                      <button
+                        type="submit"
+                        className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold flex items-center gap-1 shrink-0 transition-colors shadow-lg shadow-violet-600/20"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add</span>
+                      </button>
+                    </form>
                   </div>
                   <div className="flex-1 overflow-y-auto p-5 space-y-4 custom-scrollbar">
-                    {Object.keys(headerMappings).map((oldKey) => {
+                    {Object.keys(headerMappings).map((oldKey, idx, keysArr) => {
                       const sampleVal = extractedItems.find(item => item[oldKey])?.[oldKey] || '';
+                      const isFirst = idx === 0;
+                      const isLast = idx === keysArr.length - 1;
                       return (
-                        <div key={oldKey} className="flex flex-col gap-1.5 p-3 rounded-xl bg-white/5 border border-white/10 hover:border-white/15 transition-all">
+                        <div key={oldKey} className="flex flex-col gap-1.5 p-3 rounded-xl bg-white/5 border border-white/10 hover:border-white/15 transition-all group/card">
                           <div className="flex justify-between items-center text-[9px] font-black text-zinc-500 uppercase tracking-widest">
                             <span>Detected Label</span>
-                            <span className="text-zinc-400 max-w-[150px] truncate bg-white/5 px-1.5 py-0.5 rounded font-medium">Sample: "{sampleVal}"</span>
+                            <div className="flex items-center gap-1">
+                              <span className="text-zinc-400 max-w-[90px] truncate bg-white/5 px-1.5 py-0.5 rounded font-medium mr-1">Sample: "{sampleVal}"</span>
+                              <button
+                                type="button"
+                                disabled={isFirst}
+                                onClick={() => handleMoveColumn(oldKey, 'up')}
+                                className="p-1 rounded hover:bg-white/10 text-zinc-400 disabled:opacity-20 transition-all"
+                                title="Move Up (Left in table)"
+                              >
+                                <ChevronUp className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isLast}
+                                onClick={() => handleMoveColumn(oldKey, 'down')}
+                                className="p-1 rounded hover:bg-white/10 text-zinc-400 disabled:opacity-20 transition-all"
+                                title="Move Down (Right in table)"
+                              >
+                                <ChevronDown className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteColumn(oldKey)}
+                                className="p-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 opacity-0 group-hover/card:opacity-100 transition-all ml-1"
+                                title="Delete Column"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
                           </div>
                           <div className="text-xs text-zinc-300 font-bold truncate bg-black/45 px-2.5 py-1.5 rounded border border-white/5 select-all font-mono">
                             {oldKey}
@@ -1681,6 +1973,14 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       <h3 className="text-sm font-bold text-white mb-1">Data Schema Live Preview</h3>
                       <p className="text-xs text-zinc-500">Table rows updated instantly with your renamed column keys.</p>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => handleAddColumn()}
+                      className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-semibold flex items-center gap-1.5 border border-white/10 transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-violet-400" />
+                      <span>Add Column</span>
+                    </button>
                   </div>
                   <div className="flex-1 overflow-auto p-6 custom-scrollbar">
                     <div className="min-w-full inline-block align-middle">
@@ -1688,11 +1988,43 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         <table className="min-w-full divide-y divide-white/5">
                           <thead className="bg-[#121214]">
                             <tr>
-                              {Object.keys(headerMappings).map((oldKey) => {
+                              {Object.keys(headerMappings).map((oldKey, idx, keysArr) => {
                                 const newKey = headerMappings[oldKey] || oldKey;
+                                const isFirst = idx === 0;
+                                const isLast = idx === keysArr.length - 1;
                                 return (
-                                  <th key={oldKey} className="px-4 py-3.5 text-left text-xs font-bold text-zinc-300 uppercase tracking-wider whitespace-nowrap border-r border-white/5 last:border-r-0">
-                                    {newKey}
+                                  <th key={oldKey} className="px-4 py-3.5 text-left text-xs font-bold text-zinc-300 uppercase tracking-wider whitespace-nowrap border-r border-white/5 last:border-r-0 group/th">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span>{newKey}</span>
+                                      <div className="flex items-center gap-0.5 opacity-0 group-hover/th:opacity-100 transition-opacity">
+                                        <button
+                                          type="button"
+                                          disabled={isFirst}
+                                          onClick={() => handleMoveColumn(oldKey, 'up')}
+                                          className="p-1 rounded hover:bg-white/10 text-zinc-400 disabled:opacity-20 transition-all"
+                                          title="Move Left"
+                                        >
+                                          <ChevronLeft className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={isLast}
+                                          onClick={() => handleMoveColumn(oldKey, 'down')}
+                                          className="p-1 rounded hover:bg-white/10 text-zinc-400 disabled:opacity-20 transition-all"
+                                          title="Move Right"
+                                        >
+                                          <ChevronRight className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleDeleteColumn(oldKey)}
+                                          className="p-1 rounded hover:bg-red-500/20 text-red-400 transition-all ml-1"
+                                          title="Delete Column"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    </div>
                                   </th>
                                 );
                               })}

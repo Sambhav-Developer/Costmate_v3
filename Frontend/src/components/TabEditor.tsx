@@ -56,10 +56,8 @@ function ProcessingScreen({ step, pct }: { step: string; pct: number }) {
   };
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-8 select-none"
-      style={{ background: 'var(--background)' }}>
-      <div className="w-full max-w-sm rounded-2xl shadow-xl p-8 flex flex-col gap-6 items-center animate-fade-in"
-        style={{ background: 'var(--panel)', border: '1px solid var(--panel-border)' }}>
+    <div className="flex-1 flex flex-col items-center justify-center p-8 select-none bg-transparent">
+      <div className="w-full max-w-sm glass-panel p-10 flex flex-col gap-6 items-center animate-fade-in shadow-2xl">
         <div className="relative w-16 h-16">
           <div className="w-16 h-16 rounded-2xl flex items-center justify-center bg-gradient-accent text-white" style={{ opacity: 0.8 }}>
             <Building2 className="w-7 h-7" />
@@ -163,8 +161,8 @@ function DrawingTab({ sessionState }: { sessionState: any }) {
 
   if (pages.length > 0) {
     return (
-      <div className="flex flex-col gap-6 rounded-2xl p-6 shadow-sm"
-        style={{ background: 'var(--panel)', border: '1px solid var(--panel-border)', minHeight: 500 }}>
+      <div className="flex flex-col gap-6 glass-panel p-8 shadow-sm"
+        style={{ minHeight: 500 }}>
         {pages.map((path: string, i: number) => (
           <div key={i} className="flex flex-col gap-3">
             <div className="flex items-center justify-between">
@@ -195,8 +193,7 @@ function DrawingTab({ sessionState }: { sessionState: any }) {
   }
   if (singlePath) {
     return (
-      <div className="flex flex-col gap-3 rounded-2xl p-6 shadow-sm"
-        style={{ background: 'var(--panel)', border: '1px solid var(--panel-border)' }}>
+      <div className="flex flex-col gap-3 glass-panel p-8 shadow-sm">
         <div className="flex justify-end">
           <a href={imgUrl(singlePath)} target="_blank" rel="noopener noreferrer"
             className="text-xs font-bold flex items-center gap-1 cursor-pointer hover:underline text-gradient-accent">
@@ -420,9 +417,8 @@ export default function TabEditor({
 
   if (!sessionId) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center select-none"
-        style={{ background: 'var(--background)' }}>
-        <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-5 bg-gradient-accent bg-opacity-10 text-white">
+      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center select-none bg-transparent">
+        <div className="w-16 h-16 rounded-3xl flex items-center justify-center mb-5 bg-gradient-accent bg-opacity-10 text-white shadow-sm">
           <Layers className="w-8 h-8" />
         </div>
         <h3 className="text-lg font-bold" style={{ color: 'var(--foreground)' }}>No drawing selected</h3>
@@ -441,9 +437,8 @@ export default function TabEditor({
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden font-sans" style={{ background: 'var(--background)' }}>
-      <div className="h-14 border-b flex items-center px-5 justify-between shrink-0 shadow-sm select-none"
-        style={{ borderColor: 'var(--panel-border)', background: 'var(--panel)' }}>
+    <div className="flex-1 flex flex-col overflow-hidden font-sans bg-transparent">
+      <div className="h-16 flex items-center px-6 justify-between shrink-0 glass-header select-none">
         <span className="font-bold text-sm truncate max-w-[200px]" style={{ color: 'var(--foreground)' }}
           title={getFilename()}>
           {getFilename()}
@@ -470,18 +465,18 @@ export default function TabEditor({
               </div>
             )}
 
-            <div className="flex flex-col gap-6 bg-panel border-panel-border border rounded-2xl p-6 shadow-sm">
+            <div className="flex flex-col gap-6 glass-panel p-8 shadow-sm">
               <h2 className="text-lg font-bold text-foreground">Project Details</h2>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="flex flex-col gap-1.5">
+              <div className="grid grid-cols-2 gap-5">
+                <div className="flex flex-col gap-2">
                   <label className="text-xs font-bold text-muted uppercase tracking-wider">Project Name</label>
                   <input type="text" value={qaForm.project_name || ''} onChange={e => updateField('project_name', e.target.value)} disabled={!isQAStage}
-                    className="border rounded-xl px-3 py-2 text-sm bg-background border-panel-border text-foreground" />
+                    className="border rounded-2xl px-4 py-3 text-sm bg-background border-panel-border text-foreground transition-all focus:ring-2 focus:ring-[#e05a33]/20" />
                 </div>
-                <div className="flex flex-col gap-1.5">
+                <div className="flex flex-col gap-2">
                   <label className="text-xs font-bold text-muted uppercase tracking-wider">Sub Work Name</label>
                   <input type="text" value={qaForm.sub_work_name || ''} onChange={e => updateField('sub_work_name', e.target.value)} disabled={!isQAStage}
-                    className="border rounded-xl px-3 py-2 text-sm bg-background border-panel-border text-foreground" />
+                    className="border rounded-2xl px-4 py-3 text-sm bg-background border-panel-border text-foreground transition-all focus:ring-2 focus:ring-[#e05a33]/20" />
                 </div>
               </div>
 
@@ -515,7 +510,7 @@ export default function TabEditor({
 
             {isQAStage ? (
               <button type="submit" disabled={submittingQA}
-                className="btn-accent font-bold py-3 px-8 rounded-xl text-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 self-end">
+                className="btn-accent font-bold py-3.5 px-8 rounded-full text-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 self-end shadow-lg shadow-[#e05a33]/20">
                 <Play className="w-4 h-4" />
                 {submittingQA ? 'Processing Quantities…' : sessionState?.status === 'completed' ? 'Recalculate Estimate' : 'Verify & Run Estimate'}
               </button>

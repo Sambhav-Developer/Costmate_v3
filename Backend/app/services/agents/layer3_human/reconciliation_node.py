@@ -385,7 +385,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
             
             # 1. Door Material mapping (door panel, panel 1, door material, mat'l, etc.)
             is_dm = False
-            if any(x in kl for x in ["door material", "door mat'l", "door matl", "dr mat", "dr mat'l", "dr matl"]):
+            if any(x in kl for x in ["door material", "door mat'l", "door matl", "dr mat", "dr mat'l", "dr matl", "door mat", "leaf material", "panel material"]):
                 is_dm = True
             elif any(x in kl for x in ["panel 1", "door panel", "panel type"]) and "frame" not in kl:
                 is_dm = True
@@ -608,9 +608,9 @@ async def reconciliation_node(state: CostmateState) -> dict:
             # Material & hardware sanity cleanup for Layer 3 VLM prediction
             l3_cleaned = l3_mode
             if (l3_mode in ["CO", "REV"]) and (has_hardware or has_material):
-                l3_cleaned = "PR" if has_panel_2 else "SGL"
-            elif l3_mode in ["PR", "PAIR", "DOUBLE", "DBL"] and not has_panel_2 and resolved_mode == "SGL":
-                l3_cleaned = "SGL"
+                l3_cleaned = "PR" if has_panel_2 else (resolved_mode if resolved_mode in ["SLD", "PKT", "BIFOLD", "BYPASS"] else "SGL")
+            elif l3_mode in ["PR", "PAIR", "DOUBLE", "DBL"] and not has_panel_2 and resolved_mode in ["SGL", "SLD", "PKT", "BIFOLD", "BYPASS"]:
+                l3_cleaned = resolved_mode
 
             VISUAL_SPECIALTY_MODES = {"SLD", "PKT", "BIFOLD", "OHD", "REV", "BYPASS", "DA"}
             

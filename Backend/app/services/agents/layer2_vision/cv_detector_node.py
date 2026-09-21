@@ -951,6 +951,20 @@ def normalize_opening_mode(val: str) -> str:
         return "PR"
     if val_clean in ["CO", "DOUBLE-LEAF", "DOUBLE LEAF", "TWO-LEAF", "TWO LEAF", "2", "CASED", "CASED OPENING"]:
         return "CO"
+    if val_clean in ["SLD", "BARN", "BARN DOOR", "BARN-DOOR", "SLIDING", "SLIDING DOOR", "SURFACE SLIDING"]:
+        return "SLD"
+    if val_clean in ["PKT", "POCKET", "POCKET DOOR", "POCKET-DOOR"]:
+        return "PKT"
+    if val_clean in ["BIFOLD", "BI-FOLD"]:
+        return "BIFOLD"
+    if val_clean in ["BYPASS", "BY-PASS"]:
+        return "BYPASS"
+    if val_clean in ["OHD", "OVERHEAD"]:
+        return "OHD"
+    if val_clean in ["REV", "REVOLVING"]:
+        return "REV"
+    if val_clean in ["STOREFRONT", "SF", "CW", "CURTAINWALL"]:
+        return "STOREFRONT"
     if val_clean in ["ELEV", "ELEVATOR"]:
         return "ELEV"
     if val_clean in ["FIXED", "CASEMENT"]:
@@ -972,7 +986,7 @@ def _rects_overlap_x(r1, r2, tolerance=30.0):
 def classify_opening_from_schedule(item: dict) -> str:
     """
     Layer 1 Schedule Fact Classifier: Evaluates user-confirmed schedule specs.
-    Returns: 'STOREFRONT', 'PR', 'CO', 'DA', 'SGL', or 'UNKNOWN'
+    Returns: 'STOREFRONT', 'PR', 'CO', 'DA', 'SLD', 'PKT', 'BIFOLD', 'BYPASS', 'SGL', or 'UNKNOWN'
     """
     if not item or not isinstance(item, dict):
         return "UNKNOWN"
@@ -991,54 +1005,33 @@ def classify_opening_from_schedule(item: dict) -> str:
         if not val_str or val_str in ["-", "N/A", "NONE", "NA"]:
             continue
 
-        if "material" in kl and "door" in kl:
+        if any(x in kl for x in ["door material", "door mat'l", "door matl", "dr mat", "door mat", "panel material", "leaf material"]):
             mat = val_str
-        elif "material" in kl and "frame" in kl:
+        elif any(x in kl for x in ["frame material", "frame mat'l", "frame matl", "fr mat", "frame mat"]):
             frame_mat = val_str
-        elif "material" in kl and not mat:
+        elif "material" in kl and not mat and "frame" not in kl and "window" not in kl:
             mat = val_str
-        elif kl in ["door type", "type", "door panel 1 type", "panel 1 type"]:
+        elif kl in ["door type", "type", "door panel 1 type", "panel 1 type", "dr type"]:
             dtype = val_str
         elif kl in ["door panel 2 type", "panel 2 type", "panel type 2"]:
             p2_type = val_str
         elif "frame type" in kl:
             ftype = val_str
-        elif kl in ["comments", "remarks", "estimator notes", "description"]:
+        elif any(ck in kl for ck in ["comments", "remarks", "estimator notes", "description"]):
             comments = val_str
         elif any(x in kl for x in ["width 1", "panel 1 width", "door panel 1 width", "leaf 1", "width a", "width_a", "w_a", "wa"]) or (kl == "width"):
             if not w_a: w_a = val_str
         elif any(x in kl for x in ["width 2", "panel 2 width", "door panel 2 width", "leaf 2", "width b", "width_b", "w_b", "wb"]):
             if not w_b: w_b = val_str
 
-    storefront_tokens = ["AL", "ALUM", "ALUMINUM", "GLASS", "GL", "STOREFRONT", "CW", "CURTAINWALL"]
-    if mat in storefront_tokens or frame_mat in storefront_tokens or any(tok in comments for tok in ["STOREFRONT", "AD SYSTEM", "ALUMINUM"]):
-        return "STOREFRONT"
-
-    # Pair Door (PR) Detection:
-    # 1. Both Width 1 & Width 2 are populated
-    # 2. Panel 2 Type is populated
-    # 3. Type or comments contain PAIR, PR, DOUBLE, DBL
-    if (w_a and w_b) or p2_type or any(p in dtype for p in ["PR", "PAIR", "DOUBLE", "DBL"]) or any(p in comments for p in ["PR", "PAIR", "DOUBLE"]):
-        return "PR"
-
-    if mat in ["NONE", "N/A", "CASED OPENING"] and dtype in ["CO", "NONE", "N/A", "CASED OPENING", "CASED"]:
-        return "CO"
-    if dtype in ["CO", "CASED OPENING", "CASED"]:
-        return "CO"
-
-    da_phrases = ["DBL ACT", "DBL-ACT", "DOUBLE ACTING", "DOUBLE-ACTING", "DOUBLE ACT", "DOUBLE-ACT", "ANTI-BARRICADE", "ANTI - BARRICADE"]
-    da_exact_words = {"DA", "AB"}
     dtype_upper = dtype.upper()
     comments_upper = comments.upper()
+    mat_upper = mat.upper()
+    frame_mat_upper = frame_mat.upper()
     dtype_words = {w.strip(".,()[]{}-_#*") for w in dtype_upper.split()}
     comments_words = {w.strip(".,()[]{}-_#*") for w in comments_upper.split()}
-    if (any(p in dtype_upper for p in da_phrases) or 
-        any(p in comments_upper for p in da_phrases) or 
-        da_exact_words.intersection(dtype_words) or 
-        da_exact_words.intersection(comments_words)):
-        return "DA"
 
-    # Barn / Sliding Door check
+    # Barn / Sliding Door check (Highest Specialty Priority)
     sld_phrases = ["BARN DOOR", "BARN-DOOR", "BARN", "SURFACE SLIDING", "SURFACE-SLIDING", "SLIDING DOOR", "SLIDING-DOOR", "SLIDING", "TOP HUNG SLIDING", "TOP-HUNG SLIDING", "BARN HARDWARE", "TRACK HARDWARE", "SLIDING TRACK"]
     sld_exact_words = {"SLD", "BARN", "SLIDING"}
     if (any(p in dtype_upper for p in sld_phrases) or 
@@ -1073,6 +1066,35 @@ def classify_opening_from_schedule(item: dict) -> str:
         bypass_exact_words.intersection(dtype_words) or 
         bypass_exact_words.intersection(comments_words)):
         return "BYPASS"
+
+    # Double Acting Door check
+    da_phrases = ["DBL ACT", "DBL-ACT", "DOUBLE ACTING", "DOUBLE-ACTING", "DOUBLE ACT", "DOUBLE-ACT", "ANTI-BARRICADE", "ANTI - BARRICADE"]
+    da_exact_words = {"DA", "AB"}
+    if (any(p in dtype_upper for p in da_phrases) or 
+        any(p in comments_upper for p in da_phrases) or 
+        da_exact_words.intersection(dtype_words) or 
+        da_exact_words.intersection(comments_words)):
+        return "DA"
+
+    # Pair Door (PR) Detection:
+    if (w_a and w_b) or p2_type or any(p in dtype_upper for p in ["PR", "PAIR", "DOUBLE", "DBL"]) or any(p in comments_upper for p in ["PR", "PAIR", "DOUBLE"]):
+        return "PR"
+
+    # Cased Opening check
+    if mat_upper in ["NONE", "N/A", "CASED OPENING"] and dtype_upper in ["CO", "NONE", "N/A", "CASED OPENING", "CASED"]:
+        return "CO"
+    if dtype_upper in ["CO", "CASED OPENING", "CASED"]:
+        return "CO"
+
+    # Genuine Storefront Check:
+    # Wood (WD/SCWD) or Hollow Metal (HM/STEEL) leaves in ALUM frames are Wood/HM doors, NOT Storefront.
+    is_wood_hm_leaf = any(w in mat_upper for w in ["WD", "WOOD", "SCWD", "HM", "STEEL", "FG", "FIBERGLASS"])
+    is_explicit_sf_system = any(tok in comments_upper for tok in ["STOREFRONT", "AD SYSTEM", "CURTAINWALL"]) or any(tok in dtype_upper for tok in ["STOREFRONT", "SF", "CW"])
+    
+    if not is_wood_hm_leaf or is_explicit_sf_system:
+        storefront_tokens = ["STOREFRONT", "CW", "CURTAINWALL"]
+        if mat_upper in storefront_tokens or any(tok in comments_upper for tok in ["STOREFRONT", "AD SYSTEM"]):
+            return "STOREFRONT"
 
     if w_a:
         return "SGL"

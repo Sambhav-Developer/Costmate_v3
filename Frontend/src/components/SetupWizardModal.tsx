@@ -1913,7 +1913,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-border bg-transparent">
-                            {extractedItems.slice(0, 10).map((item, idx) => {
+                            {extractedItems.map((item, idx) => {
                               const isEditing = editingRowIndex === idx;
                               return (
                                 <tr 
@@ -2021,11 +2021,9 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                           </tbody>
                         </table>
                       </div>
-                      {extractedItems.length > 10 && (
-                        <div className="text-center text-muted text-[10px] font-semibold mt-3 uppercase tracking-wider">
-                          Showing first 10 of {extractedItems.length} rows
-                        </div>
-                      )}
+                      <div className="text-center text-muted text-[10px] font-semibold mt-3 uppercase tracking-wider">
+                        Showing all {extractedItems.length} extracted rows (scrollable)
+                      </div>
                     </div>
                   </div>
                 </div>

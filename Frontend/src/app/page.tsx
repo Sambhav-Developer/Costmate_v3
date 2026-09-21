@@ -27,6 +27,8 @@ import { useSSE } from '../hooks/useSSE';
 import { api } from '../lib/api';
 import { GoogleLogin } from '@react-oauth/google';
 import { useTheme } from '../components/ThemeProvider';
+import gsap from 'gsap';
+import { useGSAP } from '@gsap/react';
 
 interface EstimationSession {
   id: string;
@@ -38,6 +40,8 @@ interface EstimationSession {
 export default function Page() {
   const { isLoggedIn, loading: authLoading, user, logout, refresh } = useAuth();
   const { theme } = useTheme();
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
   
   const handleGoogleSuccess = async (credentialResponse: any) => {
     setAuthError(null);
@@ -68,6 +72,16 @@ export default function Page() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSuccessMessage, setAuthSuccessMessage] = useState<string | null>(null);
   const [authFormLoading, setAuthFormLoading] = useState(false);
+
+  // Removed GSAP animation to fix the invisible panel bug
+  // useGSAP(() => {
+  //   if (!isLoggedIn && !authLoading) {
+  //     const tl = gsap.timeline();
+  //     tl.from('.auth-bg', { scale: 1.1, opacity: 0, duration: 1.5, ease: 'power3.out' })
+  //       .from('.auth-panel', { y: 30, opacity: 0, duration: 0.8, ease: 'power3.out' }, '-=1.0')
+  //       .from('.auth-elem', { y: 15, opacity: 0, duration: 0.5, stagger: 0.1, ease: 'power2.out' }, '-=0.5');
+  //   }
+  // }, { scope: containerRef, dependencies: [isLoggedIn, authLoading, authMode] });
 
   // Handle OTP digit changes
   const handleOtpChange = (element: HTMLInputElement, index: number) => {
@@ -300,14 +314,17 @@ export default function Page() {
   // Render Login page if not logged in
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen w-screen flex flex-col items-center justify-center bg-bg text-fg p-4 font-sans relative selection:bg-accent/20">
+      <div className="min-h-screen w-screen flex flex-col items-center justify-center text-fg p-4 font-sans relative selection:bg-accent/20" ref={containerRef}>
+        <div className="app-bg-container auth-bg" style={{ backgroundImage: "url('/construction-bg.png')" }}>
+          <div className="app-bg-grid"></div>
+        </div>
         {/* Floating Top Header for styling */}
-        <div className="absolute top-6 right-6">
+        <div className="absolute top-6 right-6 z-10 auth-elem">
           <ThemeToggle />
         </div>
 
-        <div className="w-full max-w-md bg-panel border border-border rounded-xl shadow-xl p-8 flex flex-col gap-6 transition-all duration-300">
-          <div className="flex flex-col items-center gap-2 text-center">
+        <div className="relative z-10 w-full max-w-md glass-panel p-10 flex flex-col gap-6 transition-all duration-300 auth-panel">
+          <div className="flex flex-col items-center gap-2 text-center auth-elem">
             <div className="w-12 h-12 bg-accent/10 text-accent rounded-xl flex items-center justify-center border border-accent/20 animate-bounce-subtle">
               <Building2 className="w-6 h-6" />
             </div>
@@ -322,7 +339,7 @@ export default function Page() {
           <form onSubmit={handleAuthSubmit} className="flex flex-col gap-4">
             {authMode === 'otp' ? (
               <div className="flex flex-col gap-4">
-                <div className="text-center bg-accent/5 border border-accent/10 p-4 rounded-lg flex flex-col items-center gap-1">
+                <div className="text-center bg-accent/5 border border-accent/10 p-4 rounded-lg flex flex-col items-center gap-1 auth-elem">
                   <ShieldCheck className="w-8 h-8 text-accent animate-pulse mb-1" />
                   <span className="text-xs font-semibold text-accent leading-none">Security Verification</span>
                   <p className="text-[11px] text-slate-500 mt-1 leading-normal max-w-xs">
@@ -354,7 +371,7 @@ export default function Page() {
               </div>
             ) : (
               <div className="flex flex-col gap-3">
-                <div className="flex flex-col gap-1.5">
+                <div className="flex flex-col gap-1.5 auth-elem">
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-400">Email Address</label>
                   <div className="relative flex items-center">
                     <Mail className="w-4 h-4 text-slate-500 absolute left-3" />
@@ -369,7 +386,7 @@ export default function Page() {
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-1.5">
+                <div className="flex flex-col gap-1.5 auth-elem">
                   <label className="text-xs font-semibold text-slate-600 dark:text-slate-400">Password</label>
                   <div className="relative flex items-center">
                     <Key className="w-4 h-4 text-slate-500 absolute left-3" />
@@ -408,7 +425,7 @@ export default function Page() {
             <button
               type="submit"
               disabled={authFormLoading}
-              className="w-full bg-accent text-accent-fg font-bold py-2.5 rounded-lg hover:bg-accent-hover transition-all text-sm cursor-pointer disabled:opacity-50 mt-2 shadow-lg shadow-accent/15 active:scale-[0.98]"
+              className="w-full bg-accent text-accent-fg font-bold py-2.5 rounded-lg hover:bg-accent-hover transition-all text-sm cursor-pointer disabled:opacity-50 mt-2 shadow-lg shadow-accent/15 active:scale-[0.98] auth-elem"
             >
               {authFormLoading 
                 ? 'Processing...' 
@@ -422,13 +439,13 @@ export default function Page() {
 
           {authMode !== 'otp' && (
             <>
-              <div className="relative flex py-1 items-center">
+              <div className="relative flex py-1 items-center auth-elem">
                 <div className="flex-grow border-t border-border/80"></div>
                 <span className="flex-shrink mx-4 text-slate-500 text-xs font-semibold uppercase">Or</span>
                 <div className="flex-grow border-t border-border/80"></div>
               </div>
 
-              <div className="flex justify-center w-full min-h-[40px] items-center">
+              <div className="flex justify-center w-full min-h-[40px] items-center auth-elem">
                 <GoogleLogin
                   onSuccess={handleGoogleSuccess}
                   onError={handleGoogleError}
@@ -442,7 +459,7 @@ export default function Page() {
             </>
           )}
 
-          <div className="border-t border-border pt-4 text-center">
+          <div className="border-t border-border pt-4 text-center auth-elem">
             {authMode === 'otp' ? (
               <button
                 type="button"
@@ -480,9 +497,12 @@ export default function Page() {
 
   // Render Dashboard if logged in
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-bg text-fg font-sans">
-      {/* ── Top Header ── */}
-      <header className="h-14 flex items-center justify-between px-6 glass-header shrink-0"
+    <div className="flex flex-col h-screen w-screen overflow-hidden text-fg font-sans relative">
+      <div className="app-bg-container">
+        <div className="app-bg-grid"></div>
+      </div>
+      {/* Top Header Navbar */}
+      <header className="px-6 py-4 flex items-center justify-between glass-header z-20 shrink-0 relative z-10"
         style={{ boxShadow: '0 1px 0 var(--panel-border)' }}>
 
         {/* Brand */}
@@ -553,7 +573,7 @@ export default function Page() {
         />
 
         {/* Right Workspace Panel: Dynamic Dual-Panel Split */}
-        <div className="flex-1 flex overflow-hidden bg-bg">
+        <div className="flex-1 flex overflow-hidden relative z-10 p-4 gap-4">
           {activeSessionId ? (
             <>
               {/* Left Column: AI Swarm Copilot & Logs */}
@@ -589,38 +609,30 @@ export default function Page() {
               </div>
             </>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-bg relative overflow-hidden font-sans select-none animate-fade-in">
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center relative overflow-hidden font-sans select-none animate-fade-in stagger-item" style={{ animationDelay: '0.2s' }}>
               
-              {/* Background glowing orbs */}
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-gradient-accent rounded-full opacity-[0.03] blur-[100px] pointer-events-none" />
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[300px] h-[300px] bg-gradient-accent rounded-full opacity-[0.05] blur-[60px] animate-pulse pointer-events-none" />
-
-              {/* Glassmorphism Card */}
-              <div className="relative z-10 flex flex-col items-center p-12 rounded-3xl backdrop-blur-xl shadow-2xl transition-all duration-300 hover:shadow-xl hover:shadow-[#8b5cf6]/10 hover:-translate-y-1"
-                style={{ background: 'var(--panel)', border: '1px solid var(--panel-border)' }}>
+              {/* Clean Minimalist Card */}
+              <div className="relative z-10 flex flex-col items-center p-14 rounded-[2.5rem] minimal-glass hover:shadow-2xl tilt-card">
                 
-                {/* Stunning Icon Composition */}
+                {/* Minimal Icon Composition */}
                 <div className="relative mb-8 flex items-center justify-center">
-                  <div className="absolute inset-0 bg-gradient-accent opacity-20 blur-2xl rounded-full animate-pulse" />
-                  <div className="relative w-24 h-24 rounded-2xl bg-gradient-accent p-[1px] shadow-2xl shadow-[#FF512F]/20">
-                    <div className="w-full h-full rounded-2xl flex items-center justify-center" style={{ background: 'var(--background)' }}>
-                      <Layers className="w-10 h-10 animate-pulse" style={{ color: 'var(--foreground)' }} />
-                    </div>
+                  <div className="relative w-24 h-24 rounded-[1.5rem] bg-white border border-slate-100 shadow-sm flex items-center justify-center transition-transform hover:scale-105">
+                    <Layers className="w-10 h-10 text-accent animate-pulse" />
                   </div>
-                  <div className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-gradient-accent flex items-center justify-center shadow-lg shadow-[#8b5cf6]/30 transition-transform hover:scale-110">
+                  <div className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-gradient-accent flex items-center justify-center shadow-md transition-transform hover:scale-110">
                     <Sparkles className="w-4 h-4 text-white" />
                   </div>
                 </div>
 
-                <h1 className="text-3xl font-black mb-3 tracking-tight text-gradient-accent">
+                <h1 className="text-3xl font-black mb-3 tracking-tight text-fg">
                   Ready for AI Estimation
                 </h1>
-                <p className="max-w-[420px] text-[13px] leading-relaxed mb-8 text-center" style={{ color: 'var(--muted)' }}>
+                <p className="max-w-[420px] text-[13px] leading-relaxed mb-8 text-center text-muted font-medium">
                   Your workspace is clear. Select an existing estimation from the sidebar or start a new project to let the AI Swarm do the heavy lifting.
                 </p>
                 <button 
                   onClick={() => window.dispatchEvent(new Event('open-new-project'))}
-                  className="btn-accent px-8 py-3.5 rounded-2xl font-bold text-sm shadow-xl shadow-[#8b5cf6]/20 transition-all hover:-translate-y-1 hover:shadow-[#8b5cf6]/30 flex items-center gap-2">
+                  className="btn-accent aura-button px-8 py-3.5 rounded-full font-bold text-sm shadow-md transition-all flex items-center gap-2">
                   <Sparkles className="w-4 h-4" />
                   New Project
                 </button>

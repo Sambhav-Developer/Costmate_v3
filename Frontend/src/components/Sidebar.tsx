@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import SetupWizardModal from './SetupWizardModal';
+import { motion, AnimatePresence } from 'framer-motion';
 
 type FileType = 'plan' | 'excel' | 'readme' | 'parameters';
 
@@ -180,17 +181,22 @@ export default function Sidebar({
   };
 
   return (
-    <aside
-      className="flex flex-col h-full shrink-0 font-sans select-none border-r border-border/50 transition-all duration-300"
-      style={{ width: collapsed ? 44 : 270, background: 'var(--cm-sidebar)', overflow: 'hidden' }}>
+    <>
+      <motion.aside
+        layout
+        initial={false}
+        animate={{ width: collapsed ? 64 : 280 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+        className="flex flex-col h-[calc(100%-2rem)] shrink-0 font-sans select-none minimal-glass my-4 ml-4 rounded-[2rem] shadow-2xl"
+        style={{ overflow: 'hidden' }}>
 
       {/* ── Collapsed Strip ── */}
       {collapsed && (
         <div className="flex flex-col items-center gap-3 py-4">
           {/* Expand button */}
           <button onClick={() => setCollapsed(false)}
-            className="w-8 h-8 flex items-center justify-center rounded-xl cursor-pointer transition-all text-[#d946ef] hover:scale-110" title="Expand Sidebar">
-            <PanelLeftOpen className="w-4 h-4" />
+            className="w-10 h-10 flex items-center justify-center rounded-2xl cursor-pointer transition-all text-accent hover:scale-110 bg-white/50 border border-white/60 shadow-sm" title="Expand Sidebar">
+            <PanelLeftOpen className="w-5 h-5" />
           </button>
           {/* Session dots */}
           <div className="flex flex-col gap-2 mt-2">
@@ -225,13 +231,15 @@ export default function Sidebar({
         <>
           {/* Header with New Project + Collapse */}
           <div className="px-3 py-3 border-b border-border/40 flex items-center gap-2">
-            <button
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
               onClick={() => setIsWizardOpen(true)}
-              className="btn-accent flex-1 flex items-center justify-center gap-2 py-2 px-3 text-xs rounded-xl"
+              className="btn-accent flex-1 flex items-center justify-center gap-2 py-2 px-3 text-xs rounded-full"
             >
               <Upload className="w-3.5 h-3.5" />
               New Project
-            </button>
+            </motion.button>
             <button onClick={() => setCollapsed(true)}
               className="w-8 h-8 flex items-center justify-center rounded-xl cursor-pointer transition-all shrink-0"
               style={{ color: 'var(--muted)', border: '1px solid var(--panel-border)' }}
@@ -256,22 +264,25 @@ export default function Sidebar({
                 </p>
               </div>
             ) : (
-              sessionsList.map((s) => {
+              sessionsList.map((s, index) => {
                 const isActive = activeSessionId === s.id;
                 const isExpanded = expandedSessions.has(s.id);
                 const subItems = getSubItems(s);
 
                 return (
-                  <div key={s.id} className="flex flex-col">
+                  <motion.div layout key={s.id} className="flex flex-col stagger-item" style={{ animationDelay: `${index * 0.1}s` }}>
                     {/* ── Session Row ── */}
-                    <div
+                    <motion.div
+                      layout
+                      whileHover={{ scale: 1.01 }}
+                      whileTap={{ scale: 0.99 }}
                       onClick={() => handleSessionClick(s.id)}
-                      className={`group flex flex-col gap-2 p-3 rounded-xl border cursor-pointer transition-all duration-150 ${
+                      className={`group flex flex-col gap-2 p-3 rounded-2xl border cursor-pointer transition-all duration-150 ${
                         isActive
-                          ? 'border-[#8b5cf6]/30 shadow-sm shadow-[#8b5cf6]/5 bg-gradient-accent bg-opacity-10 text-white'
+                          ? 'border-accent text-fg'
                           : 'border-transparent hover:border-border/60'
                       }`}
-                      style={{ background: isActive ? 'transparent' : 'transparent' }}
+                      style={{ background: isActive ? 'var(--panel)' : 'transparent' }}
                     >
                       <div className="flex items-start justify-between gap-1">
                         <button type="button" onClick={(e) => toggleExpand(s.id, e)}
@@ -294,23 +305,31 @@ export default function Sidebar({
                         <span className="text-[10px] font-mono" style={{ color: 'var(--muted)' }}>{s.date}</span>
                         <StatusBadge status={s.status} />
                       </div>
-                    </div>
+                    </motion.div>
 
                     {/* ── Sub-items ── */}
+                    <AnimatePresence initial={false}>
                     {isExpanded && (
-                      <div className="ml-4 mb-1 flex flex-col gap-0.5 pl-3 border-l-2 animate-fade-in"
+                      <motion.div 
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="ml-4 mb-1 flex flex-col gap-0.5 pl-3 border-l-2 overflow-hidden"
                         style={{ borderColor: 'rgba(139,92,246,0.25)' }}>
                         {subItems.map((item) => {
                           const isFileActive = activeFile?.sessionId === s.id && activeFile?.fileType === item.type;
                           return (
-                            <button key={item.type} type="button" disabled={!item.available}
+                            <motion.button key={item.type} type="button" disabled={!item.available}
+                              whileHover={item.available ? { scale: 1.02, x: 4 } : {}}
+                              whileTap={item.available ? { scale: 0.98 } : {}}
                               onClick={() => item.available && onSelectFile?.(s.id, item.type, s.filename)}
-                              className={`flex items-center gap-2.5 px-3 py-2.5 mt-1.5 rounded-xl text-xs font-bold transition-all duration-300 cursor-pointer text-left w-full border ${
+                              className={`flex items-center gap-2.5 px-3 py-2.5 mt-1.5 rounded-2xl text-xs font-bold transition-all duration-300 cursor-pointer text-left w-full border ${
                                 !item.available ? 'opacity-35 cursor-not-allowed' : ''
                               } ${
                                 isFileActive 
                                   ? 'bg-gradient-accent text-white border-transparent shadow-md' 
-                                  : 'bg-panel border-border text-fg hover:border-[#8b5cf6]/30 hover:shadow-md hover:-translate-y-0.5'
+                                  : 'bg-panel border-border text-fg hover:border-[#e05a33]/30 hover:shadow-md hover:-translate-y-0.5'
                               }`}
                               style={{}}
                               onMouseOver={undefined}
@@ -325,12 +344,13 @@ export default function Sidebar({
                                   N/A
                                 </span>
                               )}
-                            </button>
+                            </motion.button>
                           );
                         })}
-                      </div>
+                      </motion.div>
                     )}
-                  </div>
+                    </AnimatePresence>
+                  </motion.div>
                 );
               })
             )}
@@ -343,12 +363,17 @@ export default function Sidebar({
           </div>
         </>
       )}
+      </motion.aside>
 
-      <SetupWizardModal
-        isOpen={isWizardOpen}
-        onClose={() => setIsWizardOpen(false)}
-        onTakeoffStarted={onNewSessionCreated}
-      />
+      <AnimatePresence>
+        {isWizardOpen && (
+          <SetupWizardModal
+            isOpen={true}
+            onClose={() => setIsWizardOpen(false)}
+            onTakeoffStarted={onNewSessionCreated}
+          />
+        )}
+      </AnimatePresence>
 
       {/* ── Toast Notifications ── */}
       {toasts.length > 0 && (
@@ -465,7 +490,7 @@ export default function Sidebar({
           to   { opacity: 1; transform: translateY(0) scale(1); }
         }
       `}</style>
-    </aside>
+    </>
   );
 }
 

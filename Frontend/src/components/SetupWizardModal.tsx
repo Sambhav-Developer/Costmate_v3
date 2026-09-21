@@ -2,11 +2,405 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  X, Upload, Check, Loader2, Plus, Building2, 
-  ChevronRight, ChevronLeft, Layers, LayoutGrid, Hammer, 
+  X, Upload, Check, Loader2, Plus, Minus, Building2, 
+  ChevronRight, Layers, LayoutGrid, Hammer, 
   Trash2, CheckCircle2, ChevronDown, ChevronUp, FileText, Settings2, Pickaxe, Maximize2
 } from 'lucide-react';
 import { api } from '../lib/api';
+
+const loadPdfJs = () => {
+  return new Promise<any>((resolve) => {
+    const win = window as any;
+    if (win.pdfjsLib) {
+      resolve(win.pdfjsLib);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js';
+    script.onload = () => {
+      win.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+      resolve(win.pdfjsLib);
+    };
+    document.body.appendChild(script);
+  });
+};
+
+const FloorPlanToolbar = ({ 
+  onFullscreen, 
+  zoomIn, 
+  zoomOut, 
+  resetTransform, 
+  handleFitWidth,
+  scale 
+}: { 
+  onFullscreen: () => void, 
+  zoomIn: () => void,
+  zoomOut: () => void,
+  resetTransform: () => void,
+  handleFitWidth: () => void,
+  scale: number 
+}) => {
+  const scalePct = Math.round(scale * 100);
+  
+  return (
+    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-panel/95 backdrop-blur-md border border-border rounded-xl shadow-2xl flex items-center p-1.5 z-[60] gap-1 pointer-events-auto">
+       <button type="button" onClick={zoomOut} className="p-2 hover:bg-bg rounded-md text-fg transition-colors" title="Zoom Out"><Minus className="w-4 h-4"/></button>
+       <div className="w-16 text-center text-[10px] font-black tracking-wider text-fg font-mono select-none">{scalePct}%</div>
+       <button type="button" onClick={zoomIn} className="p-2 hover:bg-bg rounded-md text-fg transition-colors" title="Zoom In"><Plus className="w-4 h-4"/></button>
+       <div className="w-[1px] h-6 bg-border mx-1" />
+       <button type="button" onClick={resetTransform} className="px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-muted hover:text-fg hover:bg-bg rounded-md transition-colors">Fit Screen</button>
+       <button type="button" onClick={handleFitWidth} className="px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-muted hover:text-fg hover:bg-bg rounded-md transition-colors">Fit Width</button>
+       <div className="w-[1px] h-6 bg-border mx-1" />
+       <button type="button" onClick={onFullscreen} className="px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-muted hover:text-fg hover:bg-bg rounded-md transition-colors flex items-center gap-1.5">
+         <Maximize2 className="w-3.5 h-3.5" /> Fullscreen
+       </button>
+    </div>
+  );
+};
+
+const InteractiveFloorPlanViewer = ({ 
+  file, fileName, rooms, hoveredRoomId, setHoveredRoomId, onFullscreen 
+}: { 
+  file: File, fileName: string, rooms: any[], hoveredRoomId: number|null, setHoveredRoomId: (id: number|null)=>void, onFullscreen: () => void 
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  
+  const [pdf, setPdf] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [pageNum, setPageNum] = useState(1);
+  const [totalPages, setTotalPages] = useState(0);
+  
+  const [naturalSize, setNaturalSize] = useState<{width: number, height: number} | null>(null);
+  const [containerReady, setContainerReady] = useState(false);
+  
+  // Custom pan/zoom state
+  const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
+  const isDragging = useRef(false);
+  const dragStart = useRef({ x: 0, y: 0, transformX: 0, transformY: 0 });
+
+  const isPdf = fileName.toLowerCase().endsWith('.pdf');
+  const fileUrl = React.useMemo(() => !isPdf ? URL.createObjectURL(file) : '', [file, isPdf]);
+
+  // Load PDF
+  useEffect(() => {
+    if (!isPdf) return;
+    let active = true;
+    const initPdf = async () => {
+      setLoading(true);
+      try {
+        const pdfjs = await loadPdfJs();
+        const reader = new FileReader();
+        reader.onload = async () => {
+          if (!active) return;
+          try {
+            const loadingTask = pdfjs.getDocument({ data: new Uint8Array(reader.result as ArrayBuffer) });
+            const pdfDoc = await loadingTask.promise;
+            if (!active) { pdfDoc.destroy(); return; }
+            setPdf(pdfDoc);
+            setTotalPages(pdfDoc.numPages);
+            setPageNum(1);
+          } catch (err) { console.error("Failed to load PDF doc:", err); setLoading(false); }
+        };
+        reader.readAsArrayBuffer(file);
+      } catch (err) { console.error(err); setLoading(false); }
+    };
+    initPdf();
+    return () => { active = false; };
+  }, [file, isPdf]);
+
+  // Robust Modal-Animation Polling
+  useEffect(() => {
+    let active = true;
+    let rafId: number;
+    let consecutiveStableFrames = 0;
+    let lastWidth = 0;
+    let lastHeight = 0;
+    
+    const checkContainer = () => {
+      if (!active) return;
+      const container = containerRef.current;
+      if (container) {
+        const w = container.clientWidth;
+        const h = container.clientHeight;
+        
+        if (w > 80 && h > 80 && w === lastWidth && h === lastHeight) {
+          consecutiveStableFrames++;
+        } else {
+          consecutiveStableFrames = 0;
+        }
+        
+        lastWidth = w;
+        lastHeight = h;
+        
+        if (consecutiveStableFrames >= 3) {
+          setContainerReady(true);
+        } else {
+          rafId = requestAnimationFrame(checkContainer);
+          return;
+        }
+      }
+      rafId = requestAnimationFrame(checkContainer);
+    };
+    rafId = requestAnimationFrame(checkContainer);
+    return () => { active = false; cancelAnimationFrame(rafId); };
+  }, []);
+
+  // Render PDF directly independent of container size
+  useEffect(() => {
+    if (!isPdf || !pdf) return;
+    let active = true;
+    let renderTask: any = null;
+    
+    const renderPdf = async () => {
+      setLoading(true);
+      try {
+        const page = await pdf.getPage(pageNum);
+        if (!active) return;
+        
+        // Logical layout size (1x)
+        const logicalViewport = page.getViewport({ scale: 1.0 });
+        
+        // Physical render buffer size (2.5x) for sharpness
+        const renderViewport = page.getViewport({ scale: 2.5 });
+        
+        setNaturalSize({ width: logicalViewport.width, height: logicalViewport.height });
+        
+        const canvas = canvasRef.current;
+        if (canvas && active) {
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            canvas.width = renderViewport.width;
+            canvas.height = renderViewport.height;
+            // Explicitly force CSS sizes to bypass Tailwind and any globals
+            canvas.style.width = `${logicalViewport.width}px`;
+            canvas.style.height = `${logicalViewport.height}px`;
+            canvas.style.maxWidth = 'none';
+            canvas.style.maxHeight = 'none';
+            
+            renderTask = page.render({ canvasContext: ctx, viewport: renderViewport });
+            await renderTask.promise;
+          }
+        }
+      } catch (err: any) { 
+        if (err.name !== 'RenderingCancelledException') {
+          console.error("Render failed", err); 
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    
+    renderPdf();
+    return () => { active = false; if (renderTask) { try { renderTask.cancel(); } catch (e) {} } };
+  }, [pdf, pageNum, isPdf]);
+
+  // Image handling
+  useEffect(() => {
+    if (isPdf || !fileUrl) return;
+    const img = new Image();
+    img.onload = () => {
+       setNaturalSize({ width: img.width, height: img.height });
+       setLoading(false);
+    };
+    img.src = fileUrl;
+  }, [fileUrl, isPdf]);
+
+  // Initial fit to screen once both container and content are ready
+  const hasFitOnce = useRef(false);
+  useEffect(() => {
+    if (containerReady && naturalSize && !hasFitOnce.current && containerRef.current) {
+      const cw = containerRef.current.clientWidth - 40;
+      const ch = containerRef.current.clientHeight - 120;
+      const fitScale = Math.min(cw / naturalSize.width, ch / naturalSize.height);
+      setTransform({ scale: fitScale, x: 0, y: 0 });
+      hasFitOnce.current = true;
+    }
+  }, [containerReady, naturalSize]);
+
+  // Event Handlers for Custom Pan/Zoom
+  const handleWheel = (e: React.WheelEvent) => {
+    if (!naturalSize || !containerRef.current || !contentRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Trackpad pinch or Ctrl/Cmd + Wheel for zooming
+    if (e.ctrlKey || e.metaKey) {
+      const scaleAdjust = e.deltaY * -0.01;
+      let newScale = transform.scale * (1 + scaleAdjust);
+      newScale = Math.max(0.05, Math.min(newScale, 15));
+
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left - rect.width / 2;
+      const y = e.clientY - rect.top - rect.height / 2;
+
+      const newX = x - (x - transform.x) * (newScale / transform.scale);
+      const newY = y - (y - transform.y) * (newScale / transform.scale);
+
+      setTransform({ scale: newScale, x: newX, y: newY });
+    } else {
+      // Regular trackpad scroll or mouse wheel for panning
+      setTransform(prev => ({
+        ...prev,
+        x: prev.x - e.deltaX,
+        y: prev.y - e.deltaY
+      }));
+    }
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return; // Only left click for mouse
+    isDragging.current = true;
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      transformX: transform.x,
+      transformY: transform.y
+    };
+    try {
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    } catch (err) {}
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!isDragging.current) return;
+    const dx = e.clientX - dragStart.current.x;
+    const dy = e.clientY - dragStart.current.y;
+    setTransform(prev => ({
+      ...prev,
+      x: dragStart.current.transformX + dx,
+      y: dragStart.current.transformY + dy
+    }));
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    isDragging.current = false;
+    try {
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch (err) {}
+  };
+
+  // Toolbar actions
+  const zoomIn = () => {
+    setTransform(prev => ({ ...prev, scale: Math.min(prev.scale * 1.2, 15) }));
+  };
+  
+  const zoomOut = () => {
+    setTransform(prev => ({ ...prev, scale: Math.max(prev.scale / 1.2, 0.05) }));
+  };
+  
+  const resetTransformAction = () => {
+    if (containerRef.current && naturalSize) {
+      const cw = containerRef.current.clientWidth - 40;
+      const ch = containerRef.current.clientHeight - 120;
+      const fitScale = Math.min(cw / naturalSize.width, ch / naturalSize.height);
+      setTransform({ scale: fitScale, x: 0, y: 0 });
+    }
+  };
+  
+  const handleFitWidth = () => {
+    if (containerRef.current && naturalSize) {
+      const cw = containerRef.current.clientWidth - 40;
+      const fitScale = cw / naturalSize.width;
+      setTransform({ scale: fitScale, x: 0, y: 0 });
+    }
+  };
+
+  return (
+    <div 
+      ref={containerRef} 
+      className="w-full h-full relative overflow-hidden bg-black/5 dark:bg-black/20 flex flex-col items-center justify-center rounded-xl touch-none"
+      onWheel={handleWheel}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      onPointerLeave={handlePointerUp}
+    >
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center z-50">
+          <Loader2 className="w-8 h-8 animate-spin text-accent" />
+        </div>
+      )}
+      
+      {/* Hide canvas until initial fit is computed */}
+      <div 
+        className="absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity duration-300"
+        style={{ opacity: hasFitOnce.current ? 1 : 0 }}
+      >
+        <div 
+          ref={contentRef}
+          className="relative bg-white shadow-2xl origin-center"
+          style={{ 
+            transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
+            width: naturalSize ? naturalSize.width : 'auto',
+            height: naturalSize ? naturalSize.height : 'auto',
+            willChange: 'transform'
+          }}
+        >
+           {isPdf ? (
+             <canvas ref={canvasRef} className="block pointer-events-none max-w-none" style={{ maxWidth: 'none', maxHeight: 'none' }} />
+           ) : (
+             <img src={fileUrl} className="block pointer-events-none max-w-none w-full h-full object-contain" alt="Plan" style={{ maxWidth: 'none', maxHeight: 'none' }} />
+           )}
+           
+           {/* Bounding Box Overlay */}
+           {naturalSize && (
+             <div className="absolute top-0 left-0 w-full h-full pointer-events-none z-10 overflow-hidden">
+               {rooms.map((r: any) => {
+                 if (!r.boundingBox || r.boundingBox.length !== 4) return null;
+                 const [ymin, xmin, ymax, xmax] = r.boundingBox;
+                 const isHovered = hoveredRoomId === r.id;
+                 return (
+                   <div 
+                     key={`bbox-${r.id}`}
+                     style={{
+                       top: `${ymin * 100}%`,
+                       left: `${xmin * 100}%`,
+                       height: `${(ymax - ymin) * 100}%`,
+                       width: `${(xmax - xmin) * 100}%`,
+                     }}
+                     className={`absolute border-2 transition-all duration-200 pointer-events-auto cursor-help ${
+                       isHovered ? 'border-accent bg-accent/20 z-20 shadow-[0_0_15px_rgba(236,72,153,0.5)]' : 'border-white/50 bg-white/10 hover:border-white/80 hover:bg-white/20'
+                     }`}
+                     onMouseEnter={() => setHoveredRoomId(r.id)}
+                     onMouseLeave={() => setHoveredRoomId(null)}
+                   >
+                     {isHovered && (
+                       <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-black/80 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-bold text-white whitespace-nowrap z-30 shadow-lg border border-white/10">
+                         {r.name}
+                       </div>
+                     )}
+                   </div>
+                 );
+               })}
+             </div>
+           )}
+        </div>
+      </div>
+      
+      {hasFitOnce.current && (
+        <FloorPlanToolbar 
+          onFullscreen={onFullscreen} 
+          zoomIn={zoomIn}
+          zoomOut={zoomOut}
+          resetTransform={resetTransformAction}
+          handleFitWidth={handleFitWidth}
+          scale={transform.scale}
+        />
+      )}
+      
+      {totalPages > 1 && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-4 bg-panel/95 backdrop-blur-md px-4 py-2 rounded-xl border border-border shadow-lg z-50 pointer-events-auto">
+          <button type="button" disabled={pageNum <= 1 || loading} onClick={() => setPageNum(p => p - 1)} className="text-xs font-bold text-fg hover:text-accent disabled:opacity-50 disabled:hover:text-fg transition-colors">Previous</button>
+          <span className="text-xs font-bold text-muted font-mono tracking-wider">Page {pageNum} / {totalPages}</span>
+          <button type="button" disabled={pageNum >= totalPages || loading} onClick={() => setPageNum(p => p + 1)} className="text-xs font-bold text-fg hover:text-accent disabled:opacity-50 disabled:hover:text-fg transition-colors">Next</button>
+        </div>
+      )}
+    </div>
+  );
+};
 
 interface SetupWizardModalProps {
   isOpen: boolean;
@@ -28,7 +422,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   // --- Interactive Crop States ---
   const [isCropModalOpen, setIsCropModalOpen] = useState(false);
   const [cropFile, setCropFile] = useState<File | null>(null);
-  const [cropType, setCropType] = useState<'door' | 'window' | 'unit_matrix' | 'unit_door_schedule'>('door');
+  const [cropType, setCropType] = useState<'door' | 'window'>('door');
   const [cropRect, setCropRect] = useState<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -43,18 +437,19 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   const [pageWidth, setPageWidth] = useState(0);
   const [pageHeight, setPageHeight] = useState(0);
   const [scaleInitialized, setScaleInitialized] = useState(false);
+  const [previewScale, setPreviewScale] = useState(1.0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [cropStage, setCropStage] = useState<'crop' | 'map'>('crop');
   const [extractedItems, setExtractedItems] = useState<any[]>([]);
   const [headerMappings, setHeaderMappings] = useState<Record<string, string>>({});
   const [editingRowIndex, setEditingRowIndex] = useState<number | null>(null);
   const [editRowData, setEditRowData] = useState<any | null>(null);
-  const [newColumnInput, setNewColumnInput] = useState('');
 
   // --- Global Settings ---
   const [globalSettings, setGlobalSettings] = useState({
     projectName: 'New Project',
-    buildingType: 'Multi-Family',
+    buildingType: 'Residential',
     basementPresent: 'No',
     numBasements: 1,
     numFloors: 1,
@@ -65,8 +460,6 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     beams: [] as any[],
     
     doorScheduleFileName: '' as string,
-    unitMatrixFileName: '' as string,
-    unitDoorScheduleFileName: '' as string,
     windowScheduleFileName: '' as string,
     specificationFileName: '' as string,
     specificationsText: '' as string,
@@ -118,23 +511,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   const [hoveredRoomId, setHoveredRoomId] = useState<number | null>(null);
   const [draggedFloorIdx, setDraggedFloorIdx] = useState<number | null>(null);
 
-  // --- Load pdf.js via CDN ---
-  const loadPdfJs = () => {
-    return new Promise<any>((resolve) => {
-      const win = window as any;
-      if (win.pdfjsLib) {
-        resolve(win.pdfjsLib);
-        return;
-      }
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js';
-      script.onload = () => {
-        win.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
-        resolve(win.pdfjsLib);
-      };
-      document.body.appendChild(script);
-    });
-  };
+  // --- Load pdf.js via CDN --- (Moved to module scope)
 
   // Sync zoom input text with scale changes
   useEffect(() => {
@@ -168,14 +545,14 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
             setCropPageNum(1);
           } catch (err) {
             console.error("Failed to load PDF doc:", err);
-            setError("⚠️ Failed to load PDF file.");
+            setError("ΓÜá∩╕Å Failed to load PDF file.");
             setIsCropModalOpen(false);
           }
         };
         reader.readAsArrayBuffer(cropFile);
       } catch (err) {
         console.error("Failed to initialize pdf.js:", err);
-        setError("⚠️ Failed to initialize PDF renderer library.");
+        setError("ΓÜá∩╕Å Failed to initialize PDF renderer library.");
         setIsCropModalOpen(false);
       } finally {
         if (active) setPdfLoading(false);
@@ -401,74 +778,15 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
 
           setCropStage('map');
         } else {
-          setError("⚠️ Extraction completed, but no rows were found. Please adjust your crop selection.");
+          setError("ΓÜá∩╕Å Extraction completed, but no rows were found. Please adjust your crop selection.");
         }
       }
     } catch (err: any) {
       console.error("Crop extraction failed:", err);
-      setError("⚠️ Failed to parse table from selection: " + (err.message || err));
+      setError("ΓÜá∩╕Å Failed to parse table from selection: " + (err.message || err));
     } finally {
       setExtracting(false);
     }
-  };
-
-  const handleAddColumn = (colName?: string) => {
-    const keys = Object.keys(headerMappings);
-    let newColKey = (colName || newColumnInput || '').trim();
-    if (!newColKey) {
-      let counter = 1;
-      while (keys.includes(`NEW_COLUMN_${counter}`)) {
-        counter++;
-      }
-      newColKey = `NEW_COLUMN_${counter}`;
-    }
-
-    setHeaderMappings(prev => ({
-      ...prev,
-      [newColKey]: newColKey
-    }));
-
-    setExtractedItems(prev =>
-      prev.map(row => ({
-        ...row,
-        [newColKey]: ''
-      }))
-    );
-
-    setNewColumnInput('');
-  };
-
-  const handleMoveColumn = (targetKey: string, direction: 'up' | 'down') => {
-    const keys = Object.keys(headerMappings);
-    const index = keys.indexOf(targetKey);
-    if (index === -1) return;
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex < 0 || targetIndex >= keys.length) return;
-
-    const newKeys = [...keys];
-    const [movedKey] = newKeys.splice(index, 1);
-    newKeys.splice(targetIndex, 0, movedKey);
-
-    const newMappings: Record<string, string> = {};
-    newKeys.forEach(k => {
-      newMappings[k] = headerMappings[k];
-    });
-    setHeaderMappings(newMappings);
-  };
-
-  const handleDeleteColumn = (targetKey: string) => {
-    setHeaderMappings(prev => {
-      const copy = { ...prev };
-      delete copy[targetKey];
-      return copy;
-    });
-    setExtractedItems(prev =>
-      prev.map(row => {
-        const copy = { ...row };
-        delete copy[targetKey];
-        return copy;
-      })
-    );
   };
 
   const handleConfirmSchema = () => {
@@ -478,16 +796,17 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       const newItem: any = { _schedule_type: cropType, needs_review: false };
       let userMarkValue = "";
 
-      Object.keys(headerMappings).forEach((oldKey) => {
+      Object.keys(item).forEach((oldKey) => {
+        if (oldKey === '_schedule_type' || oldKey === 'needs_review') return;
         const newKey = headerMappings[oldKey]?.trim() || oldKey;
-        const val = item[oldKey] !== undefined ? item[oldKey] : '';
+        const val = item[oldKey];
         newItem[newKey] = val;
 
         // Track user edited mark value from mapped columns
         const nkLower = newKey.toLowerCase();
         if (oldKey === 'mark' || nkLower === 'mark' || nkLower === 'door number' || nkLower === 'door no' || nkLower === 'door mark') {
           if (val && String(val).trim()) {
-            userMarkValue = String(val).trim().toUpperCase();
+            userMarkValue = String(val).trim().upper ? String(val).trim().toUpperCase() : String(val).trim();
           }
         }
       });
@@ -499,55 +818,31 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       return newItem;
     });
 
+
     setGlobalSettings(prev => {
       const oldReg = prev.scheduleRegistry || { type_registry: { doors: [], windows: [] }, instance_schedule: [] };
-
-      if (cropType === 'unit_matrix') {
-        let prevNames: string[] = prev.unitMatrixFileName ? prev.unitMatrixFileName.split(", ") : [];
-        if (cropFile && !prevNames.includes(cropFile.name)) {
-          prevNames.push(cropFile.name);
-        }
-        return {
-          ...prev,
-          unitMatrixFileName: prevNames.join(", "),
-          unitMatrix: mapped,
-          unitMixMatrix: mapped
-        };
-      } else if (cropType === 'unit_door_schedule') {
-        let prevNames: string[] = prev.unitDoorScheduleFileName ? prev.unitDoorScheduleFileName.split(", ") : [];
-        if (cropFile && !prevNames.includes(cropFile.name)) {
-          prevNames.push(cropFile.name);
-        }
-        return {
-          ...prev,
-          unitDoorScheduleFileName: prevNames.join(", "),
-          unitDoorSchedule: mapped,
-          unitDoorScheduleData: mapped
-        };
-      } else {
-        const scheduleNameField = cropType === 'door' ? ('doorScheduleFileName' as const) : ('windowScheduleFileName' as const);
-        
-        let prevNames: string[] = [];
-        if (prev[scheduleNameField]) {
-          prevNames = prev[scheduleNameField].split(", ");
-        }
-        if (cropFile && !prevNames.includes(cropFile.name)) {
-          prevNames.push(cropFile.name);
-        }
-
-        return {
-          ...prev,
-          [scheduleNameField]: prevNames.join(", "),
-          scheduleRegistry: {
-            ...oldReg,
-            type_registry: {
-              doors: [...(oldReg.type_registry?.doors || [])],
-              windows: [...(oldReg.type_registry?.windows || [])]
-            },
-            instance_schedule: [...(oldReg.instance_schedule || []), ...mapped]
-          }
-        };
+      const scheduleNameField = cropType === 'door' ? ('doorScheduleFileName' as const) : ('windowScheduleFileName' as const);
+      
+      let prevNames: string[] = [];
+      if (prev[scheduleNameField]) {
+        prevNames = prev[scheduleNameField].split(", ");
       }
+      if (!prevNames.includes(cropFile!.name)) {
+        prevNames.push(cropFile!.name);
+      }
+
+      return {
+        ...prev,
+        [scheduleNameField]: prevNames.join(", "),
+        scheduleRegistry: {
+          ...oldReg,
+          type_registry: {
+            doors: [...(oldReg.type_registry?.doors || [])],
+            windows: [...(oldReg.type_registry?.windows || [])]
+          },
+          instance_schedule: [...(oldReg.instance_schedule || []), ...mapped]
+        }
+      };
     });
 
     // Reset native input values to allow uploading the same file again
@@ -555,10 +850,6 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     if (doorEl) doorEl.value = '';
     const winEl = document.getElementById('window-schedule-upload') as HTMLInputElement;
     if (winEl) winEl.value = '';
-    const umEl = document.getElementById('unit-matrix-upload') as HTMLInputElement;
-    if (umEl) umEl.value = '';
-    const udsEl = document.getElementById('unit-door-schedule-upload') as HTMLInputElement;
-    if (udsEl) udsEl.value = '';
 
     // Reset crop modal states
     setIsCropModalOpen(false);
@@ -848,25 +1139,25 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
 
   const renderInput = (label: string, value: string, onChange: (v: string) => void, placeholder: string = "") => (
     <div className="flex flex-col gap-1.5 w-full">
-      <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">{label}</label>
+      <label className="text-[10px] font-bold text-fg/60 uppercase tracking-[0.15em] font-mono pl-0.5">{label}</label>
       <input 
         value={value} 
         onChange={(e) => onChange(e.target.value)} 
         placeholder={placeholder}
-        className="w-full bg-[#18181b] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/50 transition-all"
+        className="w-full bg-transparent border-b-2 border-border/50 hover:border-border focus:border-accent px-1 py-2 text-sm text-fg font-mono placeholder:text-muted focus:outline-none transition-all shadow-none rounded-none"
       />
     </div>
   );
 
   const renderSelect = (label: string, value: string, onChange: (v: string) => void, options: string[]) => (
     <div className="flex flex-col gap-1.5 w-full">
-      <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">{label}</label>
+      <label className="text-[10px] font-bold text-fg/60 uppercase tracking-[0.15em] font-mono pl-0.5">{label}</label>
       <select 
         value={value} 
         onChange={(e) => onChange(e.target.value)} 
-        className="w-full bg-[#18181b] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500 transition-all cursor-pointer"
+        className="w-full bg-transparent border-b-2 border-border/50 hover:border-border focus:border-accent px-1 py-2 text-sm text-fg font-mono focus:outline-none transition-all cursor-pointer shadow-none rounded-none appearance-none"
       >
-        {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        {options.map(opt => <option key={opt} value={opt} className="font-sans bg-bg">{opt}</option>)}
       </select>
     </div>
   );
@@ -876,7 +1167,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
       value={value} 
       onChange={(e) => onChange(e.target.value)} 
       placeholder={placeholder}
-      className="w-full bg-[#111111] border border-white/5 rounded-md px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/50 transition-all"
+      className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm text-fg placeholder:text-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-all"
     />
   );
 
@@ -884,43 +1175,75 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     <select 
       value={value} 
       onChange={(e) => onChange(e.target.value)} 
-      className="w-full bg-[#111111] border border-white/5 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500 transition-all cursor-pointer"
+      className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm text-fg focus:outline-none focus:border-accent transition-all cursor-pointer"
     >
       {options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
     </select>
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-6 animate-in fade-in duration-300 font-sans">
-      <div className="w-full h-full bg-[#09090b] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden ring-1 ring-white/5 relative">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 sm:p-10 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300 font-sans">
+      <div className="flex w-full h-full max-w-[1400px] max-h-[90vh] bg-bg rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] overflow-hidden border border-white/10 relative">
+        {/* Left Side: Technical Blueprint Visuals */}
+        {step === 1 && (
+          <div 
+            className="hidden lg:block w-[45%] relative border-r border-border overflow-hidden shrink-0 bg-[#0f172a]"
+          >
+            {/* Faded construction image */}
+            <img src="/setup-hero-bg.jpg" alt="Blueprint to Reality" className="absolute inset-0 w-full h-full object-cover opacity-90 pointer-events-none" />
+            <div className="absolute inset-0 bg-gradient-to-t from-[#0f172a] via-[#0f172a]/70 to-transparent pointer-events-none"></div>
+            
+            {/* Grid Pattern Overlay */}
+            <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'radial-gradient(rgba(255,255,255,1) 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
+            
+            {/* CAD Registration Marks */}
+            <div className="absolute top-6 left-6 text-white/30 font-mono text-sm leading-none">+</div>
+            <div className="absolute top-6 right-6 text-white/30 font-mono text-sm leading-none">+</div>
+            <div className="absolute bottom-6 left-6 text-white/30 font-mono text-sm leading-none">+</div>
+            <div className="absolute bottom-6 right-6 text-white/30 font-mono text-sm leading-none">+</div>
+
+            <div className="absolute bottom-16 left-12 pr-12 z-10">
+               <div className="w-12 h-12 bg-transparent flex items-center justify-center border border-white/20 mb-8 rounded-none">
+                  <Building2 className="w-5 h-5 text-white/70" />
+               </div>
+               <h2 className="text-2xl font-black text-white mb-4 tracking-[0.2em] uppercase font-mono leading-tight">Project<br/>Initialization</h2>
+               <p className="text-white/50 text-xs leading-relaxed font-mono tracking-widest uppercase mt-6 border-l border-white/20 pl-4">
+                 Configure global parameters<br/>and upload schedules to begin<br/>AI-assisted civil estimation.
+               </p>
+            </div>
+          </div>
+        )}
+        
+        {/* Right Side: Interactive Form */}
+        <div 
+          className="flex-1 flex flex-col h-full bg-bg overflow-hidden relative"
+          style={{ backgroundImage: 'radial-gradient(rgba(128,128,128,0.15) 1px, transparent 1px)', backgroundSize: '20px 20px' }}
+        >
         
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-[#09090b] shrink-0">
+        <div className="flex items-center justify-between px-10 py-6 shrink-0 z-10 bg-bg/80 backdrop-blur-sm border-b border-border/50">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-violet-500/20 flex items-center justify-center border border-violet-500/30">
-              <Building2 className="w-4 h-4 text-violet-400" />
-            </div>
-            <h2 className="text-lg font-bold text-white tracking-tight">Project Initialization Wizard</h2>
+            <h2 className="text-xl font-black uppercase tracking-widest text-fg">Project Config</h2>
           </div>
-          <button onClick={onClose} className="p-2 bg-white/5 hover:bg-white/10 rounded-lg text-zinc-400 hover:text-white transition-all">
-            <X className="w-4 h-4" />
+          <button onClick={onClose} className="p-2.5 bg-panel hover:bg-panel rounded-xl border border-border text-muted hover:text-fg transition-all">
+            <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Stepper */}
-        <div className="px-8 py-4 border-b border-white/5 flex items-center justify-center gap-16 bg-[#09090b] shrink-0">
+        <div className="px-10 pb-6 border-b border-border/50 flex items-center gap-12 shrink-0 z-10">
           {[
             { num: 1, label: 'Global Setup' },
             { num: 2, label: 'Floor Layouts & Details' }
           ].map((s, i) => (
             <React.Fragment key={s.num}>
-              <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setStep(s.num)}>
-                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all ${step === s.num ? 'bg-violet-500 text-white shadow-[0_0_15px_rgba(139,92,246,0.4)]' : step > s.num ? 'bg-violet-500/20 text-violet-400 border border-violet-500/50' : 'bg-white/5 text-zinc-500 group-hover:bg-white/10'}`}>
-                  {step > s.num ? <Check className="w-3.5 h-3.5" /> : s.num}
+              <div className="flex items-center gap-4 cursor-pointer group" onClick={() => setStep(s.num)}>
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold transition-all ${step === s.num ? 'bg-accent text-accent-fg shadow-[0_0_15px_var(--accent)]' : step > s.num ? 'bg-accent/20 text-accent border border-accent/50' : 'bg-panel border border-border text-muted group-hover:bg-panel'}`}>
+                  {step > s.num ? <Check className="w-4 h-4" /> : s.num}
                 </div>
-                <span className={`text-sm font-semibold transition-colors ${step === s.num ? 'text-white' : step > s.num ? 'text-zinc-300' : 'text-zinc-600 group-hover:text-zinc-400'}`}>{s.label}</span>
+                <span className={`text-sm font-bold transition-colors tracking-wide ${step === s.num ? 'text-fg' : step > s.num ? 'text-fg opacity-80' : 'text-muted group-hover:text-fg opacity-60'}`}>{s.label}</span>
               </div>
-              {i < 1 && <div className={`w-16 h-px ${step > s.num ? 'bg-violet-500/50' : 'bg-white/10'}`} />}
+              {i < 1 && <div className={`w-12 h-[2px] rounded-full ${step > s.num ? 'bg-accent/50' : 'bg-border'}`} />}
             </React.Fragment>
           ))}
         </div>
@@ -936,35 +1259,28 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
         )}
 
         {/* Content Area */}
-        <div className="flex-1 flex overflow-hidden bg-[#09090b] relative">
+        <div className="flex-1 flex overflow-hidden relative font-sans">
           
           {/* STEP 1: Global Settings */}
           {step === 1 && (
             <div className="flex-1 flex flex-col items-center p-10 overflow-y-auto custom-scrollbar animate-in fade-in slide-in-from-bottom-4">
-              <div className="w-full max-w-2xl space-y-6">
-                <div className="bg-[#18181b] border border-white/5 rounded-xl p-6">
-                  <h3 className="text-sm font-bold text-white mb-5 uppercase tracking-widest text-zinc-400 flex items-center gap-2">
-                    <Settings2 className="w-4 h-4 text-violet-400"/> General Information
+              <div className="w-full max-w-2xl space-y-10">
+                <div className="bg-panel border border-border shadow-sm rounded-lg p-8">
+                  <h3 className="text-xs font-black text-fg mb-6 uppercase tracking-[0.2em] flex items-center gap-2">
+                    <Settings2 className="w-4 h-4 text-accent"/> General Information
                   </h3>
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                       {renderInput("Project Name", globalSettings.projectName, v => setGlobalSettings({...globalSettings, projectName: v}), "e.g. Skyline Towers")}
-                    </div>
-                    <div className={`grid grid-cols-3 gap-4`}>
                       {renderSelect("Building Type", globalSettings.buildingType, v => setGlobalSettings({...globalSettings, buildingType: v}), ['Multi-Family', 'Non Multi-Family'])}
-                      {renderSelect("Basement Present", globalSettings.basementPresent, v => setGlobalSettings({...globalSettings, basementPresent: v}), ['No', 'Yes'])}
-                      {globalSettings.basementPresent === 'Yes' && (
-                        renderInput("Number of Basements", globalSettings.numBasements.toString(), v => setGlobalSettings({...globalSettings, numBasements: parseInt(v) || 0}), "e.g. 2")
-                      )}
-                      {renderInput("Number of Floors", globalSettings.numFloors.toString(), v => setGlobalSettings({...globalSettings, numFloors: parseInt(v) || 0}), "e.g. 4")}
                     </div>
                   </div>
                 </div>
 
                 {/* GLOBAL SCHEDULES */}
-                <div className="bg-[#18181b] border border-white/5 rounded-xl p-6">
-                  <h3 className="text-sm font-bold text-white mb-5 uppercase tracking-widest text-zinc-400 flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-violet-400"/> Schedules & Specifications (Optional)
+                <div className="bg-panel border border-border shadow-sm rounded-lg p-8">
+                  <h3 className="text-xs font-black text-fg mb-6 uppercase tracking-[0.2em] flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-accent"/> Schedules & Specifications (Optional)
                   </h3>
                   
                   <div className="flex flex-col gap-4">
@@ -974,7 +1290,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         type="button"
                         onClick={() => document.getElementById('door-schedule-upload')?.click()}
                         disabled={isUploadingDoor || loading}
-                        className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-2 text-sm font-medium transition-colors w-52 disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-4 py-2 rounded-lg bg-panel hover:bg-panel border border-border flex items-center gap-2 text-sm font-medium transition-colors w-52 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {isUploadingDoor ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
                         {isUploadingDoor ? "Processing..." : "Upload Door Schedule"}
@@ -991,7 +1307,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                           
                           const file = files[0];
                           if (!file.name.toLowerCase().endsWith(".pdf")) {
-                            setError("⚠️ Only PDF files are supported for table crop selection.");
+                            setError("ΓÜá∩╕Å Only PDF files are supported for table crop selection.");
                             return;
                           }
                           
@@ -1007,7 +1323,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                             setCropType('door');
                             setIsCropModalOpen(true);
                           } catch (err: any) {
-                            setError('⚠️ Failed to initialize session: ' + (err.message || err));
+                            setError('ΓÜá∩╕Å Failed to initialize session: ' + (err.message || err));
                           } finally {
                             setLoading(false);
                           }
@@ -1020,122 +1336,13 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       )}
                     </div>
 
-                    {/* Multi-Family Specific Schedules: Unit Matrix & Unit Door Schedule */}
-                    {globalSettings.buildingType === 'Multi-Family' && (
-                      <>
-                        {/* Unit Matrix Upload */}
-                        <div className="flex items-center gap-4">
-                          <button 
-                            type="button"
-                            onClick={() => document.getElementById('unit-matrix-upload')?.click()}
-                            disabled={loading}
-                            className="px-4 py-2 rounded-lg bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/30 flex items-center gap-2 text-sm font-medium text-violet-300 transition-colors w-52 disabled:opacity-50"
-                          >
-                            <Upload className="w-4 h-4 text-violet-400" />
-                            Upload Unit Matrix
-                          </button>
-                          <input 
-                            id="unit-matrix-upload"
-                            type="file" 
-                            multiple
-                            className="hidden" 
-                            onChange={async (e) => {
-                              setError(null);
-                              const files = e.target.files;
-                              if (!files || files.length === 0) return;
-                              
-                              const file = files[0];
-                              if (!file.name.toLowerCase().endsWith(".pdf")) {
-                                setError("⚠️ Only PDF files are supported for table crop selection.");
-                                return;
-                              }
-                              
-                              setLoading(true);
-                              try {
-                                let sid = draftSessionId;
-                                if (!sid) {
-                                  const data = await api.createDraftSession(globalSettings.projectName);
-                                  sid = data.session_id;
-                                  setDraftSessionId(sid);
-                                }
-                                setCropFile(file);
-                                setCropType('unit_matrix');
-                                setIsCropModalOpen(true);
-                              } catch (err: any) {
-                                setError('⚠️ Failed to initialize session: ' + (err.message || err));
-                              } finally {
-                                setLoading(false);
-                              }
-                            }} 
-                          />
-                          {globalSettings.unitMatrixFileName && (
-                            <div className="text-sm text-emerald-400 flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20 truncate max-w-xs">
-                              <CheckCircle2 className="w-4 h-4 shrink-0" /> <span className="truncate">{globalSettings.unitMatrixFileName}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Unit Door Schedule Upload */}
-                        <div className="flex items-center gap-4">
-                          <button 
-                            type="button"
-                            onClick={() => document.getElementById('unit-door-schedule-upload')?.click()}
-                            disabled={loading}
-                            className="px-4 py-2 rounded-lg bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/30 flex items-center gap-2 text-sm font-medium text-violet-300 transition-colors w-52 disabled:opacity-50"
-                          >
-                            <Upload className="w-4 h-4 text-violet-400" />
-                            Upload Unit Door Schedule
-                          </button>
-                          <input 
-                            id="unit-door-schedule-upload"
-                            type="file" 
-                            multiple
-                            className="hidden" 
-                            onChange={async (e) => {
-                              setError(null);
-                              const files = e.target.files;
-                              if (!files || files.length === 0) return;
-                              
-                              const file = files[0];
-                              if (!file.name.toLowerCase().endsWith(".pdf")) {
-                                setError("⚠️ Only PDF files are supported for table crop selection.");
-                                return;
-                              }
-                              
-                              setLoading(true);
-                              try {
-                                let sid = draftSessionId;
-                                if (!sid) {
-                                  const data = await api.createDraftSession(globalSettings.projectName);
-                                  sid = data.session_id;
-                                  setDraftSessionId(sid);
-                                }
-                                setCropFile(file);
-                                setCropType('unit_door_schedule');
-                                setIsCropModalOpen(true);
-                              } catch (err: any) {
-                                setError('⚠️ Failed to initialize session: ' + (err.message || err));
-                              } finally {
-                                setLoading(false);
-                              }
-                            }} 
-                          />
-                          {globalSettings.unitDoorScheduleFileName && (
-                            <div className="text-sm text-emerald-400 flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20 truncate max-w-xs">
-                              <CheckCircle2 className="w-4 h-4 shrink-0" /> <span className="truncate">{globalSettings.unitDoorScheduleFileName}</span>
-                            </div>
-                          )}
-                        </div>
-                      </>
-                    )}
-
                     {/* Window Schedule */}
                     <div className="flex items-center gap-4">
                       <button 
                         type="button"
                         onClick={() => document.getElementById('window-schedule-upload')?.click()}
                         disabled={isUploadingWindow || loading}
-                        className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-2 text-sm font-medium transition-colors w-52 disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-4 py-2 rounded-lg bg-panel hover:bg-panel border border-border flex items-center gap-2 text-sm font-medium transition-colors w-52 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {isUploadingWindow ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
                         {isUploadingWindow ? "Processing..." : "Upload Window Schedule"}
@@ -1152,7 +1359,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                           
                           const file = files[0];
                           if (!file.name.toLowerCase().endsWith(".pdf")) {
-                            setError("⚠️ Only PDF files are supported for table crop selection.");
+                            setError("ΓÜá∩╕Å Only PDF files are supported for table crop selection.");
                             return;
                           }
                           
@@ -1168,7 +1375,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                             setCropType('window');
                             setIsCropModalOpen(true);
                           } catch (err: any) {
-                            setError('⚠️ Failed to initialize session: ' + (err.message || err));
+                            setError('ΓÜá∩╕Å Failed to initialize session: ' + (err.message || err));
                           } finally {
                             setLoading(false);
                           }
@@ -1182,12 +1389,12 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                     </div>
 
                     {/* Specifications Document */}
-                    <div className="flex items-center gap-4 border-t border-white/5 pt-4">
+                    <div className="flex items-center gap-4 border-t border-border pt-4">
                       <button 
                         type="button"
                         onClick={() => document.getElementById('specification-upload')?.click()}
                         disabled={isUploadingSpec || loading}
-                        className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-2 text-sm font-medium transition-colors w-52 disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-4 py-2 rounded-lg bg-panel hover:bg-panel border border-border flex items-center gap-2 text-sm font-medium transition-colors w-52 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {isUploadingSpec ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
                         {isUploadingSpec ? "Processing..." : "Upload Specifications"}
@@ -1217,7 +1424,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                               specificationsText: res.specifications_text
                             }));
                           } catch (err: any) {
-                            setError('⚠️ ' + (err.message || 'Failed to upload specifications.'));
+                            setError('ΓÜá∩╕Å ' + (err.message || 'Failed to upload specifications.'));
                           } finally {
                             setLoading(false);
                             setIsUploadingSpec(false);
@@ -1231,42 +1438,18 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       )}
                     </div>
                   </div>
-                  <p className="text-xs text-zinc-500 mt-4">
+                  <p className="text-xs text-muted mt-4">
                     Upload schedules and specifications here. The system will ingest schedules and align estimations with your project specifications.
                   </p>
                   
-                  {/* Schedule Previews */}
+                  {/* Schedule Preview */}
                   {globalSettings.scheduleRegistry && (
-                    <div className="mt-4 p-4 border border-white/10 rounded-lg bg-black overflow-auto max-h-64 custom-scrollbar">
-                      <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
+                    <div className="mt-4 p-4 border border-border rounded-lg bg-black overflow-auto max-h-64 custom-scrollbar">
+                      <h4 className="text-sm font-bold text-fg mb-2 flex items-center gap-2">
                         <CheckCircle2 className="w-4 h-4 text-emerald-400" /> Parsed Schedule Data (Preview)
                       </h4>
-                      <pre className="text-xs text-zinc-400 whitespace-pre-wrap select-text" draggable="false" style={{ userSelect: 'text', WebkitUserDrag: 'none' } as any}>
+                      <pre className="text-xs text-muted whitespace-pre-wrap select-text" draggable="false" style={{ userSelect: 'text', WebkitUserDrag: 'none' } as any}>
                         {JSON.stringify(globalSettings.scheduleRegistry, null, 2)}
-                      </pre>
-                    </div>
-                  )}
-
-                  {/* Unit Matrix Preview */}
-                  {(globalSettings.unitMatrix || globalSettings.unitMixMatrix) && (
-                    <div className="mt-4 p-4 border border-violet-500/20 rounded-lg bg-black overflow-auto max-h-64 custom-scrollbar">
-                      <h4 className="text-sm font-bold text-violet-400 mb-2 flex items-center gap-2">
-                        <CheckCircle2 className="w-4 h-4 text-violet-400" /> Parsed Unit Matrix Data (Preview)
-                      </h4>
-                      <pre className="text-xs text-zinc-300 whitespace-pre-wrap select-text" draggable="false" style={{ userSelect: 'text', WebkitUserDrag: 'none' } as any}>
-                        {JSON.stringify(globalSettings.unitMatrix || globalSettings.unitMixMatrix, null, 2)}
-                      </pre>
-                    </div>
-                  )}
-
-                  {/* Unit Door Schedule Preview */}
-                  {(globalSettings.unitDoorSchedule || globalSettings.unitDoorScheduleData) && (
-                    <div className="mt-4 p-4 border border-violet-500/20 rounded-lg bg-black overflow-auto max-h-64 custom-scrollbar">
-                      <h4 className="text-sm font-bold text-violet-400 mb-2 flex items-center gap-2">
-                        <CheckCircle2 className="w-4 h-4 text-violet-400" /> Parsed Unit Door Schedule Data (Preview)
-                      </h4>
-                      <pre className="text-xs text-zinc-300 whitespace-pre-wrap select-text" draggable="false" style={{ userSelect: 'text', WebkitUserDrag: 'none' } as any}>
-                        {JSON.stringify(globalSettings.unitDoorSchedule || globalSettings.unitDoorScheduleData, null, 2)}
                       </pre>
                     </div>
                   )}
@@ -1280,14 +1463,14 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
             <div className="flex-1 flex h-full overflow-hidden animate-in fade-in">
               
               {/* Sidebar: Floors */}
-              <div className="w-[260px] border-r border-white/5 bg-[#09090b] flex flex-col shrink-0">
-                <div className="p-4 flex justify-between items-center border-b border-white/5">
-                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Levels</span>
-                  <button onClick={handleAddFloor} className="p-1.5 rounded-md bg-white/5 border border-white/10 hover:bg-violet-500/20 hover:text-violet-400 transition-all text-zinc-400">
+              <div className="w-[260px] border-r border-border bg-bg/90 flex flex-col shrink-0 relative z-10 backdrop-blur-md">
+                <div className="p-4 flex justify-between items-center border-b border-border z-10 bg-panel">
+                  <span className="text-[10px] font-black text-fg uppercase tracking-[0.15em]">Levels</span>
+                  <button onClick={handleAddFloor} className="p-1 rounded bg-bg border border-border hover:border-accent hover:text-accent transition-all text-muted">
                     <Plus className="w-4 h-4"/>
                   </button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
+                <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar z-10">
                   {floors.map((floor, index) => (
                     <div 
                       key={floor.id} 
@@ -1301,16 +1484,16 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       onDrop={(e) => handleDropFloor(index)}
                       onDragEnter={(e) => e.preventDefault()}
                       onDragEnd={() => setDraggedFloorIdx(null)}
-                      className={`p-3 rounded-lg border cursor-pointer transition-all flex items-center gap-3 group ${activeFloorId === floor.id ? 'bg-[#18181b] border-violet-500/50 shadow-[0_4px_20px_-4px_rgba(139,92,246,0.1)] text-white' : 'bg-transparent border-transparent text-zinc-400 hover:bg-white/5 hover:text-zinc-200'} ${draggedFloorIdx === index ? 'opacity-50 border-dashed border-zinc-600 bg-white/5' : ''}`}
+                      className={`p-3 rounded-xl border cursor-pointer transition-all flex items-center gap-3 group ${activeFloorId === floor.id ? 'bg-white/80 dark:bg-black/80 border-accent/50 shadow-[0_4px_20px_-4px_rgba(139,92,246,0.3)] text-fg' : 'bg-transparent border-transparent text-muted hover:bg-white/50 dark:hover:bg-black/50 hover:text-fg'} ${draggedFloorIdx === index ? 'opacity-50 border-dashed border-border bg-white/50' : ''}`}
                     >
-                      <Layers className={`w-4 h-4 shrink-0 ${activeFloorId === floor.id ? 'text-violet-400' : ''}`} />
+                      <Layers className={`w-4 h-4 shrink-0 ${activeFloorId === floor.id ? 'text-accent' : ''}`} />
                       <div className="flex flex-col overflow-hidden flex-1">
                         <span className="text-sm font-semibold truncate">{floor.name}</span>
-                        {floor.fileName && <span className="text-[10px] text-zinc-500 truncate">{floor.fileName}</span>}
+                        {floor.fileName && <span className="text-[10px] text-muted truncate">{floor.fileName}</span>}
                       </div>
                       <button 
                         onClick={(e) => handleDeleteFloor(e, floor.id)} 
-                        className={`p-1.5 rounded-md transition-colors ${activeFloorId === floor.id ? 'text-violet-300 hover:text-red-400 hover:bg-red-500/10' : 'text-zinc-500 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100'}`}
+                        className={`p-1.5 rounded-md transition-colors ${activeFloorId === floor.id ? 'text-accent hover:text-red-400 hover:bg-red-500/10' : 'text-muted hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100'}`}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -1320,20 +1503,20 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
               </div>
 
               {/* Main Floor Editor */}
-              <div className="flex-1 flex flex-col bg-[#09090b] h-full overflow-hidden relative">
+              <div className="flex-1 flex flex-col h-full overflow-hidden relative">
                 {/* Floor Header */}
-                <div className="px-8 py-5 border-b border-white/5 flex items-center justify-between bg-[#09090b] shrink-0">
+                <div className="px-8 py-5 border-b border-white/20 dark:border-white/10 flex items-center justify-between shrink-0 glass-header">
                   <input 
                     value={activeFloor.name} 
                     onChange={e => { const nf = [...floors]; nf[activeFloorIndex].name = e.target.value; setFloors(nf); }} 
-                    className="bg-transparent text-2xl font-bold text-white outline-none border-b border-transparent focus:border-violet-500 px-1 w-64 transition-all"
+                    className="bg-transparent text-2xl font-bold text-fg outline-none border-b border-transparent focus:border-accent px-1 w-64 transition-all"
                     placeholder="Floor Name"
                   />
-                  <div className="flex items-center gap-3 bg-[#18181b] border border-white/10 rounded-lg p-1.5 px-3">
-                    <span className="text-xs text-zinc-500 font-semibold">Copy Specs From:</span>
+                  <div className="flex items-center gap-3 bg-white/40 dark:bg-black/40 border border-white/30 dark:border-white/10 rounded-lg p-1.5 px-3 shadow-sm">
+                    <span className="text-xs text-muted font-bold">Copy Specs From:</span>
                     <select 
                       onChange={(e) => handleCopySpecs(e.target.value)}
-                      className="bg-transparent text-xs text-white outline-none font-medium cursor-pointer"
+                      className="bg-transparent text-xs text-fg outline-none font-bold cursor-pointer"
                     >
                       <option value="None">None</option>
                       {floors.filter(f => f.id !== activeFloor.id).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
@@ -1341,380 +1524,81 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                   </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto px-8 pb-8 custom-scrollbar relative">
-                  <div className="w-full mx-auto flex flex-col xl:flex-row gap-8 pt-8">
-                    
-                    {/* Left Col: Upload */}
-                    <div className="w-full xl:w-[300px] shrink-0 flex flex-col gap-4 xl:sticky xl:top-0 h-fit z-10">
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Floor Plan</h3>
-                        {activeFloor.file && activeFloor.fileName && !loading && (
-                          <div className="flex items-center gap-4">
-                            <button onClick={() => window.open(URL.createObjectURL(activeFloor.file), '_blank')} className="text-xs font-bold text-sky-400 hover:text-sky-300 flex items-center gap-1.5 transition-colors">
-                              <Maximize2 className="w-3.5 h-3.5"/> View Full
-                            </button>
-                            <button onClick={() => fileInputRef.current?.click()} className="text-xs font-bold text-violet-400 hover:text-violet-300 flex items-center gap-1.5 transition-colors">
-                              <Upload className="w-3.5 h-3.5"/> Replace
-                            </button>
-                          </div>
-                        )}
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-sky-900/5 dark:bg-sky-500/5 relative">
+                  {/* Toolbar / Header for Floor Plan */}
+                  <div className="flex items-center justify-between px-6 py-3 border-b border-border/50 bg-panel/50 shrink-0 z-10">
+                    <h3 className="text-sm font-bold text-muted uppercase tracking-widest">Floor Plan</h3>
+                    {activeFloor.file && activeFloor.fileName && !loading && (
+                      <div className="flex items-center gap-4">
+                        <button onClick={() => setIsFullscreen(true)} className="text-xs font-bold text-sky-400 hover:text-sky-300 flex items-center gap-1.5 transition-colors">
+                          <Maximize2 className="w-3.5 h-3.5"/> View Full
+                        </button>
+                        <button onClick={() => fileInputRef.current?.click()} className="text-xs font-bold text-accent hover:text-accent flex items-center gap-1.5 transition-colors">
+                          <Upload className="w-3.5 h-3.5"/> Replace
+                        </button>
                       </div>
-                      {/* Enlarged Plan Toggle */}
-                      <label className="flex items-center gap-2 cursor-pointer bg-[#18181b] border border-white/10 px-3 py-2 rounded-xl text-xs font-semibold text-zinc-300 hover:border-violet-500/50 transition-all">
-                        <input 
-                          type="checkbox"
-                          checked={!!activeFloor.isEnlarged}
-                          onChange={(e) => {
-                            const nf = [...floors];
-                            nf[activeFloorIndex].isEnlarged = e.target.checked;
-                            setFloors(nf);
-                          }}
-                          className="accent-violet-500 w-4 h-4 rounded cursor-pointer"
-                        />
-                        <span>Enlarged Typical Unit Plan (Stage 1 Matrix)</span>
-                      </label>
-                      <div className="h-[280px] bg-[#18181b] border-2 border-dashed border-white/10 rounded-2xl flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
-                        <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.png,.jpg" className="hidden" />
-                        {uploadingFloorId === activeFloor.id ? (
-                          <div className="flex flex-col items-center">
-                            <Loader2 className="w-8 h-8 animate-spin text-violet-500 mb-3" />
-                            <span className="text-sm font-bold text-violet-400">
-                              {isScanning ? '✨ AI is detecting rooms...' : 'Uploading...'}
-                            </span>
-                          </div>
-                        ) : activeFloor.file && activeFloor.fileName ? (
-                          <div className="absolute inset-0 w-full h-full p-2 flex items-center justify-center group overflow-hidden">
-                             <div className="relative max-w-full max-h-full flex items-center justify-center">
-                               {activeFloor.pageUrls && activeFloor.pageUrls.length > 0 ? (
-                                  <img src={activeFloor.pageUrls[0]} alt="Preview" className="max-w-full max-h-full object-contain rounded-xl relative z-0" style={{ maxHeight: '250px' }} />
-                               ) : activeFloor.fileName.toLowerCase().endsWith('.pdf') ? (
-                                  <iframe 
-                                    src={`${URL.createObjectURL(activeFloor.file)}#toolbar=0&navpanes=0&scrollbar=0`} 
-                                    className="w-full h-[250px] rounded-xl bg-white/5 relative z-0" 
-                                  />
-                               ) : (
-                                  <img src={URL.createObjectURL(activeFloor.file)} alt="Preview" className="max-w-full max-h-full object-contain rounded-xl relative z-0" style={{ maxHeight: '250px' }} />
-                               )}
-                               
-                               {/* Bounding Box Overlay */}
-                               <div className="absolute top-0 left-0 w-full h-full pointer-events-none z-10 rounded-xl overflow-hidden">
-                                 {activeFloor.rooms.map((r: any) => {
-                                   if (!r.boundingBox || r.boundingBox.length !== 4) return null;
-                                   const [ymin, xmin, ymax, xmax] = r.boundingBox;
-                                   const isHovered = hoveredRoomId === r.id;
-                                   return (
-                                     <div 
-                                       key={`bbox-${r.id}`}
-                                       style={{
-                                         top: `${ymin * 100}%`,
-                                         left: `${xmin * 100}%`,
-                                         height: `${(ymax - ymin) * 100}%`,
-                                         width: `${(xmax - xmin) * 100}%`,
-                                       }}
-                                       className={`absolute border-2 transition-all duration-300 ${isHovered ? 'border-violet-500 bg-violet-500/30 shadow-[0_0_15px_rgba(139,92,246,0.6)] z-20' : 'border-emerald-500/40 bg-emerald-500/10 z-10'}`}
-                                     />
-                                   );
-                                 })}
-                               </div>
+                    )}
+                  </div>
+                  
+                  {/* Interactive Viewer Workspace */}
+                  <div className="flex-1 min-h-0 relative overflow-hidden flex flex-col w-full">
+                    <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.png,.jpg" className="hidden" />
+                    
+                    {uploadingFloorId === activeFloor.id ? (
+                      <div className="flex flex-col items-center justify-center w-full h-full relative z-10 bg-panel/50">
+                        <Loader2 className="w-8 h-8 animate-spin text-accent mb-3" />
+                        <span className="text-sm font-bold text-accent">
+                          {isScanning ? '✨ AI is detecting rooms...' : 'Uploading...'}
+                        </span>
+                      </div>
+                    ) : activeFloor.file && activeFloor.fileName ? (
+                      <div className="absolute inset-0 overflow-hidden bg-black/5 dark:bg-black/20">
+                         <InteractiveFloorPlanViewer 
+                           file={activeFloor.file}
+                           fileName={activeFloor.fileName}
+                           rooms={activeFloor.rooms}
+                           hoveredRoomId={hoveredRoomId}
+                           setHoveredRoomId={setHoveredRoomId}
+                           onFullscreen={() => setIsFullscreen(true)}
+                         />
+                      </div>
+                    ) : (
+                      <div 
+                        onClick={() => fileInputRef.current?.click()}
+                        className="flex flex-col items-center justify-center w-full h-full cursor-pointer group relative bg-bg hover:bg-panel transition-all duration-500 overflow-hidden"
+                      >
+                        {/* Background subtle pulse glow */}
+                        <div className="absolute inset-0 bg-gradient-to-br from-accent/5 via-transparent to-accent/5 opacity-0 group-hover:opacity-100 transition-opacity duration-700"></div>
+                        <div className="absolute inset-0 opacity-[0.02] dark:opacity-[0.08] pointer-events-none group-hover:scale-105 transition-transform duration-700">
+                          <img src="/setup-hero-bg.jpg" className="w-full h-full object-cover grayscale" alt="" />
+                        </div>
+                        
+                        {/* Dashed Border Container */}
+                        <div className="absolute inset-6 border-2 border-dashed border-border/60 group-hover:border-accent/40 rounded-2xl transition-colors duration-500"></div>
+
+                        {/* Glassmorphic Central Card */}
+                        <div className="relative z-10 flex flex-col items-center justify-center bg-white/60 dark:bg-black/60 backdrop-blur-xl border border-white/20 dark:border-white/10 shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.2)] rounded-2xl p-5 w-[280px] text-center group-hover:shadow-[0_8px_40px_rgba(236,72,153,0.15)] group-hover:-translate-y-1 transition-all duration-500">
+                          
+                          {/* Animated Icon */}
+                          <div className="relative mb-3">
+                             <div className="absolute inset-0 bg-accent/20 rounded-full blur-lg group-hover:blur-xl group-hover:scale-150 transition-all duration-500 opacity-0 group-hover:opacity-100"></div>
+                             <div className="relative w-12 h-12 bg-gradient-to-tr from-accent/10 to-accent/5 border border-accent/20 rounded-full flex items-center justify-center group-hover:scale-110 group-hover:border-accent/40 transition-all duration-500 shadow-inner">
+                               <Upload className="w-5 h-5 text-accent group-hover:-translate-y-0.5 transition-transform duration-300" />
                              </div>
                           </div>
-                        ) : (
-                          <div 
-                            onClick={() => fileInputRef.current?.click()}
-                            className="flex flex-col items-center justify-center w-full h-full cursor-pointer group"
-                          >
-                            <div className="w-14 h-14 bg-white/5 rounded-full flex items-center justify-center mb-4 group-hover:bg-violet-500/20 group-hover:scale-110 transition-all duration-300"><Upload className="w-6 h-6 text-zinc-400 group-hover:text-violet-400" /></div>
-                            <span className="text-sm font-bold text-white mb-1">Upload Layout</span>
-                            <span className="text-xs text-zinc-500">PDF, PNG, JPG</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Right Col: Tabs & Content */}
-                    <div className="flex-1 flex flex-col gap-4 min-w-0">
-                      
-                      {/* STICKY HEADER */}
-                      <div className="sticky top-[-32px] bg-[#09090b] z-20 pt-8 pb-3 -mt-8 shadow-[0_10px_20px_-10px_#09090b]">
-                        {/* Sub-Tabs */}
-                        <div className="flex items-center gap-2 border-b border-white/10 pb-px">
-                          <button onClick={() => setActiveTab('rooms')} className={`px-4 py-2 text-sm font-bold border-b-2 transition-all flex items-center gap-2 ${activeTab === 'rooms' ? 'border-violet-500 text-violet-400' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}>
-                            <LayoutGrid className="w-4 h-4"/> Room-Wise Details
-                          </button>
-                          <button onClick={() => setActiveTab('floorSpecs')} className={`px-4 py-2 text-sm font-bold border-b-2 transition-all flex items-center gap-2 ${activeTab === 'floorSpecs' ? 'border-violet-500 text-violet-400' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}>
-                            <Hammer className="w-4 h-4"/> Floor Structural
-                          </button>
-                        </div>
-
-                        {/* Subheader descriptions based on tab */}
-                        <div className="mt-4">
-                          {activeTab === 'rooms' ? (
-                            <div className="flex justify-between items-center">
-                              <p className="text-xs text-zinc-400">Define finishes and individual openings per room.</p>
-                              <button onClick={handleAddRoom} className="px-3 py-1.5 bg-violet-500 text-white rounded-lg text-xs font-bold hover:bg-violet-600 transition-all shadow-lg shadow-violet-500/20 flex items-center gap-1.5">
-                                <Plus className="w-3.5 h-3.5"/> Add Room
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-between">
-                              <p className="text-xs text-zinc-400">Define global structural settings and schedules for this floor.</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Tab Content: Floor Structural (Schedules) */}
-                      {activeTab === 'floorSpecs' && (
-                        <div className="flex flex-col gap-6 animate-in fade-in">
-                          <div className="bg-[#18181b] border border-white/5 rounded-xl p-6 flex flex-col gap-5">
-                            <h4 className="text-sm font-bold text-white uppercase tracking-widest text-zinc-400">Floor Geometry & Staircase</h4>
-                            <div className="grid grid-cols-4 gap-4">
-                              {renderInput("Floor Height", activeFloor.floorSpecs.floorHeight, v => updateFloorSpec('floorHeight', v), "e.g. 3.0m")}
-                              {renderInput("Staircase Steps", activeFloor.floorSpecs.staircaseStepsCount || '', v => updateFloorSpec('staircaseStepsCount', v), "e.g. 20")}
-                              {renderInput("Tread Dimension", activeFloor.floorSpecs.staircaseTreadDim || '', v => updateFloorSpec('staircaseTreadDim', v), "e.g. 300mm")}
-                              {renderSelect("Tread Material", activeFloor.floorSpecs.staircaseTreadMaterial || 'Granite', v => updateFloorSpec('staircaseTreadMaterial', v), ['Granite', 'Vitrified', 'Ceramic', 'Marble'])}
-                              {renderInput("Riser Dimension", activeFloor.floorSpecs.staircaseRiserDim || '', v => updateFloorSpec('staircaseRiserDim', v), "e.g. 150mm")}
-                              {renderSelect("Riser Material", activeFloor.floorSpecs.staircaseRiserMaterial || 'Granite', v => updateFloorSpec('staircaseRiserMaterial', v), ['Granite', 'Vitrified', 'Ceramic', 'Marble'])}
-                              {renderInput("Staircase Width", activeFloor.floorSpecs.staircaseWidth || '', v => updateFloorSpec('staircaseWidth', v), "e.g. 1.2m")}
-                              {renderInput("Midlanding Dimension", activeFloor.floorSpecs.midlandingDim || '', v => updateFloorSpec('midlandingDim', v), "e.g. 1.2x2.4m")}
-                              <div className="col-span-2">
-                                {renderSelect("Midlanding Material", activeFloor.floorSpecs.midlandingMaterial || 'Granite', v => updateFloorSpec('midlandingMaterial', v), ['Granite', 'Vitrified', 'Ceramic', 'Marble'])}
-                              </div>
-                            </div>
-                            
-                            <h4 className="text-sm font-bold text-white uppercase tracking-widest text-zinc-400 mt-4 border-t border-white/5 pt-5">Railings</h4>
-                            <div className="grid grid-cols-3 gap-4">
-                              {renderSelect("Staircase Railing?", activeFloor.floorSpecs.hasStaircaseRailing || 'No', v => updateFloorSpec('hasStaircaseRailing', v), ['No', 'Yes'])}
-                              {activeFloor.floorSpecs.hasStaircaseRailing === 'Yes' && (
-                                <>
-                                  {renderInput("Length (m)", activeFloor.floorSpecs.staircaseRailingDim || '', v => updateFloorSpec('staircaseRailingDim', v))}
-                                  {renderSelect("Material", activeFloor.floorSpecs.staircaseRailingMaterial || 'MS (Mild Steel)', v => updateFloorSpec('staircaseRailingMaterial', v), ['MS (Mild Steel)', 'SS (Stainless Steel)', 'Glass', 'Wood'])}
-                                </>
-                              )}
-                            </div>
-                          </div>
-
-                        </div>
-                      )}
-
-                      {/* Tab Content: Rooms */}
-                      {activeTab === 'rooms' && (
-                        <div className="flex flex-col gap-4 animate-in fade-in relative">
-                          {activeFloor.rooms.length === 0 ? (
-                            <div className="bg-[#18181b] border border-white/5 border-dashed rounded-xl p-10 text-center flex flex-col items-center justify-center">
-                              <LayoutGrid className="w-10 h-10 text-zinc-600 mb-3" />
-                              <p className="text-sm text-zinc-400 font-medium mb-1">No rooms added to this floor</p>
-                              <p className="text-xs text-zinc-600">Click "Add Room" to specify details for bedrooms, kitchens, etc.</p>
-                            </div>
-                          ) : (
-                            <div className="flex flex-col gap-3 pb-8">
-                              {activeFloor.rooms.map((room: any, rIdx: number) => {
-                                const isExpanded = expandedRoomId === room.id;
-                                return (
-                                  <div 
-                                    key={room.id} 
-                                    className="bg-[#18181b] border border-white/5 rounded-xl overflow-hidden transition-all duration-300 relative"
-                                    onMouseEnter={() => setHoveredRoomId(room.id)}
-                                    onMouseLeave={() => setHoveredRoomId(null)}
-                                  >
-                                    <div 
-                                      className="px-5 py-4 flex items-center justify-between cursor-pointer hover:bg-white/[0.02]"
-                                      onClick={() => setExpandedRoomId(isExpanded ? null : room.id)}
-                                    >
-                                      <div className="flex items-center gap-4">
-                                        <div className={`p-1.5 rounded-md ${isExpanded ? 'bg-violet-500/20 text-violet-400' : 'bg-white/5 text-zinc-400'}`}>
-                                          {isExpanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}
-                                        </div>
-                                        <input 
-                                          value={room.name} 
-                                          onChange={e => updateRoom(rIdx, 'name', e.target.value)} 
-                                          onClick={e => e.stopPropagation()}
-                                          className="bg-transparent text-sm font-bold text-white outline-none border-b border-transparent focus:border-violet-500 px-1 placeholder-zinc-600"
-                                          placeholder="e.g. Master Bedroom"
-                                        />
-                                      </div>
-                                      <button 
-                                        onClick={(e) => { e.stopPropagation(); const nf = [...floors]; nf[activeFloorIndex].rooms.splice(rIdx,1); setFloors(nf); }} 
-                                        className="text-zinc-500 hover:text-red-400 transition-colors p-1"
-                                      >
-                                        <Trash2 className="w-4 h-4"/>
-                                      </button>
-                                    </div>
-
-                                    {isExpanded && (
-                                      <div className="px-5 pb-6 pt-4 border-t border-white/5 bg-black/20 animate-in slide-in-from-top-2 duration-200">
-                                        <div className="grid grid-cols-3 gap-x-6 gap-y-5">
-                                          {renderInput("Dimensions", room.dimensions, v => updateRoom(rIdx, 'dimensions', v), "e.g. 10x12 ft")}
-                                          {renderSelect("Tiles", room.tiles, v => updateRoom(rIdx, 'tiles', v), ['Vitrified', 'Ceramic', 'Granite', 'Marble', 'Wooden', 'None'])}
-                                          {renderSelect("False Ceiling (POP)", room.pop, v => updateRoom(rIdx, 'pop', v), ['Yes', 'No'])}
-                                          {renderInput("Skirting Height", room.skirting, v => updateRoom(rIdx, 'skirting', v), "e.g. 4 inch")}
-                                          {renderInput("Dado Height", room.dado, v => updateRoom(rIdx, 'dado', v), "e.g. 7 ft")}
-                                          
-                                          {renderSelect("Balcony Railing?", room.hasBalconyRailing || 'No', v => updateRoom(rIdx, 'hasBalconyRailing', v), ['No', 'Yes'])}
-                                          {room.hasBalconyRailing === 'Yes' && (
-                                            <>
-                                              {renderInput("Balcony Railing Length (m)", room.balconyRailingDim || '', v => updateRoom(rIdx, 'balconyRailingDim', v))}
-                                              {renderSelect("Balcony Railing Material", room.balconyRailingMaterial || 'MS (Mild Steel)', v => updateRoom(rIdx, 'balconyRailingMaterial', v), ['MS (Mild Steel)', 'SS (Stainless Steel)', 'Glass', 'Wood'])}
-                                            </>
-                                          )}
-
-                                          <div className="h-px bg-white/5 col-span-3"/>
-                                          
-                                          {/* Action Buttons for Doors & Windows Modals */}
-                                          <div className="col-span-3 flex items-center gap-4">
-                                            <button 
-                                              onClick={() => setDoorModalRoomIdx(rIdx)}
-                                              className="flex-1 py-3 px-4 bg-[#111] hover:bg-[#151515] border border-white/10 rounded-xl flex items-center justify-between group transition-all"
-                                            >
-                                              <div className="flex items-center gap-3">
-                                                <div className="w-8 h-8 rounded-lg bg-pink-500/10 flex items-center justify-center border border-pink-500/20">
-                                                  <div className="w-4 h-5 border-2 border-pink-400 rounded-sm relative"><div className="absolute right-1 top-1/2 w-0.5 h-0.5 bg-pink-400 rounded-full"/></div>
-                                                </div>
-                                                <div className="flex flex-col text-left">
-                                                  <span className="text-sm font-bold text-white">Configure Doors</span>
-                                                  <span className="text-[10px] text-zinc-500">{room.doors.length} profiles</span>
-                                                </div>
-                                              </div>
-                                              <ChevronRight className="w-4 h-4 text-zinc-600 group-hover:text-white transition-colors" />
-                                            </button>
-
-                                            <button 
-                                              onClick={() => setWindowModalRoomIdx(rIdx)}
-                                              className="flex-1 py-3 px-4 bg-[#111] hover:bg-[#151515] border border-white/10 rounded-xl flex items-center justify-between group transition-all"
-                                            >
-                                              <div className="flex items-center gap-3">
-                                                <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center border border-blue-500/20">
-                                                  <div className="w-5 h-5 border-2 border-blue-400 rounded-sm grid grid-cols-2 grid-rows-2 gap-px p-0.5"><div className="bg-blue-400/50"/><div className="bg-blue-400/50"/><div className="bg-blue-400/50"/><div className="bg-blue-400/50"/></div>
-                                                </div>
-                                                <div className="flex flex-col text-left">
-                                                  <span className="text-sm font-bold text-white">Configure Windows</span>
-                                                  <span className="text-[10px] text-zinc-500">{room.windows.length} profiles</span>
-                                                </div>
-                                              </div>
-                                              <ChevronRight className="w-4 h-4 text-zinc-600 group-hover:text-white transition-colors" />
-                                            </button>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
                           
-                          {/* INNER MODALS FOR DOORS/WINDOWS */}
-                          {doorModalRoomIdx !== null && (
-                            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-20 flex items-center justify-center p-4">
-                              <div className="bg-[#18181b] border border-white/10 rounded-xl shadow-2xl w-full max-w-3xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-                                <div className="p-5 border-b border-white/5 flex items-center justify-between">
-                                  <div className="flex flex-col">
-                                    <h4 className="font-bold text-white text-sm flex items-center gap-2">
-                                      <div className="w-4 h-5 border-2 border-pink-400 rounded-sm relative"><div className="absolute right-0.5 top-1/2 w-0.5 h-0.5 bg-pink-400 rounded-full"/></div>
-                                      Doors <span className="text-zinc-600">—</span> <span className="text-pink-400">{activeFloor.rooms[doorModalRoomIdx].name}</span>
-                                    </h4>
-                                    <span className="text-[10px] text-zinc-500">{activeFloor.rooms[doorModalRoomIdx].doors.length} door spec(s) configured</span>
-                                  </div>
-                                  <button onClick={() => setDoorModalRoomIdx(null)} className="p-1.5 text-zinc-500 hover:text-white hover:bg-white/5 rounded-md"><X className="w-4 h-4"/></button>
-                                </div>
-                                <div className="p-5 flex-1 overflow-y-auto bg-[#09090b]">
-                                  <div className="flex items-center justify-between mb-4">
-                                    <span className="text-xs font-bold text-white tracking-wide">Door profiles for this room</span>
-                                    <button onClick={() => handleAddDoor(doorModalRoomIdx)} className="bg-gradient-to-r from-pink-500 to-purple-500 hover:from-pink-400 hover:to-purple-400 text-white text-xs font-bold px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-[0_0_15px_rgba(236,72,153,0.3)]"><Plus className="w-3.5 h-3.5"/> Add Door</button>
-                                  </div>
-                                  <div className="space-y-3">
-                                    {activeFloor.rooms[doorModalRoomIdx].doors.map((door: any, dIdx: number) => (
-                                      <div key={door.id} className="bg-[#111] border border-white/5 rounded-xl p-4 flex flex-col gap-4 group relative hover:border-pink-500/30 transition-colors">
-                                        <div className="flex items-center justify-between">
-                                          <div className="w-8 h-8 rounded bg-pink-500/20 text-pink-400 flex items-center justify-center font-black text-xs border border-pink-500/30 shadow-[0_0_10px_rgba(236,72,153,0.1)]">{door.code}</div>
-                                          <button onClick={() => removeDoor(doorModalRoomIdx, dIdx)} className="p-1.5 text-red-500/40 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"><Trash2 className="w-4 h-4"/></button>
-                                        </div>
-                                        <div className="grid grid-cols-12 gap-4">
-                                          <div className="col-span-2">{renderInput("Width (m)", door.width, v => updateDoor(doorModalRoomIdx, dIdx, 'width', v))}</div>
-                                          <div className="col-span-2">{renderInput("Height (m)", door.height, v => updateDoor(doorModalRoomIdx, dIdx, 'height', v))}</div>
-                                          <div className="col-span-2">{renderInput("Count", door.count, v => updateDoor(doorModalRoomIdx, dIdx, 'count', v))}</div>
-                                          <div className="col-span-3">{renderSelect("Shutter Material", door.shutterMaterial, v => updateDoor(doorModalRoomIdx, dIdx, 'shutterMaterial', v), ['Flush Door', 'Teak Wood', 'FRP', 'Glass'])}</div>
-                                          <div className="col-span-3">{renderSelect("Frame Type", door.frameType, v => updateDoor(doorModalRoomIdx, dIdx, 'frameType', v), ['Teak Wood', 'RCC', 'Metal', 'Other'])}</div>
-                                        </div>
-                                      </div>
-                                    ))}
-                                    {activeFloor.rooms[doorModalRoomIdx].doors.length === 0 && (
-                                      <div className="text-center py-6 text-zinc-500 text-sm italic">No doors added yet.</div>
-                                    )}
-                                  </div>
-                                </div>
-                                <div className="p-4 border-t border-white/5 flex justify-end">
-                                  <button onClick={() => setDoorModalRoomIdx(null)} className="px-6 py-2 bg-gradient-to-r from-pink-500 to-purple-500 text-white text-sm font-bold rounded-lg shadow-lg">Done</button>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {windowModalRoomIdx !== null && (
-                            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-20 flex items-center justify-center p-4">
-                              <div className="bg-[#18181b] border border-white/10 rounded-xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-                                <div className="p-5 border-b border-white/5 flex items-center justify-between">
-                                  <div className="flex flex-col">
-                                    <h4 className="font-bold text-white text-sm flex items-center gap-2">
-                                      <div className="w-4 h-4 border-2 border-blue-400 rounded-sm grid grid-cols-2 grid-rows-2 gap-px p-px"><div className="bg-blue-400/50"/><div className="bg-blue-400/50"/><div className="bg-blue-400/50"/><div className="bg-blue-400/50"/></div>
-                                      Windows <span className="text-zinc-600">—</span> <span className="text-blue-400">{activeFloor.rooms[windowModalRoomIdx].name}</span>
-                                    </h4>
-                                    <span className="text-[10px] text-zinc-500">{activeFloor.rooms[windowModalRoomIdx].windows.length} window spec(s) configured</span>
-                                  </div>
-                                  <button onClick={() => setWindowModalRoomIdx(null)} className="p-1.5 text-zinc-500 hover:text-white hover:bg-white/5 rounded-md"><X className="w-4 h-4"/></button>
-                                </div>
-                                <div className="p-5 flex-1 overflow-y-auto bg-[#09090b]">
-                                  <div className="flex items-center justify-between mb-4">
-                                    <span className="text-xs font-bold text-white tracking-wide">Window & ventilator profiles</span>
-                                    <button onClick={() => handleAddWindow(windowModalRoomIdx)} className="bg-gradient-to-r from-pink-500 to-purple-500 hover:from-pink-400 hover:to-purple-400 text-white text-xs font-bold px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-[0_0_15px_rgba(236,72,153,0.3)]"><Plus className="w-3.5 h-3.5"/> Add Window</button>
-                                  </div>
-                                  <div className="space-y-3">
-                                    {activeFloor.rooms[windowModalRoomIdx].windows.map((win: any, wIdx: number) => (
-                                      <div key={win.id} className="bg-[#111] border border-white/5 rounded-xl p-4 flex flex-col gap-4 group relative hover:border-blue-500/30 transition-colors">
-                                        <div className="flex items-center justify-between">
-                                          <div className="w-8 h-8 rounded bg-blue-500/20 text-blue-400 flex items-center justify-center font-black text-xs border border-blue-500/30 shadow-[0_0_10px_rgba(59,130,246,0.1)]">{win.code}</div>
-                                          <button onClick={() => removeWindow(windowModalRoomIdx, wIdx)} className="p-1.5 text-red-500/40 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"><Trash2 className="w-4 h-4"/></button>
-                                        </div>
-                                        
-                                        <div className="grid grid-cols-12 gap-4">
-                                          <div className="col-span-2">{renderInput("Width (m)", win.width, v => updateWindow(windowModalRoomIdx, wIdx, 'width', v))}</div>
-                                          <div className="col-span-2">{renderInput("Height (m)", win.height, v => updateWindow(windowModalRoomIdx, wIdx, 'height', v))}</div>
-                                          <div className="col-span-2">{renderInput("Count", win.qty || '1', v => updateWindow(windowModalRoomIdx, wIdx, 'qty', v))}</div>
-                                          <div className="col-span-2">{renderSelect("Material", win.material, v => updateWindow(windowModalRoomIdx, wIdx, 'material', v), ['UPVC', 'Aluminum', 'Wood'])}</div>
-                                          <div className="col-span-2">{renderSelect("Grills / Gate", win.grills, v => updateWindow(windowModalRoomIdx, wIdx, 'grills', v), ['Grill', 'None'])}</div>
-                                          
-                                          <div className="col-span-2 flex flex-col items-start justify-end pb-2">
-                                            <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-zinc-300 hover:text-white transition-colors">
-                                              <input type="checkbox" checked={win.hasSillJamb} onChange={e => updateWindow(windowModalRoomIdx, wIdx, 'hasSillJamb', e.target.checked)} className="rounded border-white/10 bg-[#111] text-violet-500 focus:ring-violet-500 w-4 h-4" />
-                                              Sill & Jamb
-                                            </label>
-                                          </div>
-                                        </div>
-                                        
-                                        {win.hasSillJamb && (
-                                          <div className="grid grid-cols-2 gap-4 pt-4 border-t border-white/5 animate-in fade-in slide-in-from-top-2">
-                                            <div className="col-span-1">{renderInput("Sill Width (m)", win.sillWidth, v => updateWindow(windowModalRoomIdx, wIdx, 'sillWidth', v))}</div>
-                                            <div className="col-span-1">{renderInput("Jamb Width (m)", win.jambWidth, v => updateWindow(windowModalRoomIdx, wIdx, 'jambWidth', v))}</div>
-                                          </div>
-                                        )}
-                                      </div>
-                                    ))}
-                                    {activeFloor.rooms[windowModalRoomIdx].windows.length === 0 && (
-                                      <div className="text-center py-6 text-zinc-500 text-sm italic">No windows added yet.</div>
-                                    )}
-                                  </div>
-                                </div>
-                                <div className="p-4 border-t border-white/5 flex justify-end">
-                                  <button onClick={() => setWindowModalRoomIdx(null)} className="px-6 py-2 bg-gradient-to-r from-pink-500 to-purple-500 text-white text-sm font-bold rounded-lg shadow-lg">Done</button>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
+                          <span className="text-base font-black text-fg mb-1 tracking-tight">Upload Floor Plan</span>
+                          <span className="text-[11px] leading-tight text-muted font-medium mb-4">Click to browse or drag and drop your architectural drawing here.</span>
+                          
+                          {/* Format Badges */}
+                          <div className="flex items-center gap-1.5">
+                             <span className="px-1.5 py-0.5 rounded bg-fg/5 text-[9px] font-bold tracking-widest text-muted uppercase border border-border/50">PDF</span>
+                             <span className="px-1.5 py-0.5 rounded bg-fg/5 text-[9px] font-bold tracking-widest text-muted uppercase border border-border/50">PNG</span>
+                             <span className="px-1.5 py-0.5 rounded bg-fg/5 text-[9px] font-bold tracking-widest text-muted uppercase border border-border/50">JPG</span>
+                          </div>
                         </div>
-                      )}
-
-                    </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1724,33 +1608,34 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
         </div>
 
         {/* Footer Actions */}
-        <div className="px-8 py-5 border-t border-white/10 bg-[#09090b] flex justify-between items-center z-10 shrink-0">
+        <div className="px-8 py-5 border-t border-border bg-panel flex justify-between items-center z-10 shrink-0">
           {step === 1 ? <div/> : (
-            <button onClick={() => setStep(step-1)} className="px-5 py-2.5 rounded-xl text-sm font-bold text-zinc-400 hover:text-white hover:bg-white/5 transition-all">
+            <button onClick={() => setStep(step-1)} className="px-5 py-2 rounded text-[11px] font-black uppercase tracking-widest text-muted hover:text-fg hover:bg-bg border border-transparent hover:border-border transition-all">
               Back
             </button>
           )}
 
           {step < 2 ? (
-            <button onClick={handleNextStep} disabled={loading} className="px-8 py-2.5 bg-white text-black rounded-lg text-sm font-bold shadow-[0_0_20px_rgba(255,255,255,0.1)] hover:shadow-[0_0_25px_rgba(255,255,255,0.2)] hover:scale-[1.02] transition-all flex items-center gap-2">
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Next Step <ChevronRight className="w-4 h-4" /></>}
+            <button onClick={handleNextStep} disabled={loading} className="px-8 py-2.5 bg-fg text-bg rounded text-[11px] font-black uppercase tracking-[0.1em] shadow hover:bg-accent transition-all flex items-center gap-2">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Next Phase <ChevronRight className="w-4 h-4" /></>}
             </button>
           ) : (
-            <button onClick={handleFinish} disabled={loading} className="px-8 py-2.5 bg-violet-500 text-white rounded-lg text-sm font-bold shadow-[0_0_20px_rgba(139,92,246,0.3)] hover:bg-violet-400 hover:scale-[1.02] transition-all flex items-center gap-2">
-              {loading ? <Loader2 className="w-4 h-4 animate-spin"/> : 'Finalize & Start OCR'} <Check className="w-4 h-4"/>
+            <button onClick={handleFinish} disabled={loading} className="px-8 py-2.5 bg-accent text-accent-fg text-white rounded text-[11px] font-black uppercase tracking-[0.1em] shadow hover:bg-accent-hover transition-all flex items-center gap-2">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin"/> : 'Finalize Config'} <Check className="w-4 h-4"/>
             </button>
           )}
         </div>
       </div>
+      </div>
 
       {/* PDF Interactive Crop Modal */}
       {isCropModalOpen && cropFile && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-[#09090b] text-white animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-50 flex flex-col bg-bg text-fg animate-in fade-in duration-200">
           {/* Header */}
-          <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 bg-zinc-900 shrink-0">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-panel shrink-0">
             <div className="flex items-center gap-3">
-              <h2 className="text-base font-bold text-white">Crop Table Selection: {cropFile.name}</h2>
-              <span className="px-2.5 py-0.5 text-[10px] rounded bg-violet-500/20 text-violet-300 border border-violet-500/30 font-semibold uppercase tracking-wider">
+              <h2 className="text-base font-bold text-fg">Crop Table Selection: {cropFile.name}</h2>
+              <span className="px-2.5 py-0.5 text-[10px] rounded bg-accent/10 text-accent border border-accent/30 font-semibold uppercase tracking-wider">
                 {cropType} schedule
               </span>
             </div>
@@ -1764,35 +1649,35 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                 setHeaderMappings({});
                 setScaleInitialized(false);
               }}
-              className="p-1.5 rounded-lg hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+              className="p-1.5 rounded-lg hover:bg-panel text-muted hover:text-fg transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
           {/* Top Toolbar */}
-          <div className="flex items-center justify-between px-3 py-1 bg-[#121214] border-b border-white/10 shrink-0 gap-4">
+          <div className="flex items-center justify-between px-3 py-1 bg-panel border-b border-border shrink-0 gap-4">
             {cropStage === 'crop' ? (
               <>
                 {/* Page Controls */}
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mr-1">Page:</span>
+                  <span className="text-[10px] font-bold text-muted uppercase tracking-wider mr-1">Page:</span>
                   <button
                     type="button"
                     disabled={cropPageNum <= 1 || pdfLoading}
                     onClick={() => setCropPageNum(prev => Math.max(1, prev - 1))}
-                    className="px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                    className="px-2 py-1 rounded-md bg-panel hover:bg-panel border border-border text-[10px] font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                   >
                     Previous
                   </button>
-                  <span className="text-[10px] font-bold bg-[#18181b] border border-white/5 px-2 py-1 rounded-md text-zinc-300 min-w-[70px] text-center">
+                  <span className="text-[10px] font-bold bg-panel border border-border px-2 py-1 rounded-md text-fg min-w-[70px] text-center">
                     {cropPageNum} / {cropTotalPages || '?'}
                   </span>
                   <button
                     type="button"
                     disabled={cropPageNum >= (cropTotalPages || 1) || pdfLoading}
                     onClick={() => setCropPageNum(prev => Math.min(cropTotalPages || 1, prev + 1))}
-                    className="px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                    className="px-2 py-1 rounded-md bg-panel hover:bg-panel border border-border text-[10px] font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                   >
                     Next
                   </button>
@@ -1800,16 +1685,16 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
 
                 {/* Zoom Controls */}
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mr-1">Zoom:</span>
+                  <span className="text-[10px] font-bold text-muted uppercase tracking-wider mr-1">Zoom:</span>
                   <button
                     type="button"
                     disabled={pdfScale <= 0.25 || pdfLoading}
                     onClick={() => setPdfScale(prev => Math.max(0.25, prev - 0.25))}
-                    className="px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                    className="px-2 py-1 rounded-md bg-panel hover:bg-panel border border-border text-[10px] font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                   >
                     Zoom Out
                   </button>
-                  <div className="flex items-center gap-0.5 bg-[#18181b] border border-white/10 rounded-md px-1.5 py-1 w-14 shrink-0 justify-center">
+                  <div className="flex items-center gap-0.5 bg-panel border border-border rounded-md px-1.5 py-1 w-14 shrink-0 justify-center">
                     <input 
                       type="text"
                       value={zoomText}
@@ -1830,15 +1715,15 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                         setPdfScale(val / 100);
                         setZoomText(val.toString());
                       }}
-                      className="w-full bg-transparent text-[10px] font-bold text-center focus:outline-none text-white font-mono"
+                      className="w-full bg-transparent text-[10px] font-bold text-center focus:outline-none text-fg font-mono"
                     />
-                    <span className="text-[10px] text-zinc-400 font-bold">%</span>
+                    <span className="text-[10px] text-muted font-bold">%</span>
                   </div>
                   <button
                     type="button"
                     disabled={pdfScale >= 5.0 || pdfLoading}
                     onClick={() => setPdfScale(prev => Math.min(5.0, prev + 0.25))}
-                    className="px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                    className="px-2 py-1 rounded-md bg-panel hover:bg-panel border border-border text-[10px] font-semibold transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                   >
                     Zoom In
                   </button>
@@ -1847,7 +1732,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                 {/* Status and Action */}
                 <div className="flex items-center gap-4">
                   {pdfLoading && (
-                    <div className="flex items-center gap-2 text-violet-400 text-xs font-medium animate-pulse">
+                    <div className="flex items-center gap-2 text-accent text-xs font-medium animate-pulse">
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
                       <span>Loading Page...</span>
                     </div>
@@ -1862,7 +1747,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                     type="button"
                     disabled={!cropRect || extracting || pdfLoading}
                     onClick={handleExtractCrop}
-                    className="px-3.5 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-[10px] font-bold transition-all shadow-md flex items-center gap-1.5 disabled:cursor-not-allowed cursor-pointer"
+                    className="px-3.5 py-1.5 rounded-md bg-accent hover:bg-accent-hover text-accent-fg hover:bg-accent text-accent-fg disabled:bg-panel disabled:text-muted text-[10px] font-bold transition-all shadow-md flex items-center gap-1.5 disabled:cursor-not-allowed cursor-pointer"
                   >
                     {extracting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
                     Extract Schedule
@@ -1873,7 +1758,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
               <>
                 {/* Left side info */}
                 <div className="flex items-center gap-3">
-                  <span className="text-xs text-zinc-400 font-medium">
+                  <span className="text-xs text-muted font-medium">
                     Successfully extracted <strong className="text-white">{extractedItems.length}</strong> rows across <strong className="text-white">{Object.keys(headerMappings).length}</strong> columns.
                   </span>
                 </div>
@@ -1900,14 +1785,14 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       setExtractedItems([]);
                       setHeaderMappings({});
                     }}
-                    className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                    className="px-4 py-2 rounded-lg bg-panel hover:bg-panel border border-border text-xs font-bold transition-colors cursor-pointer"
                   >
                     Reset All Crops
                   </button>
                   <button
                     type="button"
                     onClick={handleConfirmSchema}
-                    className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
+                    className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer animate-pulse"
                   >
                     <Check className="w-3.5 h-3.5" />
                     Confirm & Save Schema ({extractedItems.length} Rows)
@@ -1921,9 +1806,9 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
           <div className="flex-1 flex overflow-hidden">
             {cropStage === 'crop' ? (
               /* Right PDF Canvas Workspace */
-              <div className="flex-1 overflow-auto bg-[#09090b] p-8 flex items-start justify-start relative">
+              <div className="flex-1 overflow-auto bg-bg p-8 flex items-start justify-start relative">
                 <div 
-                  className="relative select-none border border-white/10 shadow-2xl bg-white shrink-0"
+                  className="relative select-none border border-border shadow-2xl bg-white shrink-0"
                   style={{ 
                     cursor: 'crosshair',
                     width: pageWidth ? pageWidth * pdfScale : 'auto',
@@ -1944,7 +1829,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                   {/* Crop Overlay Selection Box */}
                   {cropRect && (
                     <div 
-                      className="absolute border-2 border-violet-500 bg-violet-500/20"
+                      className="absolute border-2 border-accent bg-accent/10"
                       style={{
                         left: Math.min(cropRect.startX, cropRect.currentX),
                         top: Math.min(cropRect.startY, cropRect.currentY),
@@ -1960,171 +1845,80 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
               /* Header Mapping Dashboard */
               <div className="flex-1 flex overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                 {/* Left Form: Mappings Editor */}
-                <div className="w-[380px] shrink-0 border-r border-white/10 bg-[#0d0d0f] flex flex-col overflow-hidden">
-                  <div className="p-5 border-b border-white/5 shrink-0 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-sm font-bold text-white mb-0.5">Column Schema Editor</h3>
-                        <p className="text-xs text-zinc-500">Define column names, add fields & arrange sequence.</p>
-                      </div>
-                    </div>
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        handleAddColumn();
-                      }}
-                      className="flex items-center gap-1.5"
-                    >
-                      <input
-                        type="text"
-                        value={newColumnInput}
-                        onChange={(e) => setNewColumnInput(e.target.value)}
-                        placeholder="New column name..."
-                        className="flex-1 bg-[#18181b] border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/50 transition-all"
-                      />
-                      <button
-                        type="submit"
-                        className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold flex items-center gap-1 shrink-0 transition-colors shadow-lg shadow-violet-600/20"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Add</span>
-                      </button>
-                    </form>
+                <div className="w-[380px] shrink-0 border-r border-border bg-panel flex flex-col overflow-hidden">
+                  <div className="p-5 border-b border-border shrink-0">
+                    <h3 className="text-sm font-bold text-fg mb-1">Column Schema Editor</h3>
+                    <p className="text-xs text-muted">Provide clean, descriptive names for the detected columns.</p>
                   </div>
                   <div className="flex-1 overflow-y-auto p-5 space-y-4 custom-scrollbar">
-                    {Object.keys(headerMappings).map((oldKey, idx, keysArr) => {
+                    {Object.keys(headerMappings).map((oldKey, idx) => {
                       const sampleVal = extractedItems.find(item => item[oldKey])?.[oldKey] || '';
-                      const isFirst = idx === 0;
-                      const isLast = idx === keysArr.length - 1;
+                      const colors = [
+                        'bg-white border-emerald-100 dark:bg-panel dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-300',
+                        'bg-emerald-50 border-emerald-200 dark:bg-emerald-950/40 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                      ];
+                      const cClass = colors[idx % colors.length];
                       return (
-                        <div key={oldKey} className="flex flex-col gap-1.5 p-3 rounded-xl bg-white/5 border border-white/10 hover:border-white/15 transition-all group/card">
-                          <div className="flex justify-between items-center text-[9px] font-black text-zinc-500 uppercase tracking-widest">
+                        <div key={oldKey} className={`flex flex-col gap-1.5 p-3 rounded-xl border transition-all shadow-sm hover:border-emerald-500/50 ${cClass}`}>
+                          <div className="flex justify-between items-center text-[9px] font-black uppercase tracking-widest opacity-90">
                             <span>Detected Label</span>
-                            <div className="flex items-center gap-1">
-                              <span className="text-zinc-400 max-w-[90px] truncate bg-white/5 px-1.5 py-0.5 rounded font-medium mr-1">Sample: "{sampleVal}"</span>
-                              <button
-                                type="button"
-                                disabled={isFirst}
-                                onClick={() => handleMoveColumn(oldKey, 'up')}
-                                className="p-1 rounded hover:bg-white/10 text-zinc-400 disabled:opacity-20 transition-all"
-                                title="Move Up (Left in table)"
-                              >
-                                <ChevronUp className="w-3 h-3" />
-                              </button>
-                              <button
-                                type="button"
-                                disabled={isLast}
-                                onClick={() => handleMoveColumn(oldKey, 'down')}
-                                className="p-1 rounded hover:bg-white/10 text-zinc-400 disabled:opacity-20 transition-all"
-                                title="Move Down (Right in table)"
-                              >
-                                <ChevronDown className="w-3 h-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteColumn(oldKey)}
-                                className="p-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 opacity-0 group-hover/card:opacity-100 transition-all ml-1"
-                                title="Delete Column"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            </div>
+                            <span className="text-muted max-w-[150px] truncate bg-bg px-1.5 py-0.5 rounded font-medium shadow-sm">Sample: "{sampleVal}"</span>
                           </div>
-                          <div className="text-xs text-zinc-300 font-bold truncate bg-black/45 px-2.5 py-1.5 rounded border border-white/5 select-all font-mono">
+                          <div className="text-xs text-fg font-bold truncate bg-panel px-2.5 py-1.5 rounded border border-border select-all font-mono shadow-inner">
                             {oldKey}
                           </div>
-                          <input
-                            type="text"
-                            value={headerMappings[oldKey]}
-                            onChange={(e) => setHeaderMappings(prev => ({ ...prev, [oldKey]: e.target.value }))}
-                            className="w-full bg-[#18181b] border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/50 transition-all font-semibold"
-                            placeholder="Clean name (e.g. Width 1)"
-                          />
-                        </div>
+                            <input
+                              type="text"
+                              value={headerMappings[oldKey]}
+                              onChange={(e) => setHeaderMappings(prev => ({ ...prev, [oldKey]: e.target.value }))}
+                              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-xs text-fg focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-all font-semibold shadow-sm"
+                              placeholder="Clean name (e.g. Width 1)"
+                            />
+                          </div>
                       );
                     })}
                   </div>
                 </div>
 
                 {/* Right Interactive Table Preview */}
-                <div className="flex-1 flex flex-col bg-[#09090b] overflow-hidden">
-                  <div className="p-5 border-b border-white/5 shrink-0 flex items-center justify-between">
+                <div className="flex-1 flex flex-col bg-bg overflow-hidden">
+                  <div className="p-5 border-b border-border shrink-0 flex items-center justify-between">
                     <div>
-                      <h3 className="text-sm font-bold text-white mb-1">Data Schema Live Preview</h3>
-                      <p className="text-xs text-zinc-500">Table rows updated instantly with your renamed column keys.</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="px-2.5 py-1 rounded bg-violet-500/10 border border-violet-500/20 text-[11px] font-bold text-violet-300">
-                        Total Extracted: {extractedItems.length} Rows
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleAddColumn()}
-                        className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-semibold flex items-center gap-1.5 border border-white/10 transition-colors"
-                      >
-                        <Plus className="w-3.5 h-3.5 text-violet-400" />
-                        <span>Add Column</span>
-                      </button>
+                      <h3 className="text-sm font-bold text-fg mb-1">Data Schema Live Preview</h3>
+                      <p className="text-xs text-muted">Table rows updated instantly with your renamed column keys.</p>
                     </div>
                   </div>
                   <div className="flex-1 overflow-auto p-6 custom-scrollbar">
                     <div className="min-w-full inline-block align-middle">
-                      <div className="overflow-hidden border border-white/10 rounded-xl bg-[#0d0d0f]">
-                        <table className="min-w-full divide-y divide-white/5">
-                          <thead className="bg-[#121214]">
+                      <div className="overflow-hidden border border-border rounded-xl bg-panel shadow-sm">
+                        <table className="min-w-full divide-y divide-border">
+                          <thead className="bg-muted/10 border-b border-border">
                             <tr>
-                              {Object.keys(headerMappings).map((oldKey, idx, keysArr) => {
+                              {Object.keys(headerMappings).map((oldKey, idx) => {
                                 const newKey = headerMappings[oldKey] || oldKey;
-                                const isFirst = idx === 0;
-                                const isLast = idx === keysArr.length - 1;
+                                const colors = [
+                                  'bg-white text-emerald-900 dark:bg-panel dark:text-emerald-200',
+                                  'bg-emerald-50 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200'
+                                ];
+                                const cClass = colors[idx % colors.length];
                                 return (
-                                  <th key={oldKey} className="px-4 py-3.5 text-left text-xs font-bold text-zinc-300 uppercase tracking-wider whitespace-nowrap border-r border-white/5 last:border-r-0 group/th">
-                                    <div className="flex items-center justify-between gap-2">
-                                      <span>{newKey}</span>
-                                      <div className="flex items-center gap-0.5 opacity-0 group-hover/th:opacity-100 transition-opacity">
-                                        <button
-                                          type="button"
-                                          disabled={isFirst}
-                                          onClick={() => handleMoveColumn(oldKey, 'up')}
-                                          className="p-1 rounded hover:bg-white/10 text-zinc-400 disabled:opacity-20 transition-all"
-                                          title="Move Left"
-                                        >
-                                          <ChevronLeft className="w-3 h-3" />
-                                        </button>
-                                        <button
-                                          type="button"
-                                          disabled={isLast}
-                                          onClick={() => handleMoveColumn(oldKey, 'down')}
-                                          className="p-1 rounded hover:bg-white/10 text-zinc-400 disabled:opacity-20 transition-all"
-                                          title="Move Right"
-                                        >
-                                          <ChevronRight className="w-3 h-3" />
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleDeleteColumn(oldKey)}
-                                          className="p-1 rounded hover:bg-red-500/20 text-red-400 transition-all ml-1"
-                                          title="Delete Column"
-                                        >
-                                          <Trash2 className="w-3 h-3" />
-                                        </button>
-                                      </div>
-                                    </div>
+                                  <th key={oldKey} className={`px-4 py-3.5 text-left text-xs font-bold uppercase tracking-wider whitespace-nowrap border-r border-border last:border-r-0 ${cClass}`}>
+                                    {newKey}
                                   </th>
                                 );
                               })}
-                              <th className="px-4 py-3.5 text-left text-xs font-bold text-zinc-300 uppercase tracking-wider whitespace-nowrap">
+                              <th className="px-4 py-3.5 text-left text-xs font-bold text-fg uppercase tracking-wider whitespace-nowrap">
                                 Actions
                               </th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-white/5 bg-transparent">
-                            {extractedItems.map((item, idx) => {
+                          <tbody className="divide-y divide-border bg-transparent">
+                            {extractedItems.slice(0, 10).map((item, idx) => {
                               const isEditing = editingRowIndex === idx;
                               return (
                                 <tr 
                                   key={idx} 
-                                  className="hover:bg-white/[0.02] transition-colors cursor-pointer group"
+                                  className="hover:bg-muted/10 even:bg-muted/5 transition-colors cursor-pointer group"
                                   onDoubleClick={() => {
                                     setEditingRowIndex(idx);
                                     setEditRowData({ ...item });
@@ -2134,12 +1928,12 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                                   {isEditing ? (
                                     <>
                                       {Object.keys(headerMappings).map((oldKey) => (
-                                        <td key={oldKey} className="px-2 py-2 text-xs text-zinc-400 border-r border-white/5 last:border-r-0 max-w-[200px]">
+                                        <td key={oldKey} className="px-2 py-2 text-xs text-muted border-r border-border last:border-r-0 max-w-[200px]">
                                           <input
                                             type="text"
                                             value={editRowData?.[oldKey] || ''}
                                             onChange={(e) => setEditRowData((prev: any) => ({ ...prev, [oldKey]: e.target.value }))}
-                                            className="w-full bg-[#18181b] border border-violet-500/50 rounded px-2 py-1 text-xs text-white focus:outline-none focus:ring-1 focus:ring-violet-500/30 font-semibold"
+                                            className="w-full bg-bg border border-accent/50 rounded px-2 py-1 text-xs text-fg focus:outline-none focus:ring-1 focus:ring-accent/30 font-semibold shadow-inner"
                                             autoFocus={Object.keys(headerMappings)[0] === oldKey}
                                             onKeyDown={(e) => {
                                               if (e.key === 'Enter') {
@@ -2156,7 +1950,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                                           />
                                         </td>
                                       ))}
-                                      <td className="px-4 py-2 text-xs text-zinc-400 whitespace-nowrap flex items-center gap-1.5 h-full">
+                                      <td className="px-4 py-2 text-xs text-muted whitespace-nowrap flex items-center gap-1.5 h-full">
                                         <button
                                           type="button"
                                           onClick={() => {
@@ -2190,7 +1984,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                                             setEditingRowIndex(null);
                                             setEditRowData(null);
                                           }}
-                                          className="p-1 rounded bg-white/5 hover:bg-white/10 text-zinc-400 transition-colors"
+                                          className="p-1 rounded bg-panel hover:bg-panel text-muted transition-colors"
                                           title="Cancel"
                                         >
                                           <X className="w-3.5 h-3.5" />
@@ -2200,11 +1994,11 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                                   ) : (
                                     <>
                                       {Object.keys(headerMappings).map((oldKey) => (
-                                        <td key={oldKey} className="px-4 py-3 text-xs text-zinc-400 whitespace-nowrap border-r border-white/5 last:border-r-0 max-w-[200px] truncate">
+                                        <td key={oldKey} className="px-4 py-3 text-xs text-muted whitespace-nowrap border-r border-border last:border-r-0 max-w-[200px] truncate">
                                           {item[oldKey]}
                                         </td>
                                       ))}
-                                      <td className="px-3 py-2 text-xs text-zinc-500 whitespace-nowrap">
+                                      <td className="px-4 py-3 text-xs text-muted whitespace-nowrap">
                                         <button
                                           type="button"
                                           onClick={(e) => {
@@ -2212,8 +2006,8 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                                             const updated = extractedItems.filter((_, i) => i !== idx);
                                             setExtractedItems(updated);
                                           }}
-                                          className="px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-semibold flex items-center gap-1 transition-all border border-red-500/20 hover:border-red-500/40"
-                                          title="Delete this row"
+                                          className="p-1 rounded hover:bg-red-500/10 text-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                                          title="Delete Row"
                                         >
                                           <Trash2 className="w-3 h-3 text-red-400" />
                                           <span>Delete</span>
@@ -2227,14 +2021,41 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                           </tbody>
                         </table>
                       </div>
-                      <div className="text-center text-zinc-500 text-[10px] font-semibold mt-3 uppercase tracking-wider">
-                        Showing all {extractedItems.length} extracted rows across {Object.keys(headerMappings).length} columns
-                      </div>
+                      {extractedItems.length > 10 && (
+                        <div className="text-center text-muted text-[10px] font-semibold mt-3 uppercase tracking-wider">
+                          Showing first 10 of {extractedItems.length} rows
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {/* Fullscreen Floor Plan Viewer */}
+      {isFullscreen && activeFloor.file && activeFloor.fileName && (
+        <div className="fixed inset-0 z-[200] bg-panel flex flex-col animate-in fade-in zoom-in-95 duration-200">
+          {/* Header */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0 bg-bg">
+            <div className="flex items-center gap-6">
+              <h2 className="text-lg font-bold text-fg">Floor Plan: {activeFloor.name}</h2>
+            </div>
+            <button onClick={() => setIsFullscreen(false)} className="p-2 rounded-lg hover:bg-muted/10 text-muted hover:text-fg transition-colors">
+              <X className="w-6 h-6" />
+            </button>
+          </div>
+          {/* Viewer */}
+          <div className="flex-1 relative overflow-hidden bg-black/20">
+             <InteractiveFloorPlanViewer 
+               file={activeFloor.file}
+               fileName={activeFloor.fileName}
+               rooms={activeFloor.rooms}
+               hoveredRoomId={hoveredRoomId}
+               setHoveredRoomId={setHoveredRoomId}
+               onFullscreen={() => setIsFullscreen(false)}
+             />
           </div>
         </div>
       )}

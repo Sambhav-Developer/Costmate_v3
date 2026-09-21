@@ -1038,6 +1038,42 @@ def classify_opening_from_schedule(item: dict) -> str:
         da_exact_words.intersection(comments_words)):
         return "DA"
 
+    # Barn / Sliding Door check
+    sld_phrases = ["BARN DOOR", "BARN-DOOR", "BARN", "SURFACE SLIDING", "SURFACE-SLIDING", "SLIDING DOOR", "SLIDING-DOOR", "SLIDING", "TOP HUNG SLIDING", "TOP-HUNG SLIDING", "BARN HARDWARE", "TRACK HARDWARE", "SLIDING TRACK"]
+    sld_exact_words = {"SLD", "BARN", "SLIDING"}
+    if (any(p in dtype_upper for p in sld_phrases) or 
+        any(p in comments_upper for p in sld_phrases) or 
+        sld_exact_words.intersection(dtype_words) or 
+        sld_exact_words.intersection(comments_words)):
+        return "SLD"
+
+    # Pocket Door check
+    pkt_phrases = ["POCKET DOOR", "POCKET-DOOR", "POCKET"]
+    pkt_exact_words = {"PKT", "POCKET"}
+    if (any(p in dtype_upper for p in pkt_phrases) or 
+        any(p in comments_upper for p in pkt_phrases) or 
+        pkt_exact_words.intersection(dtype_words) or 
+        pkt_exact_words.intersection(comments_words)):
+        return "PKT"
+
+    # Bifold Door check
+    bifold_phrases = ["BIFOLD", "BI-FOLD"]
+    bifold_exact_words = {"BIFOLD"}
+    if (any(p in dtype_upper for p in bifold_phrases) or 
+        any(p in comments_upper for p in bifold_phrases) or 
+        bifold_exact_words.intersection(dtype_words) or 
+        bifold_exact_words.intersection(comments_words)):
+        return "BIFOLD"
+
+    # Bypass Door check
+    bypass_phrases = ["BYPASS", "BY-PASS"]
+    bypass_exact_words = {"BYPASS"}
+    if (any(p in dtype_upper for p in bypass_phrases) or 
+        any(p in comments_upper for p in bypass_phrases) or 
+        bypass_exact_words.intersection(dtype_words) or 
+        bypass_exact_words.intersection(comments_words)):
+        return "BYPASS"
+
     if w_a:
         return "SGL"
 

@@ -101,6 +101,36 @@ class TestReconciliation(unittest.TestCase):
         doors = res["qa_prefilled"]["doors"]
         self.assertEqual(doors[0]["_reconciled_opening_mode"], "DA")
 
+    def test_barn_door_detection(self):
+        state_barn = {
+            "schedule_data": [
+                {
+                    "mark": "B101",
+                    "comments": "BARN DOOR WITH SURFACE SLIDING HARDWARE",
+                    "door type": "BARN",
+                    "material": "WD"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "B101",
+                        "bbox": [100, 100, 150, 120],
+                        "w_cx": 125,
+                        "w_cy": 110,
+                        "floor_no": "1",
+                        "int_ext": "Interior",
+                        "vlm_opening_mode": "SLD",
+                        "vlm_wall_type": "INT"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_barn))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["_reconciled_opening_mode"], "SLD")
+
     def test_double_acting_regression(self):
         # Test case: Unrelated comments like "AUTOMATIC, CR" should NOT trigger DA
         state_normal = {

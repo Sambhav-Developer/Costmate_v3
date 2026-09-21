@@ -526,11 +526,52 @@ async def reconciliation_node(state: CostmateState) -> dict:
         dtype_words = {w.strip(".,()[]{}-_#*") for w in sched_dtype.split()}
         comments_words = {w.strip(".,()[]{}-_#*") for w in sched_comments.split()}
         
+        is_sched_da = False
         if (any(p in sched_dtype for p in da_phrases) or 
             any(p in sched_comments for p in da_phrases) or 
             da_exact_words.intersection(dtype_words) or 
             da_exact_words.intersection(comments_words)):
             is_sched_da = True
+
+        # Barn / Sliding Door check
+        sld_phrases = ["BARN DOOR", "BARN-DOOR", "BARN", "SURFACE SLIDING", "SURFACE-SLIDING", "SLIDING DOOR", "SLIDING-DOOR", "SLIDING", "TOP HUNG SLIDING", "TOP-HUNG SLIDING", "BARN HARDWARE", "TRACK HARDWARE", "SLIDING TRACK"]
+        sld_exact_words = {"SLD", "BARN", "SLIDING"}
+        is_sched_sld = False
+        if (any(p in sched_dtype for p in sld_phrases) or 
+            any(p in sched_comments for p in sld_phrases) or 
+            sld_exact_words.intersection(dtype_words) or 
+            sld_exact_words.intersection(comments_words)):
+            is_sched_sld = True
+
+        # Pocket Door check
+        pkt_phrases = ["POCKET DOOR", "POCKET-DOOR", "POCKET"]
+        pkt_exact_words = {"PKT", "POCKET"}
+        is_sched_pkt = False
+        if (any(p in sched_dtype for p in pkt_phrases) or 
+            any(p in sched_comments for p in pkt_phrases) or 
+            pkt_exact_words.intersection(dtype_words) or 
+            pkt_exact_words.intersection(comments_words)):
+            is_sched_pkt = True
+
+        # Bifold Door check
+        bifold_phrases = ["BIFOLD", "BI-FOLD"]
+        bifold_exact_words = {"BIFOLD"}
+        is_sched_bifold = False
+        if (any(p in sched_dtype for p in bifold_phrases) or 
+            any(p in sched_comments for p in bifold_phrases) or 
+            bifold_exact_words.intersection(dtype_words) or 
+            bifold_exact_words.intersection(comments_words)):
+            is_sched_bifold = True
+
+        # Bypass Door check
+        bypass_phrases = ["BYPASS", "BY-PASS"]
+        bypass_exact_words = {"BYPASS"}
+        is_sched_bypass = False
+        if (any(p in sched_dtype for p in bypass_phrases) or 
+            any(p in sched_comments for p in bypass_phrases) or 
+            bypass_exact_words.intersection(dtype_words) or 
+            bypass_exact_words.intersection(comments_words)):
+            is_sched_bypass = True
 
         resolved_mode = sched_opening_mode
         if is_storefront_opening or is_window:
@@ -539,6 +580,14 @@ async def reconciliation_node(state: CostmateState) -> dict:
             resolved_mode = "CO"
         elif is_sched_da:
             resolved_mode = "DA"
+        elif is_sched_sld:
+            resolved_mode = "SLD"
+        elif is_sched_pkt:
+            resolved_mode = "PKT"
+        elif is_sched_bifold:
+            resolved_mode = "BIFOLD"
+        elif is_sched_bypass:
+            resolved_mode = "BYPASS"
         elif has_panel_2:
             resolved_mode = "PR"
         elif mark_dets and mark_dets[0].get("opening_mode"):

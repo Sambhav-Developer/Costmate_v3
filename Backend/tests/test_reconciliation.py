@@ -257,6 +257,37 @@ class TestReconciliation(unittest.TestCase):
         doors = res["qa_prefilled"]["doors"]
         self.assertEqual(doors[0]["_reconciled_opening_mode"], "CO")
 
+        # 5. Wood door in Aluminum Frame case: WD/GL door material with ALUM frame material (In Scope Wood Door, NOT Storefront)
+        state_wd_alum = {
+            "schedule_data": [
+                {
+                    "mark": "200",
+                    "door type": "FG",
+                    "door material": "WD/GL",
+                    "frame material": "ALUM",
+                    "comments": ""
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "200",
+                        "bbox": [500, 500, 550, 520],
+                        "w_cx": 525,
+                        "w_cy": 510,
+                        "floor_no": "1",
+                        "int_ext": "Interior",
+                        "vlm_opening_mode": "SGL",
+                        "vlm_wall_type": "INT"
+                    }
+                ]
+            }
+        }
+        res = loop.run_until_complete(reconciliation_node(state_wd_alum))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["_reconciled_opening_mode"], "SGL")
+        self.assertEqual(doors[0]["_reconciled_int_ext"], "Interior")
+
     def test_prep_door_frame_regression(self):
         # Relocated door with "PREP DOOR/FRAME" in comments should NOT trigger PR (remains SGL)
         state_relocated = {

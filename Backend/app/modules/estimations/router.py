@@ -5,7 +5,9 @@ from sse_starlette.sse import EventSourceResponse
 from app.dependencies import get_current_user, get_db
 from typing import Union
 from app.modules.estimations.schemas import DraftSessionRequest, NotificationRequest, EncryptedPayloadSchema, CompleteSessionRequest
-from app.core.crypto_utils import decrypt_aes_key_with_rsa, decrypt_payload_with_aes_gcm
+import openpyxl
+import tempfile
+from openpyxl.styles import Font, Alignment, PatternFill
 from app.modules.estimations.service import estimation_service
 from app.modules.estimations.repository import estimation_repo
 from app.services.graph.session_manager import session_manager
@@ -314,49 +316,51 @@ async def download_annotated_plan(session_id: str, current_user: dict = Depends(
         raise HTTPException(status_code=404, detail="Session not found.")
     
     annotated_path = state_snapshot.values.get("annotated_pdf_path")
-    if not annotated_path:
-        raise HTTPException(status_code=404, detail="Annotated plan PDF not ready or not found.")
-        
     filename = f"Costmate_Annotated_Plan_{session_id}.pdf"
     media_type = "application/pdf"
     
-    # 1. If annotated_path is a local path and exists, serve it directly
-    if not annotated_path.startswith("http") and os.path.exists(annotated_path):
-        return FileResponse(
-            path=annotated_path, 
-            media_type=media_type, 
-            filename=filename,
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
-        )
+    if annotated_path:
+        # 1. If annotated_path is a local path and exists, serve it directly
+        if not annotated_path.startswith("http") and os.path.exists(annotated_path):
+            return FileResponse(
+                path=annotated_path, 
+                media_type=media_type, 
+                filename=filename,
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+            )
 
-    # 2. If annotated_path is a Cloudinary HTTP URL, attempt to download it
-    if annotated_path.startswith("http"):
-        import httpx
-        from fastapi.responses import Response
-        try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                resp = await client.get(annotated_path)
-                if resp.status_code == 200:
-                    return Response(
-                        content=resp.content,
-                        media_type=media_type,
-                        headers={
-                            "Content-Disposition": f"attachment; filename={filename}",
-                            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
-                        }
-                    )
-                else:
-                    logger.warning(f"Cloudinary URL {annotated_path} returned status {resp.status_code}. Attempting project local fallback...")
-        except Exception as net_err:
-            logger.warning(f"Network error fetching Cloudinary URL {annotated_path}: {net_err}. Attempting local fallback...")
+        # 2. If annotated_path is a Cloudinary HTTP URL, attempt to download it
+        if annotated_path.startswith("http"):
+            import httpx
+            from fastapi.responses import Response
+            try:
+                async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                    resp = await client.get(annotated_path)
+                    if resp.status_code == 200:
+                        return Response(
+                            content=resp.content,
+                            media_type=media_type,
+                            headers={
+                                "Content-Disposition": f"attachment; filename={filename}",
+                                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
+                            }
+                        )
+                    else:
+                        logger.warning(f"Cloudinary URL {annotated_path} returned status {resp.status_code}. Attempting project local fallback...")
+            except Exception as net_err:
+                logger.warning(f"Network error fetching Cloudinary URL {annotated_path}: {net_err}. Attempting local fallback...")
 
     # 3. Fallback: Search OUTPUT_DIR for local annotated PDF matching the current project name or session ID
     proj_title = state_snapshot.values.get("project_name") or ""
     clean_proj_name = "".join(c for c in proj_title if c.isalnum() or c in [' ', '_', '-']).strip().replace(' ', '_') if proj_title else ""
     
     if os.path.exists(settings.OUTPUT_DIR):
-        for pdf_f in sorted(os.listdir(settings.OUTPUT_DIR), reverse=True):
-            if pdf_f.endswith(".pdf") and "MarkedUp" in pdf_f:
+        markedup_files = [
+            f for f in sorted(os.listdir(settings.OUTPUT_DIR), reverse=True)
+            if f.endswith(".pdf") and "MarkedUp" in f
+        ]
+        if markedup_files:
+            for pdf_f in markedup_files:
                 if clean_proj_name and clean_proj_name.lower() in pdf_f.lower():
                     local_match = os.path.join(settings.OUTPUT_DIR, pdf_f)
                     return FileResponse(
@@ -373,6 +377,14 @@ async def download_annotated_plan(session_id: str, current_user: dict = Depends(
                         filename=filename,
                         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
                     )
+            # Fallback to the latest marked up PDF in output directory
+            latest_pdf = os.path.join(settings.OUTPUT_DIR, markedup_files[0])
+            return FileResponse(
+                path=latest_pdf,
+                media_type=media_type,
+                filename=filename,
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+            )
 
     raise HTTPException(status_code=404, detail="Annotated plan PDF not ready or not found on server.")
 

@@ -94,13 +94,22 @@ async def schedule_parser_node(state: CostmateState) -> dict:
         "windows": windows
     }
 
-    # Extract unit mix matrix if available in intake_data
-    unit_mix_matrix = global_settings.get("unitMix") or global_settings.get("unitMixMatrix") or []
+    # Extract building_type, unit mix matrix, and unit door schedule if available in intake_data
+    building_type_val = str(global_settings.get("buildingType", "Multi-Family"))
+    if "multi" in building_type_val.lower() and "non" not in building_type_val.lower():
+        building_type = "MULTI_FAMILY"
+    else:
+        building_type = "NON_MULTI_FAMILY"
 
-    logger.info(f"Schedule Parser Node: Categorized {len(unique_rows)} items -> UNIQUE: {len(unique_doors)}, REPEATING: {len(repeating_doors)}, OVERHEAD: {len(overhead_doors)}, CASED: {len(cased_openings)}, WINDOW: {len(windows)}")
+    unit_mix_matrix = global_settings.get("unitMix") or global_settings.get("unitMixMatrix") or global_settings.get("unitMatrix") or []
+    unit_door_schedule = global_settings.get("unitDoorSchedule") or global_settings.get("unitDoorScheduleData") or []
+
+    logger.info(f"Schedule Parser Node: Building Type = {building_type}, Categorized {len(unique_rows)} items -> UNIQUE: {len(unique_doors)}, REPEATING: {len(repeating_doors)}, OVERHEAD: {len(overhead_doors)}, CASED: {len(cased_openings)}, WINDOW: {len(windows)}")
     return {
+        "building_type": building_type,
         "schedule_data": unique_rows,
         "schedule_sections": schedule_sections,
-        "unit_mix_matrix": unit_mix_matrix
+        "unit_mix_matrix": unit_mix_matrix,
+        "unit_door_schedule": unit_door_schedule
     }
 

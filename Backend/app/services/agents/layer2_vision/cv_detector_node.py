@@ -1374,6 +1374,121 @@ async def extract_mark_from_tag_crop(crop_path: str, sched_marks: set, semaphore
             logger.error(f"Failed to read mark from tag crop: {e}")
             return "NONE"
 
+def extract_unit_door_matrix_from_enlarged_plan(page, words_on_page, drawings_on_page, sched_marks, floor_name: str) -> list:
+    """
+    Scans an Enlarged Typical Unit Plan for unit layout titles (e.g. 'UNIT A1', 'UNIT A2', 'UNIT B1', 'TYPICAL UNIT B'),
+    establishes spatial bounding boxes for each unit layout, and counts repeating door marks inside each layout.
+    Returns list of dicts:
+      [
+        {"care": "Memory Care", "unit_type": "A1", "area": 750, "door_counts": {"RES-1": 1, "RES-2": 2, "RES-3": 1}},
+        ...
+      ]
+    """
+    import fitz
+    import re
+    
+    page_rect = page.rect
+    w_page, h_page = page_rect.width, page_rect.height
+    
+    # 1. Search for Unit Layout Headers/Titles
+    unit_headers = []
+    unit_keywords = ["UNIT", "TYPE", "TYPICAL", "SUITE", "LAYOUT", "APARTMENT", "1BR", "2BR", "STUDIO"]
+    
+    for w in words_on_page:
+        txt = w[4].strip(".,()[]{}-_#*/").upper()
+        if txt in unit_keywords or any(kw in txt for kw in ["UNIT", "1BR", "2BR", "STUDIO"]):
+            cx, cy = (w[0] + w[2]) / 2.0, (w[1] + w[3]) / 2.0
+            nearby_words = []
+            for w_other in words_on_page:
+                if w_other == w: continue
+                ocx, ocy = (w_other[0] + w_other[2]) / 2.0, (w_other[1] + w_other[3]) / 2.0
+                if abs(ocy - cy) <= 15.0 and 0.0 <= (ocx - cx) <= 80.0:
+                    nearby_words.append(w_other[4].strip(".,()[]{}-_#*/").upper())
+                    
+            full_title = f"{txt} {' '.join(nearby_words)}".strip()
+            match = re.search(r'\b(UNIT|TYPE|TYPICAL)?\s*([A-Z0-9]{1,4}(?:\s*\(?HC\)?|\s*\(?ADA\)?)?)\b', full_title)
+            if match:
+                unit_code = match.group(2).strip()
+                if len(unit_code) >= 1 and unit_code not in ["PLAN", "DOOR", "THE", "LEVEL", "FLOOR", "SHEET"]:
+                    unit_headers.append({
+                        "title": f"UNIT {unit_code}",
+                        "unit_type": unit_code,
+                        "point": (cx, cy),
+                        "rect": fitz.Rect(w[:4])
+                    })
+
+    unique_units = []
+    seen_codes = set()
+    for uh in unit_headers:
+        code = uh["unit_type"]
+        if code not in seen_codes:
+            seen_codes.add(code)
+            unique_units.append(uh)
+            
+    if not unique_units:
+        clean_name = floor_name.upper().replace("ENLARGED", "").replace("TYPICAL", "").replace("PLAN", "").strip()
+        if not clean_name:
+            clean_name = "TYPICAL UNIT"
+        unique_units = [{
+            "title": clean_name,
+            "unit_type": clean_name,
+            "point": (w_page / 2.0, 50.0),
+            "rect": fitz.Rect(0, 0, w_page, h_page)
+        }]
+
+    # 2. Divide sheet into spatial layout quadrants/regions per unit
+    N_units = len(unique_units)
+    unit_regions = []
+    if N_units == 1:
+        unit_regions.append({
+            "unit_type": unique_units[0]["unit_type"],
+            "box": fitz.Rect(0, 0, w_page, h_page)
+        })
+    else:
+        sorted_units = sorted(unique_units, key=lambda u: (u["point"][1], u["point"][0]))
+        for i, u in enumerate(sorted_units):
+            cx, cy = u["point"]
+            r_box = fitz.Rect(
+                max(0.0, cx - w_page / (2.0 * N_units)),
+                max(0.0, cy - 30.0),
+                min(w_page, cx + w_page / (2.0 * N_units) + 300.0),
+                min(h_page, cy + h_page / N_units + 400.0)
+            )
+            unit_regions.append({
+                "unit_type": u["unit_type"],
+                "box": r_box
+            })
+
+    # 3. Count door schedule marks within each unit layout box
+    matrix_results = []
+    table_rects = get_schedule_table_rects(page)
+
+    for region in unit_regions:
+        r_box = region["box"]
+        ut_name = region["unit_type"]
+        door_counts = {}
+
+        for w in words_on_page:
+            raw_word = w[4].strip(".,()[]{}-_#*").upper()
+            matched_mark = find_closest_schedule_mark(raw_word, sched_marks)
+            if matched_mark:
+                w_cx = (w[0] + w[2]) / 2.0
+                w_cy = (w[1] + w[3]) / 2.0
+                if r_box.contains(fitz.Point(w_cx, w_cy)):
+                    is_inside_table = any(tr.contains(fitz.Point(w_cx, w_cy)) for tr in table_rects)
+                    has_geom = validate_vector_opening_geometry(page, (w_cx, w_cy), radius=40.0, drawings=drawings_on_page)
+                    if not is_inside_table or has_geom:
+                        door_counts[matched_mark] = door_counts.get(matched_mark, 0) + 1
+
+        matrix_results.append({
+            "care": "Memory Care",
+            "unit_type": ut_name,
+            "area": 800,
+            "door_counts": door_counts
+        })
+
+    return matrix_results
+
 async def cv_detector_node(state: CostmateState) -> dict:
     logger.info("CV Detector: Starting crop-based door & window analysis node...")
     
@@ -1451,6 +1566,7 @@ async def cv_detector_node(state: CostmateState) -> dict:
     location_tasks = []    # (mark, floor_no, crop_path) for LLM location extraction
     all_temp_crops = []
     detections = []        # results from programmatic opening mode classification
+    all_unit_matrix_results = [] # Stage 1 per-unit door composition counts from enlarged plans
     
     # Global concurrency semaphore for LLM vision crops
     semaphore = asyncio.Semaphore(8)
@@ -1513,10 +1629,37 @@ async def cv_detector_node(state: CostmateState) -> dict:
                     f"Level {effective_floor_idx + 1}"
                 )
                 floor_no = effective_floor_idx + 1
+                
                 blocks = page.get_text("blocks")
                 words_on_page = reassemble_pdf_words(page.get_text("words"))
                 drawings_on_page = page.get_drawings()
-                logger.info(f"CV Detector DEBUG: floor[{idx}] page[{page_idx}] has {len(words_on_page)} words, {len(drawings_on_page)} drawing paths, looking for {len(sched_marks)} marks")
+
+                is_enlarged_plan = False
+                if isinstance(floors, list) and effective_floor_idx < len(floors):
+                    floor_obj = floors[effective_floor_idx]
+                    if isinstance(floor_obj, dict):
+                        is_enlarged_plan = bool(
+                            floor_obj.get("isEnlarged") or 
+                            floor_obj.get("is_enlarged") or 
+                            floor_obj.get("isEnlargedUnitPlan") or
+                            floor_obj.get("isEnlargedTypicalUnitPlan")
+                        )
+
+                # Fallback title pattern check for multi-page uploaded PDFs
+                if not is_enlarged_plan:
+                    page_header_text = (str(floor_name) + " " + str(page.get_text("text")[:400])).upper()
+                    enlarged_keywords = ["ENLARGED", "TYPICAL UNIT", "UNIT PLAN", "A5.01", "A5.02", "A501", "A502"]
+                    if any(kw in page_header_text for kw in enlarged_keywords):
+                        is_enlarged_plan = True
+
+                if is_enlarged_plan:
+                    logger.info(f"CV Detector: Processing Enlarged Typical Unit Plan '{floor_name}' (Stage 1 Unit Composition extraction)")
+                    matrix_items = extract_unit_door_matrix_from_enlarged_plan(page, words_on_page, drawings_on_page, sched_marks, floor_name)
+                    all_unit_matrix_results.extend(matrix_items)
+                    logger.info(f"CV Detector: Excluding Enlarged Typical Unit Plan page '{floor_name}' from master floor plan common door counts.")
+                    continue  # EXCLUDE enlarged unit plan page from master common floor plan counts!
+
+                logger.info(f"CV Detector DEBUG: floor[{idx}] page[{page_idx}] (Enlarged={is_enlarged_plan}) has {len(words_on_page)} words, {len(drawings_on_page)} drawing paths, looking for {len(sched_marks)} marks")
                 
                 word_indices = {}
                 table_rects = get_schedule_table_rects(page)
@@ -1975,7 +2118,10 @@ async def cv_detector_node(state: CostmateState) -> dict:
             f"CV Detector: Completed. Found and classified {len(detections)} marks on drawings. "
             f"OpenRouter VLM API Metrics: {vlm_metrics}"
         )
-        return {"cv_results": {"detections": detections, "vlm_metrics": vlm_metrics}}
+        return {
+            "cv_results": {"detections": detections, "vlm_metrics": vlm_metrics},
+            "unit_door_matrix": all_unit_matrix_results
+        }
 
         
     except Exception as e:

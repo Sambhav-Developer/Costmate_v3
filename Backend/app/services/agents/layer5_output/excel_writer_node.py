@@ -158,10 +158,40 @@ async def excel_writer_node(state: CostmateState) -> dict:
     proj_title = state.get("project_name") or "Costmate Project Takeoff"
     today_str = datetime.date.today().strftime("%d.%m.%Y")
     
-    building_type = str(state.get("building_type", "")).lower()
-    is_apartment = ("apartment" in building_type or "multi" in building_type or 
-                    bool(state.get("unit_mix_matrix")) or bool(state.get("unit_door_matrix")) or 
-                    "apartment" in proj_title.lower())
+    # Extract intake data settings from state or intake_data payload
+    intake_data = state.get("intake_data") if isinstance(state.get("intake_data"), dict) else {}
+    intake_settings = intake_data.get("globalSettings") if isinstance(intake_data.get("globalSettings"), dict) else {}
+    
+    building_type = str(
+        state.get("building_type", "") or 
+        intake_data.get("buildingType", "") or 
+        intake_settings.get("buildingType", "")
+    ).lower()
+    
+    cropped_unit_matrix = (
+        state.get("unit_mix_matrix") or 
+        state.get("unitMatrix") or 
+        intake_data.get("unitMatrix") or 
+        intake_data.get("unitMixMatrix") or 
+        intake_settings.get("unitMatrix") or 
+        intake_settings.get("unitMixMatrix")
+    )
+    cropped_unit_door_schedule = (
+        state.get("unit_door_schedule") or 
+        state.get("unitDoorSchedule") or 
+        intake_data.get("unitDoorSchedule") or 
+        intake_data.get("unitDoorScheduleData") or 
+        intake_settings.get("unitDoorSchedule") or 
+        intake_settings.get("unitDoorScheduleData")
+    )
+
+    is_apartment = (
+        "apartment" in building_type or 
+        "multi" in building_type or 
+        bool(cropped_unit_matrix) or 
+        bool(cropped_unit_door_schedule) or
+        "apartment" in proj_title.lower()
+    )
                     
     wb = openpyxl.Workbook()
     wb.remove(wb.active) # Remove default sheet
@@ -347,39 +377,365 @@ async def excel_writer_node(state: CostmateState) -> dict:
         ws_est.column_dimensions[col_letter].width = max(max_len + 4, 14)
 
     # -------------------------------------------------------------------------
-    # SHEET 3 (If Multi-Family): Unit Count & Unit Door-TO
+    # SHEET 3, 4, 5 (If Multi-Family): Unit Count, Unit Door Matrix & Unit Door TO
     # -------------------------------------------------------------------------
     if is_apartment:
-        ws_uc = wb.create_sheet(title="Unit Count")
-        for r_idx, label, val in meta_items:
-            ws_uc.cell(row=r_idx, column=1, value=label).font = font_main_bold
-            ws_uc.cell(row=r_idx, column=2, value=val).fill = fill_yellow
-        ws_uc.cell(row=4, column=4, value="Unit Count").font = Font(name="Times New Roman", size=11, bold=True)
+        return build_multifamily_sheets(
+            wb, state, meta_items, font_main, font_main_bold, font_hdr_bold,
+            thin_border, double_bottom, fill_yellow, fill_green_soft, fill_pastel_blue, fill_navy_banner,
+            cropped_unit_matrix=cropped_unit_matrix, cropped_unit_door_schedule=cropped_unit_door_schedule
+        )
+
+    clean_proj_name = "".join(c for c in proj_title if c.isalnum() or c in [' ', '_', '-']).strip().replace(' ', '_')
+    file_name = f"{clean_proj_name}_Division8_Takeoff_{datetime.date.today().strftime('%Y-%m-%d')}.xlsx"
+    os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
+    file_path = os.path.join(settings.OUTPUT_DIR, file_name)
+    wb.save(file_path)
+    logger.info(f"Excel Takeoff saved cleanly at {file_path}")
+    return {"excel_file_path": file_path, "status": "completed", "current_step": "completed"}
+
+def build_multifamily_sheets(
+    wb, state, meta_items, font_main, font_main_bold, font_hdr_bold,
+    thin_border, double_bottom, fill_yellow, fill_green_soft, fill_pastel_blue, fill_navy_banner,
+    cropped_unit_matrix=None, cropped_unit_door_schedule=None
+):
+    proj_title = state.get("project_name") or "Costmate Project Takeoff"
+
+    # Color Fills Mapping based on Int/Ext Classification
+    fill_cyan_ext = PatternFill(start_color="00B0F0", end_color="00B0F0", fill_type="solid")
+    fill_orange_win = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+    fill_pink_scope = PatternFill(start_color="FF69B4", end_color="FF69B4", fill_type="solid")
+
+    def get_tag_fill_color(ie_val: str):
+        v = str(ie_val).lower().strip()
+        if "ext" in v or "exterior" in v:
+            return fill_cyan_ext
+        elif "soft" in v:
+            return fill_green_soft
+        elif "win" in v or "window" in v:
+            return fill_orange_win
+        elif "not" in v or "pink" in v or "storefront" in v:
+            return fill_pink_scope
+        return fill_yellow
+
+    # Handle Missing / Optional Dataset cleanly without synthetic fallbacks
+    if not cropped_unit_matrix or not isinstance(cropped_unit_matrix, list) or len(cropped_unit_matrix) == 0:
+        logger.info("No Unit Matrix table was uploaded. Saving clean Schedule & Estimation sheets only.")
+        clean_proj_name = "".join(c for c in proj_title if c.isalnum() or c in [' ', '_', '-']).strip().replace(' ', '_')
+        file_name = f"{clean_proj_name}_Division8_Takeoff_{datetime.date.today().strftime('%Y-%m-%d')}.xlsx"
+        os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
+        file_path = os.path.join(settings.OUTPUT_DIR, file_name)
+        wb.save(file_path)
+        return {"excel_file_path": file_path, "status": "completed", "current_step": "completed"}
+
+    # --- Parse Real Unit Matrix ---
+    # Find floor/level columns in cropped_unit_matrix (exclude UNIT, NAME, TYPE, AREA, TOTAL, CARE)
+    sample_row = cropped_unit_matrix[0] if len(cropped_unit_matrix) > 0 else {}
+    non_floor_keys = {"unit", "name", "type", "unit_type", "unit type", "area", "sqft", "sf", "area (sf)", "care", "category", "total", "total units", "units"}
+    
+    floor_cols = []
+    unit_key = "UNIT"
+    area_key = "AREA"
+    care_key = "CARE"
+
+    for k in sample_row.keys():
+        kl = str(k).lower().strip()
+        if kl in ["unit", "name", "type", "unit_type", "unit type"]:
+            unit_key = k
+        elif kl in ["area", "sqft", "sf", "area (sf)"]:
+            area_key = k
+        elif kl in ["care", "category"]:
+            care_key = k
+        elif kl not in non_floor_keys and not kl.startswith("_"):
+            floor_cols.append(k)
+
+    if not floor_cols:
+        floor_cols = ["1ST FLR", "2ND FLR", "3RD FLR"]
+
+    # -------------------------------------------------------------------------
+    # SHEET 3: Unit Count
+    # -------------------------------------------------------------------------
+    ws_uc = wb.create_sheet(title="Unit Count")
+    for r_idx, label, val in meta_items:
+        ws_uc.cell(row=r_idx, column=1, value=label).font = font_main_bold
+        ws_uc.cell(row=r_idx, column=2, value=val).fill = fill_yellow
+    
+    ws_uc.cell(row=4, column=1, value="Unit Count Matrix").font = Font(name="Times New Roman", size=11, bold=True)
+    uc_headers = ["Care / Category", "Unit Type", "Area (SF)"] + floor_cols + ["Total Units"]
+    for c_idx, h_text in enumerate(uc_headers, 1):
+        cell = ws_uc.cell(row=5, column=c_idx, value=h_text)
+        cell.font = Font(name="Times New Roman", size=11, bold=True, color="FFFFFF")
+        cell.fill = fill_navy_banner
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
         
-        uc_headers = ["Unit/level", "Level 3", "Level 4", "Level 5", "Level 6", "Total"]
-        for c_idx, h_text in enumerate(uc_headers, 4):
-            cell = ws_uc.cell(row=5, column=c_idx, value=h_text)
-            cell.font = font_hdr_bold
-            cell.alignment = Alignment(horizontal="center")
-            cell.border = thin_border
+    u_row = 6
+    parsed_unit_rows = []
+
+    for u_item in cropped_unit_matrix:
+        ut_val = str(u_item.get(unit_key, u_item.get("UNIT", u_item.get("unit_type", f"Unit {u_row-5}")))).strip()
+        care_val = str(u_item.get(care_key, u_item.get("care", "Multi-Family"))).strip()
+        area_val = u_item.get(area_key, u_item.get("AREA", 800))
+        
+        ws_uc.cell(row=u_row, column=1, value=care_val).border = thin_border
+        ws_uc.cell(row=u_row, column=2, value=ut_val).border = thin_border
+        ws_uc.cell(row=u_row, column=3, value=area_val).border = thin_border
+        
+        row_floor_sum = 0
+        for f_idx, f_col in enumerate(floor_cols, 4):
+            raw_f_val = u_item.get(f_col, 0)
+            try:
+                f_val = int(float(str(raw_f_val).replace(",", "").strip())) if str(raw_f_val).strip() != "" else 0
+            except Exception:
+                f_val = 0
+            ws_uc.cell(row=u_row, column=f_idx, value=f_val).border = thin_border
+            row_floor_sum += f_val
             
-        unit_mix = state.get("unit_mix_matrix") or [
-            {"unit_type": "A1", "l3": 1, "l4": 1, "l5": 1, "l6": 0},
-            {"unit_type": "A2", "l3": 1, "l4": 1, "l5": 1, "l6": 0},
-            {"unit_type": "B1", "l3": 2, "l4": 2, "l5": 2, "l6": 1}
+        last_floor_let = get_column_letter(len(floor_cols) + 3)
+        tot_col_let = get_column_letter(len(floor_cols) + 4)
+        
+        # Openpyxl formula for Total Units
+        c_tot = ws_uc.cell(row=u_row, column=len(floor_cols) + 4, value=f"=SUM(D{u_row}:{last_floor_let}{u_row})")
+        c_tot.font = font_main_bold
+        c_tot.border = thin_border
+        
+        parsed_unit_rows.append({
+            "care": care_val,
+            "unit_type": ut_val,
+            "area": area_val,
+            "total_units": row_floor_sum,
+            "uc_row_idx": u_row
+        })
+        u_row += 1
+
+    for col in ws_uc.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws_uc.column_dimensions[col_letter].width = max(max_len + 4, 14)
+
+    # --- Parse Real Unit Door Schedule / Tags ---
+    door_tags = []
+    tag_metadata = []
+
+    if cropped_unit_door_schedule and isinstance(cropped_unit_door_schedule, list) and len(cropped_unit_door_schedule) > 0:
+        # User uploaded explicit Unit Door Schedule
+        for idx, d in enumerate(cropped_unit_door_schedule):
+            mark_name = str(d.get("mark", d.get("MARK", d.get("NUMBER", d.get("NUMBER", f"RES-{idx+1}"))))).upper().strip()
+            door_tags.append(mark_name)
+            tag_metadata.append({
+                "mark": mark_name,
+                "partition": str(d.get("partition", d.get("wall_partition", d.get("PARTITION", "PP6a")))).strip(),
+                "mode": str(d.get("mode", d.get("opening_mode", d.get("MODE", "SGL")))).strip(),
+                "location": str(d.get("location", d.get("LOCATION", "BATH"))).strip(),
+                "int_ext": str(d.get("int_ext", d.get("INT/EXT", "Interior"))).strip()
+            })
+    else:
+        # Look for door tags as keys in cropped_unit_matrix
+        for k in sample_row.keys():
+            kl = str(k).upper().strip()
+            if kl.startswith("RES") or kl.startswith("D-") or kl.startswith("D") and len(kl) <= 6:
+                door_tags.append(kl)
+                tag_metadata.append({
+                    "mark": kl, "partition": "STD", "mode": "SGL", "location": "UNIT", "int_ext": "Interior"
+                })
+
+    if not door_tags:
+        door_tags = ["RES-1", "RES-2", "RES-3"]
+        tag_metadata = [
+            {"mark": "RES-1", "partition": "PP6a", "mode": "SLD", "location": "BATH", "int_ext": "Interior"},
+            {"mark": "RES-2", "partition": "RS61", "mode": "SGL", "location": "BEDROOM", "int_ext": "Interior"},
+            {"mark": "RES-3", "partition": "PP6a", "mode": "BIFOLD", "location": "CLOSET", "int_ext": "Interior"}
         ]
-        u_row = 6
-        for u_item in unit_mix:
-            ut = u_item.get("unit_type", "A1")
-            ws_uc.cell(row=u_row, column=4, value=ut).border = thin_border
-            ws_uc.cell(row=u_row, column=5, value=u_item.get("l3", 1)).border = thin_border
-            ws_uc.cell(row=u_row, column=6, value=u_item.get("l4", 1)).border = thin_border
-            ws_uc.cell(row=u_row, column=7, value=u_item.get("l5", 1)).border = thin_border
-            ws_uc.cell(row=u_row, column=8, value=u_item.get("l6", 0)).border = thin_border
-            c_tot = ws_uc.cell(row=u_row, column=9, value=f"=SUM(E{u_row}:H{u_row})")
-            c_tot.font = font_main_bold
-            c_tot.border = thin_border
-            u_row += 1
+
+    # -------------------------------------------------------------------------
+    # SHEET 4: Unit Door Matrix (Stage 1: Per-Unit Composition)
+    # -------------------------------------------------------------------------
+    ws_udm = wb.create_sheet(title="Unit Door Matrix")
+    for r_idx, label, val in meta_items:
+        ws_udm.cell(row=r_idx, column=1, value=label).font = font_main_bold
+        ws_udm.cell(row=r_idx, column=2, value=val).fill = fill_yellow
+
+    udm_headers = ["Care", "Unit Type", "Area (SF)", "Total Units"] + door_tags + ["TOTAL DOORS PER UNIT"]
+
+    for c_idx, h_text in enumerate(udm_headers, 1):
+        cell = ws_udm.cell(row=5, column=c_idx, value=h_text)
+        cell.font = font_hdr_bold
+        cell.fill = fill_pastel_blue
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+
+    # Build matrix lookup from cropped_unit_door_schedule or cropped_unit_matrix
+    matrix_lookup = {}
+    if cropped_unit_door_schedule and isinstance(cropped_unit_door_schedule, list):
+        for item in cropped_unit_door_schedule:
+            if isinstance(item, dict):
+                ut_key = str(item.get("unit_type", item.get("UNIT", item.get("unit", "")))).upper().strip()
+                if ut_key:
+                    matrix_lookup[ut_key] = item
+
+    m_row = 6
+    for pu in parsed_unit_rows:
+        ut = pu["unit_type"]
+        uc_row_idx = pu["uc_row_idx"]
+        
+        ws_udm.cell(row=m_row, column=1, value=pu["care"]).border = thin_border
+        ws_udm.cell(row=m_row, column=2, value=ut).border = thin_border
+        ws_udm.cell(row=m_row, column=3, value=pu["area"]).border = thin_border
+        
+        # Formula reference to Unit Count
+        c_u = ws_udm.cell(row=m_row, column=4, value=f"='Unit Count'!{get_column_letter(len(floor_cols) + 4)}{uc_row_idx}")
+        c_u.border = thin_border
+        
+        unit_counts_dict = matrix_lookup.get(str(ut).upper().strip(), {})
+        # Find matching row in cropped_unit_matrix if not in schedule
+        if not unit_counts_dict:
+            for um_item in cropped_unit_matrix:
+                if str(um_item.get(unit_key, um_item.get("UNIT", ""))).upper().strip() == str(ut).upper().strip():
+                    unit_counts_dict = um_item
+                    break
+
+        row_doors_sum = 0
+        for dt_idx, dt in enumerate(door_tags, 5):
+            raw_d_cnt = unit_counts_dict.get(dt, unit_counts_dict.get(dt.lower(), 1))
+            try:
+                d_cnt = int(float(str(raw_d_cnt).replace(",", "").strip())) if str(raw_d_cnt).strip() != "" else 0
+            except Exception:
+                d_cnt = 0
+            ws_udm.cell(row=m_row, column=dt_idx, value=d_cnt).border = thin_border
+            row_doors_sum += d_cnt
+        
+        last_tag_letter = get_column_letter(len(door_tags) + 4)
+        c_dtot = ws_udm.cell(row=m_row, column=len(door_tags) + 5, value=f"=SUM(E{m_row}:{last_tag_letter}{m_row})")
+        c_dtot.font = font_main_bold
+        c_dtot.border = thin_border
+        m_row += 1
+
+    # Bottom TAG TOTALS row for Matrix
+    ws_udm.cell(row=m_row, column=1, value="TAG TOTALS").font = font_main_bold
+    ws_udm.cell(row=m_row, column=1).border = double_bottom
+    for dt_idx, dt in enumerate(door_tags, 5):
+        dt_col_letter = get_column_letter(dt_idx)
+        c_mgt = ws_udm.cell(row=m_row, column=dt_idx, value=f"=SUM({dt_col_letter}6:{dt_col_letter}{m_row-1})")
+        c_mgt.font = font_main_bold
+        c_mgt.border = double_bottom
+
+    for col in ws_udm.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws_udm.column_dimensions[col_letter].width = max(max_len + 4, 14)
+
+    # -------------------------------------------------------------------------
+    # SHEET 5: Unit Door TO (Stage 2: Extended Project Takeoff)
+    # -------------------------------------------------------------------------
+    ws_udto = wb.create_sheet(title="Unit Door TO")
+    
+    # 3-Row Header Block
+    for r_idx, label, val in meta_items:
+        ws_udto.cell(row=r_idx, column=1, value=label).font = font_main_bold
+        ws_udto.cell(row=r_idx, column=2, value=val).fill = fill_yellow
+
+    ws_udto.cell(row=4, column=1, value="REPEATING UNIT DOOR TAKEOFF (SCHEDULED)").font = Font(name="Times New Roman", size=12, bold=True)
+    
+    # Row 5: Merged Tag Banners
+    ws_udto.cell(row=5, column=1, value="Care").font = font_hdr_bold
+    ws_udto.cell(row=5, column=2, value="Unit Type").font = font_hdr_bold
+    ws_udto.cell(row=5, column=3, value="Qty Units").font = font_hdr_bold
+    
+    col_pos = 4
+    ext_col_letters = []
+    for tag_idx, tmeta in enumerate(tag_metadata):
+        start_c = col_pos
+        end_c = col_pos + 1
+        ws_udto.merge_cells(start_row=5, start_column=start_c, end_row=5, end_column=end_c)
+        banner_cell = ws_udto.cell(row=5, column=start_c, value=f"DOOR {tmeta['mark']} ({tmeta['partition']} / {tmeta['mode']} / {tmeta['location']})")
+        banner_cell.font = font_hdr_bold
+        banner_cell.fill = get_tag_fill_color(tmeta['int_ext'])
+        banner_cell.alignment = Alignment(horizontal="center", vertical="center")
+        
+        ws_udto.cell(row=6, column=start_c, value="Input").font = font_main_bold
+        ws_udto.cell(row=6, column=start_c).alignment = Alignment(horizontal="center")
+        ws_udto.cell(row=6, column=start_c).border = thin_border
+        
+        ws_udto.cell(row=6, column=end_c, value="Extended").font = font_main_bold
+        ws_udto.cell(row=6, column=end_c).alignment = Alignment(horizontal="center")
+        ws_udto.cell(row=6, column=end_c).fill = fill_pastel_blue
+        ws_udto.cell(row=6, column=end_c).border = thin_border
+        
+        ext_col_letters.append(get_column_letter(end_c))
+        col_pos += 2
+
+    # Row 6 Sub-headers
+    ws_udto.cell(row=6, column=1, value="Care").font = font_hdr_bold
+    ws_udto.cell(row=6, column=2, value="Unit Type").font = font_hdr_bold
+    ws_udto.cell(row=6, column=3, value="Qty Units").font = font_hdr_bold
+
+    row_tot_col = col_pos
+    ws_udto.cell(row=5, column=row_tot_col, value="Row Total").font = font_hdr_bold
+    ws_udto.cell(row=6, column=row_tot_col, value="Row Total").font = font_hdr_bold
+
+    to_row = 7
+    for pu_idx, pu in enumerate(parsed_unit_rows, 6):
+        ut = pu["unit_type"]
+        tot_units = pu["total_units"]
+        uc_row_idx = pu["uc_row_idx"]
+
+        ws_udto.cell(row=to_row, column=1, value=pu["care"]).border = thin_border
+        ws_udto.cell(row=to_row, column=2, value=ut).border = thin_border
+        
+        c_qu = ws_udto.cell(row=to_row, column=3, value=f"='Unit Count'!{get_column_letter(len(floor_cols) + 4)}{uc_row_idx}")
+        c_qu.border = thin_border
+        
+        curr_c = 4
+        for tag_idx, tmeta in enumerate(tag_metadata):
+            matrix_tag_col = get_column_letter(tag_idx + 5)
+
+            input_cell = ws_udto.cell(row=to_row, column=curr_c, value=f"='Unit Door Matrix'!{matrix_tag_col}{pu_idx}")
+            input_cell.border = thin_border
+            
+            ext_cell = ws_udto.cell(row=to_row, column=curr_c + 1, value=f"=$C{to_row}*{get_column_letter(curr_c)}{to_row}")
+            ext_cell.font = font_main
+            ext_cell.fill = fill_pastel_blue
+            ext_cell.border = thin_border
+            
+            curr_c += 2
+
+        ext_sum_expr = ",".join([f"{l}{to_row}" for l in ext_col_letters])
+        c_utot = ws_udto.cell(row=to_row, column=row_tot_col, value=f"=SUM({ext_sum_expr})")
+        c_utot.font = font_main_bold
+        c_utot.border = thin_border
+        to_row += 1
+
+    # Grand Total Row for Unit Door TO
+    ws_udto.cell(row=to_row, column=1, value="TOTAL UNIT DOORS").font = font_main_bold
+    ws_udto.cell(row=to_row, column=1).fill = fill_green_soft
+    ws_udto.cell(row=to_row, column=1).border = double_bottom
+
+    c_pos = 4
+    for tag_idx, tmeta in enumerate(tag_metadata):
+        in_let = get_column_letter(c_pos)
+        ext_let = get_column_letter(c_pos + 1)
+        
+        c_in_gt = ws_udto.cell(row=to_row, column=c_pos, value=f"=SUM({in_let}7:{in_let}{to_row-1})")
+        c_in_gt.font = font_main_bold
+        c_in_gt.border = double_bottom
+        
+        c_ext_gt = ws_udto.cell(row=to_row, column=c_pos + 1, value=f"=SUM({ext_let}7:{ext_let}{to_row-1})")
+        c_ext_gt.font = font_main_bold
+        c_ext_gt.fill = fill_green_soft
+        c_ext_gt.border = double_bottom
+        
+        c_pos += 2
+
+    tot_col_letter = get_column_letter(row_tot_col)
+    c_final = ws_udto.cell(row=to_row, column=row_tot_col, value=f"=SUM({tot_col_letter}7:{tot_col_letter}{to_row-1})")
+    c_final.font = font_main_bold
+    c_final.fill = fill_green_soft
+    c_final.border = double_bottom
+
+    for col in ws_udto.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws_udto.column_dimensions[col_letter].width = max(max_len + 4, 14)
 
     # Save to disk
     clean_proj_name = "".join(c for c in proj_title if c.isalnum() or c in [' ', '_', '-']).strip().replace(' ', '_')
@@ -391,3 +747,4 @@ async def excel_writer_node(state: CostmateState) -> dict:
     logger.info(f"Excel Takeoff saved cleanly at {file_path}")
     
     return {"excel_file_path": file_path, "status": "completed", "current_step": "completed"}
+

@@ -13,7 +13,7 @@ export async function getServerPublicKey(): Promise<forge.pki.rsa.PublicKey> {
   return serverPublicKey;
 }
 
-export async function encryptPayload(payload: any): Promise<{rsa_encrypted_aes_key: string, aes_encrypted_payload: string}> {
+export async function encryptPayload(payload: any): Promise<{rsa_encrypted_aes_key: string, aes_encrypted_payload: string, raw_aes_key: string}> {
   const publicKey = await getServerPublicKey();
   
   // 1. Generate AES-256 Key and IV

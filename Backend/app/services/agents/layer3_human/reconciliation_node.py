@@ -506,14 +506,14 @@ async def reconciliation_node(state: CostmateState) -> dict:
         elif is_sf_mat(dm_val) or is_sf_mat(fm_val) or is_sf_mat(wm_val):
             is_storefront_opening = True
 
-        # Wood / Hollow Metal Frame Guard:
-        # If frame_type or door_type explicitly contains Hollow Metal (HM) or Wood (WD/WOOD/SCWD), force storefront to False unless explicitly AL/ALUM/STOREFRONT
-        combined_mat_text = (sched_ftype + " " + sched_dtype + " " + door_material + " " + frame_material).upper()
-        tokens_mat = [t.strip() for t in re.split(r'[^A-Z0-9]', combined_mat_text) if t.strip()]
-        is_explicit_wood_hm = any(w in tokens_mat for w in ["HM", "WD", "WOOD", "STEEL", "SCWD", "FG", "FIBERGLASS"]) or "HM" in sched_ftype.upper()
-        is_explicit_al_sf = any(w in tokens_mat for w in ["ALUM", "ALUMINUM", "STOREFRONT", "CURTAINWALL"]) or "(CW)" in sched_ftype.upper()
+        # Wood / Hollow Metal Leaf Guard:
+        # If the door leaf material or door type explicitly specifies Wood (WD/WOOD/SCWD) or Metal (HM/STEEL),
+        # force storefront to False unless comments/specs explicitly declare it as STOREFRONT/CURTAINWALL/AD SYSTEM.
+        tokens_door_mat = [t.strip() for t in re.split(r'[^A-Z0-9]', (door_material + " " + sched_dtype).upper()) if t.strip()]
+        is_door_leaf_wood_hm = any(w in tokens_door_mat for w in ["HM", "WD", "WOOD", "STEEL", "SCWD", "FG", "FIBERGLASS"])
+        is_system_sf = any(kw in (sched_comments + " " + sched_ftype).upper() for kw in ["STOREFRONT", "CURTAINWALL", "AD SYSTEM"]) or is_spec_storefront
         
-        if is_explicit_wood_hm and not is_explicit_al_sf:
+        if is_door_leaf_wood_hm and not is_system_sf:
             is_storefront_opening = False
 
         logger.info(f"Storefront material check: mark={mark}, door={door_material}, frame={frame_material}, window={window_material}, frame_type={sched_ftype} -> is_storefront={is_storefront_opening}")

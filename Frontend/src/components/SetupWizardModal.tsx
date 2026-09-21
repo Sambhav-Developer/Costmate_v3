@@ -70,6 +70,10 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
     windowScheduleFileName: '' as string,
     specificationFileName: '' as string,
     specificationsText: '' as string,
+    unitMatrix: undefined as any[] | undefined,
+    unitMixMatrix: undefined as any[] | undefined,
+    unitDoorSchedule: undefined as any[] | undefined,
+    unitDoorScheduleData: undefined as any[] | undefined,
     scheduleRegistry: null as any
   });
 
@@ -187,7 +191,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
 
   // Render PDF Page (with cancellation support)
   useEffect(() => {
-    if (!cropPdf) return;
+    if (!cropPdf || cropStage !== 'crop') return;
 
     let active = true;
     const render = async () => {
@@ -250,7 +254,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
         } catch (e) {}
       }
     };
-  }, [cropPageNum, cropPdf, pdfScale]);
+  }, [cropPageNum, cropPdf, pdfScale, cropStage]);
 
   // Global window mouseup listener to handle releases outside the canvas
   useEffect(() => {
@@ -324,14 +328,77 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
         const rawReg = res.schedule_registry;
         const items = Array.isArray(rawReg) ? rawReg : (rawReg.instance_schedule || []);
         if (Array.isArray(items) && items.length > 0) {
+          const HEADER_VALUES = new Set([
+            "door #", "door no", "door no.", "door number", "mark", "mark no", "mark #",
+            "window #", "window no", "window mark", "item", "tag", "opening #", "opening no",
+            "room #", "room name"
+          ]);
+
+          const isHeaderRow = (item: Record<string, any>): boolean => {
+            const values = Object.values(item).map(v => String(v).trim().toLowerCase());
+            if (values.length === 0) return false;
+            const markVal = String(item["mark"] || values[0] || "").trim().toLowerCase();
+            if (HEADER_VALUES.has(markVal)) return true;
+            if (/^(door|window|opening|mark|item)\s*(#|no|number|code)?$/i.test(markVal)) return true;
+            return false;
+          };
+
+          setExtractedItems(prev => {
+            if (prev.length > 0) {
+              const existingKeys = Object.keys(headerMappings);
+              // Filter out duplicate header rows from newly cropped items
+              const cleanItems = items.filter(item => !isHeaderRow(item));
+
+              // Strict Positional Alignment: Column i of new crop maps to Column i of existing schema
+              const remappedItems = cleanItems.map(item => {
+                const newItem: Record<string, any> = {
+                  _schedule_type: cropType,
+                  needs_review: false
+                };
+
+                const itemKeys = Object.keys(item).filter(
+                  k => k !== 'needs_review' && k !== '_schedule_type'
+                );
+
+                itemKeys.forEach((k, colIdx) => {
+                  let targetKey = existingKeys[colIdx];
+                  if (!targetKey) {
+                    targetKey = k;
+                  }
+                  newItem[targetKey] = item[k] !== undefined ? item[k] : '';
+                });
+
+                existingKeys.forEach(ek => {
+                  if (newItem[ek] === undefined) {
+                    newItem[ek] = '';
+                  }
+                });
+
+                return newItem;
+              });
+
+              return [...prev, ...remappedItems];
+            }
+            // For first crop: filter out any header row if present, or keep all
+            const cleanItems = items.filter(item => !isHeaderRow(item));
+            return cleanItems.length > 0 ? cleanItems : items;
+          });
+
           const keys = Array.from(new Set(items.flatMap(item => Object.keys(item))));
           const filteredKeys = keys.filter(k => k !== 'needs_review' && k !== '_schedule_type');
-          const initialMappings: Record<string, string> = {};
-          filteredKeys.forEach(k => {
-            initialMappings[k] = k;
+
+          setHeaderMappings(prev => {
+            const updated = { ...prev };
+            // If new crop has more columns than existingKeys, add the extra new keys
+            filteredKeys.forEach((k, idx) => {
+              const existingKeys = Object.keys(prev);
+              if (idx >= existingKeys.length && !updated[k]) {
+                updated[k] = k;
+              }
+            });
+            return updated;
           });
-          setHeaderMappings(initialMappings);
-          setExtractedItems(items);
+
           setCropStage('map');
         } else {
           setError("⚠️ Extraction completed, but no rows were found. Please adjust your crop selection.");
@@ -1817,20 +1884,33 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                     type="button"
                     onClick={() => {
                       setCropStage('crop');
+                      setCropRect(null);
+                    }}
+                    className="px-3.5 py-2 rounded-lg bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-200 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                    title="Crop additional pages or sections to append more door marks"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Crop Another Section / Page</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCropStage('crop');
+                      setCropRect(null);
                       setExtractedItems([]);
                       setHeaderMappings({});
                     }}
-                    className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold transition-colors cursor-pointer"
+                    className="px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-zinc-400 hover:text-white transition-colors cursor-pointer"
                   >
-                    Back to Crop
+                    Reset All Crops
                   </button>
                   <button
                     type="button"
                     onClick={handleConfirmSchema}
-                    className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer animate-pulse"
+                    className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
                   >
                     <Check className="w-3.5 h-3.5" />
-                    Confirm & Save Schema
+                    Confirm & Save Schema ({extractedItems.length} Rows)
                   </button>
                 </div>
               </>
@@ -1973,14 +2053,19 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                       <h3 className="text-sm font-bold text-white mb-1">Data Schema Live Preview</h3>
                       <p className="text-xs text-zinc-500">Table rows updated instantly with your renamed column keys.</p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleAddColumn()}
-                      className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-semibold flex items-center gap-1.5 border border-white/10 transition-colors"
-                    >
-                      <Plus className="w-3.5 h-3.5 text-violet-400" />
-                      <span>Add Column</span>
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <span className="px-2.5 py-1 rounded bg-violet-500/10 border border-violet-500/20 text-[11px] font-bold text-violet-300">
+                        Total Extracted: {extractedItems.length} Rows
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleAddColumn()}
+                        className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-semibold flex items-center gap-1.5 border border-white/10 transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5 text-violet-400" />
+                        <span>Add Column</span>
+                      </button>
+                    </div>
                   </div>
                   <div className="flex-1 overflow-auto p-6 custom-scrollbar">
                     <div className="min-w-full inline-block align-middle">
@@ -2034,7 +2119,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-white/5 bg-transparent">
-                            {extractedItems.slice(0, 10).map((item, idx) => {
+                            {extractedItems.map((item, idx) => {
                               const isEditing = editingRowIndex === idx;
                               return (
                                 <tr 
@@ -2119,17 +2204,19 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                                           {item[oldKey]}
                                         </td>
                                       ))}
-                                      <td className="px-4 py-3 text-xs text-zinc-500 whitespace-nowrap">
+                                      <td className="px-3 py-2 text-xs text-zinc-500 whitespace-nowrap">
                                         <button
                                           type="button"
-                                          onClick={() => {
+                                          onClick={(e) => {
+                                            e.stopPropagation();
                                             const updated = extractedItems.filter((_, i) => i !== idx);
                                             setExtractedItems(updated);
                                           }}
-                                          className="p-1 rounded hover:bg-red-500/10 text-zinc-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all duration-150"
-                                          title="Delete Row"
+                                          className="px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-semibold flex items-center gap-1 transition-all border border-red-500/20 hover:border-red-500/40"
+                                          title="Delete this row"
                                         >
-                                          <Trash2 className="w-3.5 h-3.5" />
+                                          <Trash2 className="w-3 h-3 text-red-400" />
+                                          <span>Delete</span>
                                         </button>
                                       </td>
                                     </>
@@ -2140,11 +2227,9 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                           </tbody>
                         </table>
                       </div>
-                      {extractedItems.length > 10 && (
-                        <div className="text-center text-zinc-600 text-[10px] font-semibold mt-3 uppercase tracking-wider">
-                          Showing first 10 of {extractedItems.length} rows
-                        </div>
-                      )}
+                      <div className="text-center text-zinc-500 text-[10px] font-semibold mt-3 uppercase tracking-wider">
+                        Showing all {extractedItems.length} extracted rows across {Object.keys(headerMappings).length} columns
+                      </div>
                     </div>
                   </div>
                 </div>

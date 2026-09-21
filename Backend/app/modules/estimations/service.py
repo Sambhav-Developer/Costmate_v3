@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import fitz
 import json
@@ -288,14 +289,14 @@ class EstimationService:
                     
                 page = pdf.pages[page_num]
                 
-                left = min(x0, x1)
-                top = min(y0, y1)
-                right = max(x0, x1)
-                bottom = max(y0, y1)
-                logger.info(f"[CROP DEBUG] Coordinates: left={left}, top={top}, right={right}, bottom={bottom}, page_num={page_num}")
+                left = max(0.0, min(float(page.width), float(min(x0, x1))))
+                top = max(0.0, min(float(page.height), float(min(y0, y1))))
+                right = min(float(page.width), max(0.0, float(max(x0, x1))))
+                bottom = min(float(page.height), max(0.0, float(max(y0, y1))))
+                logger.info(f"[CROP DEBUG] Clamped coordinates: left={left}, top={top}, right={right}, bottom={bottom}, page_num={page_num}")
                 logger.info(f"[CROP DEBUG] Page size: width={page.width}, height={page.height}")
                 
-                cropped_page = page.crop((left, top, right, bottom), relative=True)
+                cropped_page = page.crop((left, top, right, bottom))
                 
                 results = []
                 words = cropped_page.extract_words()
@@ -304,33 +305,51 @@ class EstimationService:
                 
                 if words:
                     # 1. Detect column bounds list (Strategy A: Use vertical grid lines if they exist in vector PDF)
-                    vertical_lines = [e for e in cropped_page.vertical_edges if (e["y1"] - e["y0"]) >= 12.0]
+                    def get_edge_h(e):
+                        if "height" in e and e["height"] is not None:
+                            return float(e["height"])
+                        if "bottom" in e and "top" in e:
+                            return abs(float(e["bottom"]) - float(e["top"]))
+                        if "y1" in e and "y0" in e:
+                            return abs(float(e["y1"]) - float(e["y0"]))
+                        return 0.0
+
+                    vertical_lines = [e for e in cropped_page.vertical_edges if get_edge_h(e) >= 10.0]
                     crop_height = bottom - top
                     
-                    # Group vertical edges into X-clusters (within 2.5 points)
+                    # Group vertical edges into X-clusters (within 3.5 points)
                     clusters = [] # list of (mean_x, [edges])
                     for edge in vertical_lines:
-                        x = edge["x0"]
+                        x = edge.get("x0", edge.get("x1", 0.0))
                         found = False
                         for idx, (mean_x, edges) in enumerate(clusters):
-                            if abs(x - mean_x) <= 2.5:
+                            if abs(x - mean_x) <= 3.5:
                                 edges.append(edge)
-                                new_mean = sum(e["x0"] for e in edges) / len(edges)
+                                new_mean = sum(e.get("x0", e.get("x1", 0.0)) for e in edges) / len(edges)
                                 clusters[idx] = (new_mean, edges)
                                 found = True
                                 break
                         if not found:
                             clusters.append((x, [edge]))
                             
-                    # Filter clusters by total length of edges in the cluster (at least 30% of crop height)
-                    min_total_len = crop_height * 0.3
+                    # Filter clusters by total length of edges in the cluster:
+                    # True column dividers must span at least 30% of crop height or 30.0pt
+                    min_total_len = max(30.0, crop_height * 0.30)
                     clustered_xs = []
                     for mean_x, edges in clusters:
-                        total_len = sum(e["y1"] - e["y0"] for e in edges)
+                        total_len = sum(get_edge_h(e) for e in edges)
                         if total_len >= min_total_len:
                             clustered_xs.append(mean_x)
                             
                     clustered_xs = sorted(clustered_xs)
+                    
+                    # Merge clustered_xs that are within 5.0 points of each other (double grid lines)
+                    if clustered_xs:
+                        filtered_xs = [clustered_xs[0]]
+                        for x in clustered_xs[1:]:
+                            if x - filtered_xs[-1] >= 5.0:
+                                filtered_xs.append(x)
+                        clustered_xs = filtered_xs
                     
                     merged_spans = []
                     if len(clustered_xs) >= 3:
@@ -344,13 +363,13 @@ class EstimationService:
                             clustered_xs.append(round(max_word_x + 3, 1))
                             
                         for i in range(len(clustered_xs) - 1):
-                            merged_spans.append((clustered_xs[i], clustered_xs[i+1]))
+                            if clustered_xs[i+1] - clustered_xs[i] >= 6.0:
+                                merged_spans.append((clustered_xs[i], clustered_xs[i+1]))
                     else:
                         # Strategy B: Fallback to text projection (for borderless or scanned tables)
                         logger.info("[CROP DYNAMIC] Few vertical grid lines detected. Falling back to X-axis text projection...")
                         
                         # Helper to check if a word looks like a mark
-                        import re
                         def is_mark_text(text):
                             text_lower = text.lower().strip(".,")
                             header_keywords = {
@@ -412,79 +431,115 @@ class EstimationService:
                                     cur_start = start
                                     cur_end = end
                             merged_spans.append((cur_start, cur_end))
-                            
+
+                    # Filter out phantom empty spans containing zero words across all table headers & data
+                    non_empty_spans = []
+                    for start_x, end_x in merged_spans:
+                        words_in_span = [w for w in words if start_x <= (w['x0'] + w['x1']) / 2.0 <= end_x]
+                        if words_in_span:
+                            non_empty_spans.append((start_x, end_x))
+                    if non_empty_spans:
+                        merged_spans = non_empty_spans
+
                     num_cols = len(merged_spans)
                     logger.info(f"[CROP DYNAMIC] Final columns count: {num_cols}")
                     
                     if num_cols > 0:
-                        # 2. Helper to check if a word looks like a mark
-                        import re
-                        def is_mark_text(text):
-                            text_lower = text.lower().strip(".,")
-                            header_keywords = {
-                                "mark", "number", "door", "window", "frame", "schedule", "type", "finish",
-                                "comments", "level", "floor", "sheet", "code", "id", "tag", "fire", "rating", "width",
-                                "height", "hw", "set", "head", "jamb", "panel", "pane", "dimensions",
-                                "qty", "quantity", "manuf", "manufacturer", "remarks", "elevation", "detail",
-                                "sill", "glass", "glazing", "material", "mat'l", "thickness", "thckns",
-                                "hand", "welding", "gauge", "depth", "anchor", "face"
-                            }
+                        # 2. Determine mark column and detect line-level row anchors
+                        header_keywords = {
+                            "mark", "number", "door", "window", "frame", "schedule", "type", "finish",
+                            "comments", "level", "floor", "sheet", "code", "id", "tag", "fire", "rating", "width",
+                            "height", "hw", "set", "head", "jamb", "panel", "pane", "dimensions",
+                            "qty", "quantity", "manuf", "manufacturer", "remarks", "elevation", "detail",
+                            "sill", "glass", "glazing", "material", "mat'l", "thickness", "thckns",
+                            "hand", "welding", "gauge", "depth", "anchor", "face", "unit", "matrix", "type", "frame", "window",
+                            "door", "leaf"
+                        }
+                        
+                        def is_header_text(text):
+                            text_lower = text.lower().strip(".,:;()")
                             tokens = text_lower.split()
-                            if any(w in header_keywords for w in tokens):
-                                return False
-                            if "'" in text or '"' in text:
-                                return False
-                            if re.search(r"\d", text):
-                                return True
-                            if len(text) <= 4 and text.isupper():
-                                return True
-                            return False
-                            
-                        # Find all explicit marks and their Y-centers
-                        # Determine which of the first 3 columns has the most unique mark-like texts
-                        mark_col_idx = 0
-                        max_unique_marks = 0
-                        for col_idx in range(min(3, num_cols)):
-                            unique_marks_in_col = set()
-                            for w in words:
-                                center_x = (w['x0'] + w['x1']) / 2.0
-                                if merged_spans[col_idx][0] <= center_x <= merged_spans[col_idx][1]:
-                                    if is_mark_text(w['text']):
-                                        unique_marks_in_col.add(w['text'].strip().upper())
-                            col_marks_count = len(unique_marks_in_col)
-                            if col_marks_count > max_unique_marks:
-                                max_unique_marks = col_marks_count
-                                mark_col_idx = col_idx
+                            return any(w in header_keywords for w in tokens)
 
-                        logger.info(f"[CROP DYNAMIC] Detected mark column index: {mark_col_idx} with {max_unique_marks} unique marks.")
+                        # Select mark column: default to col 0 if it has non-header words; otherwise col 1
+                        mark_col_idx = 0
+                        for col_idx in range(min(2, num_cols)):
+                            words_in_col = [
+                                w for w in words
+                                if merged_spans[col_idx][0] <= (w['x0'] + w['x1']) / 2.0 <= merged_spans[col_idx][1]
+                            ]
+                            non_header = [w for w in words_in_col if not is_header_text(w['text'])]
+                            if non_header:
+                                mark_col_idx = col_idx
+                                break
+
+                        # Collect words in mark_col_idx sorted top-to-bottom
+                        col_words = [
+                            w for w in words
+                            if merged_spans[mark_col_idx][0] <= (w['x0'] + w['x1']) / 2.0 <= merged_spans[mark_col_idx][1]
+                        ]
+                        col_words.sort(key=lambda w: w['top'])
+
+                        header_words_in_mark_col = []
+                        data_words_in_mark_col = []
+                        for w in col_words:
+                            if is_header_text(w['text']):
+                                header_words_in_mark_col.append(w)
+                            else:
+                                data_words_in_mark_col.append(w)
+
+                        first_data_y = float('inf')
+                        if data_words_in_mark_col:
+                            first_data_y = min(w['top'] for w in data_words_in_mark_col) - 4
+
+                        # Group data words in mark_col_idx into line-level Mark Anchors (Y-centers within 6pt)
+                        mark_anchors = []
+                        for w in data_words_in_mark_col:
+                            w_y = (w['top'] + w['bottom']) / 2.0
+                            found = False
+                            for idx, (anchor_words, anchor_y_sum) in enumerate(mark_anchors):
+                                mean_y = anchor_y_sum / len(anchor_words)
+                                if abs(w_y - mean_y) <= 6.0:
+                                    anchor_words.append(w)
+                                    mark_anchors[idx] = (anchor_words, anchor_y_sum + w_y)
+                                    found = True
+                                    break
+                            if not found:
+                                mark_anchors.append(([w], w_y))
 
                         marks_info = []
-                        for w in words:
-                            center_x = (w['x0'] + w['x1']) / 2.0
-                            # Check if the word is in the designated mark column
-                            if merged_spans[mark_col_idx][0] <= center_x <= merged_spans[mark_col_idx][1]:
-                                if is_mark_text(w['text']):
-                                    marks_info.append((w['text'], (w['top'] + w['bottom']) / 2.0))
-                                    
+                        for anchor_words, anchor_y_sum in mark_anchors:
+                            anchor_words.sort(key=lambda w: w['x0'])
+                            combined_text = " ".join(w['text'] for w in anchor_words).strip()
+                            mean_y = anchor_y_sum / len(anchor_words)
+                            if combined_text:
+                                marks_info.append((combined_text, mean_y))
+
                         marks_info.sort(key=lambda x: x[1])
-                        
-                        # Define first data row Y-start boundary
-                        first_data_y = float('inf')
+
                         if marks_info:
                             first_data_y = marks_info[0][1] - 8
-                            
-                        logger.info(f"[CROP DYNAMIC] Detected {len(marks_info)} marks. First data Y: {first_data_y}")
-                        
-                        # 3. Group words into Headers and Data Rows
+
+                        logger.info(f"[CROP DYNAMIC] Selected mark_col_idx: {mark_col_idx}, detected {len(marks_info)} row anchors. First data Y: {first_data_y}")
+
+                        # 3. Group words into Headers and Data Rows using Midpoint Y-Bands
                         header_words = []
-                        data_row_words = {}
-                        if marks_info:
-                            data_row_words = {idx: [[] for _ in range(num_cols)] for idx in range(len(marks_info))}
-                            
+                        data_row_words = {idx: [[] for _ in range(num_cols)] for idx in range(len(marks_info))} if marks_info else {}
+
+                        anchor_boundaries = []
+                        num_anchors = len(marks_info)
+                        for i in range(num_anchors):
+                            m_y = marks_info[i][1]
+                            prev_y = marks_info[i-1][1] if i > 0 else m_y - 20.0
+                            next_y = marks_info[i+1][1] if i < num_anchors - 1 else m_y + 20.0
+                            top_bound = (prev_y + m_y) / 2.0
+                            bot_bound = (m_y + next_y) / 2.0
+                            anchor_boundaries.append((top_bound, bot_bound))
+
                         for w in words:
                             center_x = (w['x0'] + w['x1']) / 2.0
                             center_y = (w['top'] + w['bottom']) / 2.0
-                            
+
                             # Find best column index
                             best_col = 0
                             min_dist = float('inf')
@@ -496,37 +551,40 @@ class EstimationService:
                                 if dist < min_dist:
                                     min_dist = dist
                                     best_col = col_idx
-                                    
+
                             if center_y < first_data_y:
                                 header_words.append((w, best_col))
                             elif marks_info:
-                                # Find closest mark Y coordinate
-                                closest_mark_idx = None
-                                min_y_dist = float('inf')
-                                for idx, (m_text, m_y) in enumerate(marks_info):
-                                    dist_y = abs(center_y - m_y)
-                                    if dist_y < min_y_dist:
-                                        min_y_dist = dist_y
-                                        closest_mark_idx = idx
-                                if closest_mark_idx is not None:
-                                    data_row_words[closest_mark_idx][best_col].append(w)
-                                    
+                                best_row_idx = None
+                                for idx, (top_b, bot_b) in enumerate(anchor_boundaries):
+                                    if top_b <= center_y < bot_b:
+                                        best_row_idx = idx
+                                        break
+                                if best_row_idx is None:
+                                    min_y_dist = float('inf')
+                                    for idx, (m_text, m_y) in enumerate(marks_info):
+                                        dist_y = abs(center_y - m_y)
+                                        if dist_y < min_y_dist:
+                                            min_y_dist = dist_y
+                                            best_row_idx = idx
+                                if best_row_idx is not None:
+                                    data_row_words[best_row_idx][best_col].append(w)
+
                         # 4. Extract Header names
                         column_headers = [[] for _ in range(num_cols)]
                         for w, col_idx in header_words:
                             column_headers[col_idx].append(w)
-                            
+
                         clean_headers = []
                         seen_keys = {}
                         for col_idx, h_w_list in enumerate(column_headers):
-                            # Sort header words top-to-bottom, left-to-right
                             h_w_list.sort(key=lambda w: (w['top'], w['x0']))
                             h_text = " ".join(w['text'] for w in h_w_list).strip()
                             is_empty_header = False
                             if not h_text:
                                 h_text = f"COLUMN_{col_idx}"
                                 is_empty_header = True
-                                
+
                             base_key = h_text
                             if not is_empty_header:
                                 if base_key in seen_keys:
@@ -535,10 +593,10 @@ class EstimationService:
                                 else:
                                     seen_keys[base_key] = 0
                             clean_headers.append(h_text)
-                                
+
                         if clean_headers and mark_col_idx < len(clean_headers):
                             clean_headers[mark_col_idx] = "mark"
-                            
+
                         logger.info(f"[CROP DYNAMIC] Unified header keys: {clean_headers}")
                         
                         # 5. Extract data rows
@@ -619,8 +677,16 @@ class EstimationService:
                                 if all_empty:
                                     cols_to_drop.add(key)
                                     
-                        # Filter out dropped columns from results
+                        # Filter out dropped columns and header title rows from results
+                        HEADER_MARK_VALUES = {
+                            "door #", "door no", "door no.", "door number", "mark", "mark no", "mark #",
+                            "window #", "window no", "window mark", "item", "tag", "opening #", "opening no",
+                            "room #", "room name", "door details", "door panels", "door frame", "door type"
+                        }
                         for row in raw_results:
+                            mark_val = str(row.get("mark", "")).strip().lower()
+                            if mark_val in HEADER_MARK_VALUES or re.search(r"^(door|window|opening|mark|item)\s*(#|no|number|code)?$", mark_val):
+                                continue
                             final_row = {k: v for k, v in row.items() if k not in cols_to_drop}
                             results.append(final_row)
                                 

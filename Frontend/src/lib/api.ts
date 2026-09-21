@@ -67,8 +67,15 @@ export async function request(path: string, options: RequestInit = {}) {
   if (!response.ok) {
     let errorMessage = 'Something went wrong';
     try {
-      const errData = await response.json();
-      errorMessage = errData.detail || errorMessage;
+      let errData = await response.json();
+      if (errData && typeof errData === 'object' && 'encrypted_response' in errData && currentAesKey) {
+        try {
+          errData = decryptPayload(errData.encrypted_response, currentAesKey);
+        } catch (e) {
+          console.error("Failed to decrypt error response payload:", e);
+        }
+      }
+      errorMessage = (typeof errData?.detail === 'string' ? errData.detail : (Array.isArray(errData?.detail) ? JSON.stringify(errData.detail) : errData?.detail)) || errorMessage;
     } catch {
       // Ignored
     }

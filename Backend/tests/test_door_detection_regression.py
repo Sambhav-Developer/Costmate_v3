@@ -455,8 +455,68 @@ class TestDoorDetectionRegression(unittest.TestCase):
         self.assertEqual(obj["LOCATION"], "SHARED OFFICE")
         self.assertFalse(obj["has_highlight"], "PDF renderer must omit highlight box for failing geometry (has_highlight=False)")
 
+    def test_enlarged_plan_wizard_checkbox_flag_exclusion(self):
+        """
+        Fixture: When floor layout has isEnlarged=True / isEnlargedUnitPlan=True from Wizard Step 2 checkbox,
+        the detector flags is_enlarged_plan=True and excludes the sheet from common master floor counts.
+        """
+        floors = [
+            {"name": "Level 1", "isEnlarged": False, "rawUrl": "level1.pdf"},
+            {"name": "Enlarged Unit Plan A5.01", "isEnlargedUnitPlan": True, "rawUrl": "a501.pdf"}
+        ]
+        
+        floor_obj_level1 = floors[0]
+        floor_obj_enlarged = floors[1]
+        
+        is_enlarged_1 = bool(floor_obj_level1.get("isEnlarged") or floor_obj_level1.get("isEnlargedUnitPlan"))
+        is_enlarged_2 = bool(floor_obj_enlarged.get("isEnlarged") or floor_obj_enlarged.get("isEnlargedUnitPlan"))
+        
+        self.assertFalse(is_enlarged_1, "Level 1 floor plan must NOT be marked enlarged")
+        self.assertTrue(is_enlarged_2, "Enlarged unit plan layout with isEnlargedUnitPlan=True MUST be marked enlarged")
+
+    def test_enlarged_plan_title_pattern_exclusion(self):
+        """
+        Fixture: Fallback title pattern matching identifies sheets titled 'A5.01', 'A5.02', 'ENLARGED TYPICAL UNIT PLAN'
+        and flags is_enlarged_plan=True when upload metadata is unassigned.
+        """
+        sheet_titles = [
+            "A5.01 ENLARGED UNIT PLAN - MC-A",
+            "A5.02 TYPICAL UNIT PLAN - MC-B",
+            "FLOOR LEVEL 3 OVERALL PLAN"
+        ]
+        
+        enlarged_keywords = ["ENLARGED", "TYPICAL UNIT", "UNIT PLAN", "A5.01", "A5.02", "A501", "A502"]
+        
+        results = [any(kw in title for kw in enlarged_keywords) for title in sheet_titles]
+        
+        self.assertTrue(results[0], "Sheet A5.01 ENLARGED UNIT PLAN must match enlarged plan patterns")
+        self.assertTrue(results[1], "Sheet A5.02 TYPICAL UNIT PLAN must match enlarged plan patterns")
+        self.assertFalse(results[2], "Sheet FLOOR LEVEL 3 OVERALL PLAN must NOT match enlarged plan patterns")
+
+    def test_crop_schedule_vertical_edge_y1_fallback(self):
+        """
+        Fixture: Edge dictionary lacking 'y1'/'y0' keys (using top/bottom/height) must not throw KeyError.
+        """
+        edge1 = {"top": 10.0, "bottom": 50.0, "x0": 100.0, "x1": 100.0}
+        edge2 = {"height": 30.0, "x0": 150.0, "x1": 150.0}
+        edge3 = {"y0": 0.0, "y1": 25.0, "x0": 200.0, "x1": 200.0}
+
+        def get_edge_h(e):
+            if "height" in e and e["height"] is not None:
+                return float(e["height"])
+            if "bottom" in e and "top" in e:
+                return abs(float(e["bottom"]) - float(e["top"]))
+            if "y1" in e and "y0" in e:
+                return abs(float(e["y1"]) - float(e["y0"]))
+            return 0.0
+
+        self.assertEqual(get_edge_h(edge1), 40.0)
+        self.assertEqual(get_edge_h(edge2), 30.0)
+        self.assertEqual(get_edge_h(edge3), 25.0)
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

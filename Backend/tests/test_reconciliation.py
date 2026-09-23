@@ -318,6 +318,63 @@ class TestReconciliation(unittest.TestCase):
         self.assertEqual(doors[0]["_reconciled_opening_mode"], "SGL")
         self.assertEqual(doors[0]["_reconciled_int_ext"], "Interior")
 
+        # 6. Panel A fallback case: AL-FG panel material without WD/HM (Storefront)
+        state_panel_alfg = {
+            "schedule_data": [
+                {
+                    "mark": "301",
+                    "panel a": "AL-FG",
+                    "comments": ""
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "301",
+                        "bbox": [500, 500, 550, 520],
+                        "w_cx": 525,
+                        "w_cy": 510,
+                        "floor_no": "1",
+                        "int_ext": "Interior",
+                        "vlm_opening_mode": "SGL",
+                        "vlm_wall_type": "INT"
+                    }
+                ]
+            }
+        }
+        res = loop.run_until_complete(reconciliation_node(state_panel_alfg))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["_reconciled_opening_mode"], "STOREFRONT")
+
+        # 7. One present AL material and frame material dash '-' (Storefront)
+        state_al_dash = {
+            "schedule_data": [
+                {
+                    "mark": "302",
+                    "door material": "AL",
+                    "frame material": "-",
+                    "comments": ""
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "302",
+                        "bbox": [500, 500, 550, 520],
+                        "w_cx": 525,
+                        "w_cy": 510,
+                        "floor_no": "1",
+                        "int_ext": "Interior",
+                        "vlm_opening_mode": "SGL",
+                        "vlm_wall_type": "INT"
+                    }
+                ]
+            }
+        }
+        res = loop.run_until_complete(reconciliation_node(state_al_dash))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["_reconciled_opening_mode"], "STOREFRONT")
+
     def test_prep_door_frame_regression(self):
         # Relocated door with "PREP DOOR/FRAME" in comments should NOT trigger PR (remains SGL)
         state_relocated = {
@@ -486,6 +543,65 @@ class TestReconciliation(unittest.TestCase):
         res = loop.run_until_complete(reconciliation_node(state_missing_loc))
         doors = res["qa_prefilled"]["doors"]
         self.assertEqual(doors[0]["INT/EXT"], "Interior")
+
+    def test_schedule_location_and_floor_priority(self):
+        # 1. Schedule contains explicit Room Name & Floor -> Must preserve Schedule values
+        state_explicit = {
+            "schedule_data": [
+                {
+                    "mark": "401A",
+                    "room name": "CONF ROOM 305",
+                    "floor": "3rd Floor",
+                    "door material": "WD",
+                    "frame material": "HM"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "401A",
+                        "location": "HALLWAY OVERRIDE",
+                        "floor_no": "1",
+                        "w_cx": 100,
+                        "w_cy": 100
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_explicit))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["LOCATION"], "CONF ROOM 305")
+        self.assertEqual(doors[0]["FLOOR / LEVEL"], "3rd Floor")
+        self.assertEqual(doors[0]["floor_no"], "3rd Floor")
+
+        # 2. Schedule location is empty -> Fallback to CV spatial location detection
+        state_fallback = {
+            "schedule_data": [
+                {
+                    "mark": "401B",
+                    "room name": "",
+                    "floor": "",
+                    "door material": "WD",
+                    "frame material": "HM"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "401B",
+                        "location": "LOBBY 100",
+                        "floor_no": "Level 1",
+                        "w_cx": 200,
+                        "w_cy": 200
+                    }
+                ]
+            }
+        }
+        res = loop.run_until_complete(reconciliation_node(state_fallback))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["LOCATION"], "LOBBY 100")
+        self.assertEqual(doors[0]["FLOOR / LEVEL"], "Level 1")
 
 if __name__ == "__main__":
     unittest.main()

@@ -1086,14 +1086,66 @@ def classify_opening_from_schedule(item: dict) -> str:
     if dtype_upper in ["CO", "CASED OPENING", "CASED"]:
         return "CO"
 
-    # Genuine Storefront Check:
-    # Wood (WD/SCWD) or Hollow Metal (HM/STEEL) leaves in ALUM frames are Wood/HM doors, NOT Storefront.
-    is_wood_hm_leaf = any(w in mat_upper for w in ["WD", "WOOD", "SCWD", "HM", "STEEL", "FG", "FIBERGLASS"])
+    # Storefront Material & Panel Rules:
+    # Rule 1: DM & FM Evaluation
+    # Rule 2: Panel A & Panel B Fallback
+    # Rule 3: Wood (WD) / Hollow Metal (HM) Exclusions
+    panel_a = ""
+    panel_b = ""
+    for k, v in item.items():
+        kl = str(k).lower().strip()
+        val_str = str(v).strip().upper()
+        if not val_str or val_str in ["-", "N/A", "NONE", "NA"]:
+            continue
+        if any(x in kl for x in ["panel a", "panel 1 material", "leaf 1 material", "panel 1"]):
+            if not panel_a: panel_a = val_str
+        elif any(x in kl for x in ["panel b", "panel 2 material", "leaf 2 material", "panel 2"]):
+            if not panel_b: panel_b = val_str
+
+    sf_mat_tokens = {"AL", "ALUM", "ALUMINUM", "GL", "GLASS", "AL/GL", "GL/AL", "AL-FG", "AL/FG", "STOREFRONT", "CW", "CURTAINWALL", "SF"}
+    wood_hm_tokens = {"WD", "WOOD", "SCWD", "HM", "STEEL", "FG", "FIBERGLASS"}
+
+    def is_sf_token(m: str) -> bool:
+        if not m or m in ["-", "N/A", "NA", "NONE"]:
+            return False
+        m_upper = m.upper()
+        if "AL-FG" in m_upper or "AL/FG" in m_upper or "GL/AL" in m_upper or "AL/GL" in m_upper:
+            return True
+        tokens = [t.strip() for t in re.split(r'[^A-Z0-9]', m_upper) if t.strip()]
+        if any(w in wood_hm_tokens for w in tokens) and not any(kw in m_upper for kw in ["STOREFRONT", "CURTAINWALL", "AD SYSTEM"]):
+            return False
+        return any(t in sf_mat_tokens for t in tokens)
+
+    def is_wood_hm(m: str) -> bool:
+        if not m:
+            return False
+        m_upper = m.upper()
+        if any(kw in m_upper for kw in ["AL-FG", "AL/FG", "STOREFRONT", "CURTAINWALL", "AD SYSTEM"]):
+            return False
+        tokens = [t.strip() for t in re.split(r'[^A-Z0-9]', m_upper) if t.strip()]
+        return any(w in wood_hm_tokens for w in tokens)
+
     is_explicit_sf_system = any(tok in comments_upper for tok in ["STOREFRONT", "AD SYSTEM", "CURTAINWALL"]) or any(tok in dtype_upper for tok in ["STOREFRONT", "SF", "CW"])
-    
-    if not is_wood_hm_leaf or is_explicit_sf_system:
-        storefront_tokens = ["STOREFRONT", "CW", "CURTAINWALL"]
-        if mat_upper in storefront_tokens or any(tok in comments_upper for tok in ["STOREFRONT", "AD SYSTEM"]):
+
+    if is_explicit_sf_system:
+        return "STOREFRONT"
+
+    dm_empty = not mat_upper or mat_upper in ["-", "N/A", "NA", "NONE"]
+    fm_empty = not frame_mat_upper or frame_mat_upper in ["-", "N/A", "NA", "NONE"]
+
+    if is_wood_hm(mat_upper) or is_wood_hm(frame_mat_upper) or is_wood_hm(panel_a) or is_wood_hm(panel_b):
+        pass  # Wood/HM hybrid leaves bypass storefront
+    elif not dm_empty and not fm_empty:
+        if is_sf_token(mat_upper) and is_sf_token(frame_mat_upper):
+            return "STOREFRONT"
+    elif not dm_empty or not fm_empty:
+        present_mat = mat_upper if not dm_empty else frame_mat_upper
+        if is_sf_token(present_mat):
+            return "STOREFRONT"
+    else:
+        if is_sf_token(panel_a) or is_sf_token(panel_b):
+            return "STOREFRONT"
+        elif not panel_a and not panel_b:
             return "STOREFRONT"
 
     if w_a:

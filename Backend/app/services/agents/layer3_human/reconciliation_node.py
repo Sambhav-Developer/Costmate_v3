@@ -252,9 +252,9 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 canonical_key = "DETAIL HEAD"
             elif kl in ["jamb", "detail jamb", "detail_jamb"]:
                 canonical_key = "DETAIL JAMB"
-            elif kl in ["location", "location name", "room", "room name", "room no", "room number", "room/location", "room / location", "room_name", "room_no"]:
+            elif kl in ["location", "location name", "room", "room name", "room no", "room number", "room/location", "room / location", "from room", "to room", "room_name", "room_no"]:
                 canonical_key = "LOCATION"
-            elif kl in ["floor", "level", "floor / level", "floor/level", "floor level", "floor no", "floor number", "level no", "level number", "floor_no", "level_no"]:
+            elif kl in ["floor", "level", "floor / level", "floor/level", "floor level", "floor no", "floor number", "level no", "level number", "story", "floor_no", "level_no"]:
                 canonical_key = "FLOOR / LEVEL"
             else:
                 canonical_key = str(k).upper()
@@ -264,12 +264,15 @@ async def reconciliation_node(state: CostmateState) -> dict:
             else:
                 obj[canonical_key] = v
 
-        # Automatically populate LOCATION, bbox, and drawing coordinates from CV plan detections
+        # Populate LOCATION, bbox, and drawing coordinates from CV plan detections (Schedule Priority)
         if mark_dets:
             det = mark_dets[0]
             det_loc = str(det.get("location", "")).strip()
-            if det_loc and det_loc not in ["Unknown", "unknown", "NONE", ""]:
-                if not obj.get("LOCATION") or str(obj.get("LOCATION")).strip() in ["", "Unknown", "unknown"]:
+            curr_loc = str(obj.get("LOCATION") or "").strip()
+            
+            # ONLY use CV spatial location fallback if schedule LOCATION is missing, empty, or Unknown
+            if det_loc and det_loc not in ["Unknown", "unknown", "NONE", "", "-"]:
+                if not curr_loc or curr_loc in ["", "-", "N/A", "NA", "NONE", "Unknown", "unknown"]:
                     obj["LOCATION"] = det_loc
                     obj["location"] = det_loc
             if det.get("bbox"):
@@ -277,9 +280,19 @@ async def reconciliation_node(state: CostmateState) -> dict:
             if det.get("w_cx") is not None:
                 obj["w_cx"] = det.get("w_cx")
                 obj["w_cy"] = det.get("w_cy")
-            if det.get("floor_no"):
-                obj["floor_no"] = det.get("floor_no")
-                obj["floor_name"] = det.get("floor_name")
+            
+            # ONLY use CV page floor fallback if schedule FLOOR / LEVEL is missing, empty, or Unknown
+            curr_floor = str(obj.get("FLOOR / LEVEL") or obj.get("floor_no") or "").strip()
+            if not curr_floor or curr_floor in ["", "-", "N/A", "NA", "NONE", "Unknown", "unknown"]:
+                if det.get("floor_no"):
+                    obj["floor_no"] = det.get("floor_no")
+                    obj["FLOOR / LEVEL"] = det.get("floor_no")
+                    if det.get("floor_name"):
+                        obj["floor_name"] = det.get("floor_name")
+            else:
+                obj["floor_no"] = curr_floor
+                
+            if det.get("page_no"):
                 obj["page_no"] = det.get("page_no")
         
         # Check Panel 2 presence in the schedule row
@@ -438,40 +451,63 @@ async def reconciliation_node(state: CostmateState) -> dict:
 
         sched_mat = door_material
 
+        # Check for hardware set
+        has_hw_set = False
+        for k, v in item.items():
+            kl = str(k).lower().strip()
+            val_str = str(v).strip().upper()
+            if any(hk in kl for hk in ["hardware", "hw set", "hw group", "hdwe"]):
+                if val_str and val_str not in ["-", "N/A", "NONE", "NA"]:
+                    has_hw_set = True
+                    break
+
         # Cased Opening check
         # BOTH sched_mat and sched_dtype being empty strings "" is NOT a cased opening!
-        if sched_mat in ["-", "CASED OPENING"] and sched_dtype in ["-", "CO", "CASED OPENING", "CASED"]:
+        if has_hw_set:
+            is_sched_co = False
+        elif sched_mat in ["-", "CASED OPENING"] and sched_dtype in ["-", "CO", "CASED OPENING", "CASED"]:
             is_sched_co = True
         elif sched_dtype in ["CO", "CASED OPENING", "CASED"]:
             is_sched_co = True
         else:
             is_sched_co = False
 
-        # Storefront material check
-        is_storefront_opening = False
-        
-        dm_val = door_material.strip().upper() if door_material else ""
-        fm_val = frame_material.strip().upper() if frame_material else ""
-        wm_val = window_material.strip().upper() if window_material else ""
-        
-        def is_sf_mat(m: str) -> bool:
-            m_clean = str(m).strip().upper()
-            if not m_clean or m_clean in ["-", "N/A", "NA", "NONE", "UNKNOWN", "EXIST", "EX"]:
-                return False
-            # Split by any non-alphanumeric character (e.g. slash, space, hyphen)
-            tokens = [t.strip() for t in re.split(r'[^A-Z0-9]', m_clean) if t.strip()]
-            
-            # Wood / Hollow Metal Vision Lite Priority Guard:
-            # If primary leaf material is Wood (WD) or Metal (HM), presence of GLASS indicates a vision lite cutout, NOT storefront!
-            if any(wood_hm in tokens for wood_hm in ["WD", "WOOD", "HM", "STEEL", "FG", "FIBERGLASS"]):
-                return False
+        # Storefront material & panel check
+        panel_a = ""
+        panel_b = ""
+        for k, v in item.items():
+            kl = str(k).lower().strip()
+            val_str = str(v).strip().upper()
+            if not val_str or val_str in ["-", "N/A", "NONE", "NA"]:
+                continue
+            if any(x in kl for x in ["panel a", "panel 1 material", "leaf 1 material", "panel 1"]):
+                if not panel_a: panel_a = val_str
+            elif any(x in kl for x in ["panel b", "panel 2 material", "leaf 2 material", "panel 2"]):
+                if not panel_b: panel_b = val_str
 
-            sf_tokens = {
-                "AL", "ALUM", "ALUMINUM", "ALUMINIUM", "ALLUMINUM", "ALLUMINIUM", "ALM",
-                "STOREFRONT", "SF", "CW", "CURTAINWALL"
-            }
-            return any(t in sf_tokens for t in tokens) or "AL/GL" in m_clean or "GL/AL" in m_clean
-        
+        sf_mat_tokens = {"AL", "ALUM", "ALUMINUM", "GL", "GLASS", "AL/GL", "GL/AL", "AL-FG", "AL/FG", "STOREFRONT", "CW", "CURTAINWALL", "SF"}
+        wood_hm_tokens = {"WD", "WOOD", "SCWD", "HM", "STEEL", "FG", "FIBERGLASS"}
+
+        def is_sf_token(m: str) -> bool:
+            if not m or m in ["-", "N/A", "NA", "NONE"]:
+                return False
+            m_upper = m.upper()
+            if "AL-FG" in m_upper or "AL/FG" in m_upper or "GL/AL" in m_upper or "AL/GL" in m_upper:
+                return True
+            tokens = [t.strip() for t in re.split(r'[^A-Z0-9]', m_upper) if t.strip()]
+            if any(w in wood_hm_tokens for w in tokens) and not any(kw in m_upper for kw in ["STOREFRONT", "CURTAINWALL", "AD SYSTEM"]):
+                return False
+            return any(t in sf_mat_tokens for t in tokens)
+
+        def is_wood_hm(m: str) -> bool:
+            if not m:
+                return False
+            m_upper = m.upper()
+            if any(kw in m_upper for kw in ["AL-FG", "AL/FG", "STOREFRONT", "CURTAINWALL", "AD SYSTEM"]):
+                return False
+            tokens = [t.strip() for t in re.split(r'[^A-Z0-9]', m_upper) if t.strip()]
+            return any(w in wood_hm_tokens for w in tokens)
+
         # Check if it is a window schedule mark or explicitly window type
         is_window = (schedule_type == "window") or mark.startswith("W") or mark.startswith("V")
         
@@ -479,42 +515,41 @@ async def reconciliation_node(state: CostmateState) -> dict:
         spec_text = state.get("specifications_text") or ""
         is_spec_storefront = False
         if spec_text and mark:
-            # Split specifications text into lines
             lines = [line.strip().upper() for line in re.split(r'[.\n]', spec_text) if line.strip()]
             for line in lines:
-                # Split line by spaces and commas, check if the mark is a standalone word
                 words_in_line = [w.strip(".,()[]{}-_#*/\"'") for part in line.split() for w in part.split(",")]
                 if mark in words_in_line:
                     if any(kw in line for kw in ("STOREFRONT", "EXCLUDE", "EXCLUDED", "ALUMINUM", "ALUM")):
                         is_spec_storefront = True
                         logger.info(f"Reconciliation: Classifying mark {mark} as storefront based on specifications: '{line}'")
                         break
-        
-        # Check for explicit storefront keywords anywhere in the item data
-        all_text = (door_material + " " + frame_material + " " + window_material + " " + sched_dtype + " " + sched_comments + " " + sched_ftype).upper()
-        has_storefront_keywords = any(kw in all_text for kw in ("ALUMINUM", "ALUM", "STOREFRONT", "AD SYSTEM"))
-        
-        # Cased Opening with Hardware Set but no wood/HM frame material (indicates storefront pivots/closures)
-        is_co_with_hw = is_sched_co and has_hardware and (not frame_material or frame_material.upper() in ["", "-", "N/A", "NA", "NONE"])
-        
-        if is_spec_storefront:
-            is_storefront_opening = True
-        elif has_storefront_keywords:
-            is_storefront_opening = True
-        elif is_co_with_hw:
-            is_storefront_opening = True
-        elif is_sf_mat(dm_val) or is_sf_mat(fm_val) or is_sf_mat(wm_val):
-            is_storefront_opening = True
 
-        # Wood / Hollow Metal Leaf Guard:
-        # If the door leaf material or door type explicitly specifies Wood (WD/WOOD/SCWD) or Metal (HM/STEEL),
-        # force storefront to False unless comments/specs explicitly declare it as STOREFRONT/CURTAINWALL/AD SYSTEM.
-        tokens_door_mat = [t.strip() for t in re.split(r'[^A-Z0-9]', (door_material + " " + sched_dtype).upper()) if t.strip()]
-        is_door_leaf_wood_hm = any(w in tokens_door_mat for w in ["HM", "WD", "WOOD", "STEEL", "SCWD", "FG", "FIBERGLASS"])
-        is_system_sf = any(kw in (sched_comments + " " + sched_ftype).upper() for kw in ["STOREFRONT", "CURTAINWALL", "AD SYSTEM"]) or is_spec_storefront
-        
-        if is_door_leaf_wood_hm and not is_system_sf:
+        is_explicit_sf_system = any(tok in sched_comments.upper() for tok in ["STOREFRONT", "AD SYSTEM", "CURTAINWALL"]) or any(tok in sched_dtype.upper() for tok in ["STOREFRONT", "SF", "CW"]) or is_spec_storefront or is_window
+
+        is_storefront_opening = False
+        dm_val = door_material.strip().upper() if door_material else ""
+        fm_val = frame_material.strip().upper() if frame_material else ""
+        dm_empty = not dm_val or dm_val in ["-", "N/A", "NA", "NONE"]
+        fm_empty = not fm_val or fm_val in ["-", "N/A", "NA", "NONE"]
+
+        if is_explicit_sf_system:
+            is_storefront_opening = True
+        elif is_sched_co:
             is_storefront_opening = False
+        elif is_wood_hm(dm_val) or is_wood_hm(fm_val) or is_wood_hm(panel_a) or is_wood_hm(panel_b):
+            is_storefront_opening = False
+        elif not dm_empty and not fm_empty:
+            if is_sf_token(dm_val) and is_sf_token(fm_val):
+                is_storefront_opening = True
+        elif not dm_empty or not fm_empty:
+            present_mat = dm_val if not dm_empty else fm_val
+            if is_sf_token(present_mat):
+                is_storefront_opening = True
+        else:
+            if is_sf_token(panel_a) or is_sf_token(panel_b):
+                is_storefront_opening = True
+            elif not panel_a and not panel_b:
+                is_storefront_opening = True
 
         logger.info(f"Storefront material check: mark={mark}, door={door_material}, frame={frame_material}, window={window_material}, frame_type={sched_ftype} -> is_storefront={is_storefront_opening}")
 

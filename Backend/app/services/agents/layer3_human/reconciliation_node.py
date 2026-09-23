@@ -1,6 +1,11 @@
 from app.services.graph.state import CostmateState
 from app.core.logging import logger
 import re
+from app.services.agents.layer2_vision.cv_detector_node import (
+    determine_schedule_convention,
+    extract_convention_b_features,
+    parse_frame_features_from_title
+)
 
 def parse_door_width_in_inches(w_str: str) -> float:
     w_str = str(w_str).strip().upper()
@@ -141,6 +146,20 @@ async def reconciliation_node(state: CostmateState) -> dict:
     doors_list = []
     windows_list = []
     
+    # Sidelight, Transom & Clerestory Detection Engine (Layer 1 Convention Test & Layer 2/3 Feature Decoding)
+    schedule_convention = determine_schedule_convention(schedule_data, raw_schedule_headers)
+    elevation_sheet_map = state.get("elevation_sheet_map") or {}
+
+    # Step 4 Safety Net Baseline Check: Re-validate Layer 1 candidate baseline if Convention A
+    if schedule_convention == "CONVENTION_A" and elevation_sheet_map:
+        for c_code, feats in elevation_sheet_map.items():
+            if feats.get("has_sidelite") or feats.get("has_transom") or feats.get("has_clerestory"):
+                logger.warning(
+                    f"Step 4 Safety Net: Elevation sheet label shows candidate code '{c_code}' HAS features. "
+                    f"Prior baseline assumption invalidated — forcing per-door elevation lookup."
+                )
+                break
+
     for item in schedule_data:
         mark = str(item.get("mark", "")).upper()
         # count occurrences on the plan
@@ -746,12 +765,60 @@ async def reconciliation_node(state: CostmateState) -> dict:
             })
             logger.warning(f"Reconciliation: Schedule mark '{mark}' was not located on floor plan drawings. Flagged needs_review=True.")
             
-        # 5-Bucket INT/EXT Classification per SKILL.md (Interior, Exterior, Soft Exterior, Window/Sidelite/Borrowed Lite, Not in Scope)
+        # Sidelight, Transom & Clerestory Feature Decoding & Secondary Attributes
+        has_sl = False
+        has_tr = False
+        has_cl = False
+
+        if schedule_convention == "CONVENTION_B":
+            b_feats = extract_convention_b_features(item)
+            has_sl = b_feats["has_sidelite"]
+            has_tr = b_feats["has_transom"]
+            has_cl = b_feats["has_clerestory"]
+        elif schedule_convention == "CONVENTION_A":
+            if elevation_sheet_map:
+                f_code = str(item.get("frame_type") or item.get("FRAME TYPE") or item.get("frame_code") or item.get("FRAME CODE") or "").strip().upper()
+                m_code = str(item.get("mark") or item.get("MARK") or item.get("door_number") or "").strip().upper()
+                lookup_entry = elevation_sheet_map.get(f_code) or elevation_sheet_map.get(m_code) or {}
+                if lookup_entry:
+                    has_sl = lookup_entry.get("has_sidelite", False)
+                    has_tr = lookup_entry.get("has_transom", False)
+                    has_cl = lookup_entry.get("has_clerestory", False)
+                else:
+                    obj["needs_review"] = True
+                    obj["review_reason"] = f"VERIFY: Frame code '{f_code}' not found on Door Elevation Sheet"
+            else:
+                obj["needs_review"] = True
+                obj["review_reason"] = "VERIFY: Door Elevation Sheet required for frame code lookup"
+
+        obj["has_sidelite"] = has_sl
+        obj["has_transom"] = has_tr
+        obj["has_clerestory"] = has_cl
+
+        # Format Estimator Note column
+        note_parts = []
+        if has_sl: note_parts.append("Sidelight")
+        if has_tr: note_parts.append("Transom")
+        if has_cl: note_parts.append("Clerestory")
+
+        if note_parts:
+            if len(note_parts) == 1:
+                est_note = note_parts[0]
+            else:
+                est_note = ", ".join(note_parts[:-1]) + " & " + note_parts[-1]
+            obj["estimator_note"] = est_note
+            obj["orange_highlight"] = True
+            obj["highlight_color"] = "#FFC000"
+        else:
+            obj["estimator_note"] = ""
+            obj["orange_highlight"] = False
+
+        # 5-Bucket INT/EXT Classification per SKILL.md (Interior, Exterior, Soft Exterior, Window/Borrowed Lite, Not in Scope)
         all_opening_text = " ".join([str(v) for v in item.values() if v]).lower() + " " + " ".join([str(v) for v in obj.values() if v]).lower()
         if mark_dets:
             all_opening_text += " " + str(mark_dets[0].get("vlm_wall_type", "")).lower() + " " + str(mark_dets[0].get("vlm_opening_mode", "")).lower()
             
-        is_sidelite_or_borrowed = any(kw in all_opening_text for kw in ["sidelite", "side lite", "side-lite", "borrowed lite", "borrowed-lite", "borrowedlite", "transom", "glass panel"])
+        is_borrowed_lite_only = any(kw in all_opening_text for kw in ["borrowed lite", "borrowed-lite", "borrowedlite"]) and not any(kw in all_opening_text for kw in ["door", "leaf", "sgl", "pr", "swing"])
         is_multifold_wall = any(kw in all_opening_text for kw in ["multifold", "operable wall", "folding wall", "accordion door", "operable partition"])
         
         if is_multifold_wall:
@@ -772,12 +839,10 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 "exclusion_note": obj["Takeoff Notes"],
                 "treatment": "Flagged NOT IN SCOPE (Header #FF69B4)"
             })
-        elif is_window:
-            final_int_ext = "Window"
-        elif is_sidelite_or_borrowed:
+        elif is_window or is_borrowed_lite_only:
             final_int_ext = "Window"
             if not obj.get("Takeoff Notes"):
-                obj["Takeoff Notes"] = "Sidelite / Borrowed Lite opening."
+                obj["Takeoff Notes"] = "Borrowed Lite opening."
         elif is_sched_co:
             if not obj.get("Takeoff Notes"):
                 obj["Takeoff Notes"] = "Cased opening found on floor plan."
@@ -808,7 +873,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 obj["_reconciled_int_ext"] = "Not in Scope"
                 final_int_ext = "Not in Scope"
             else:
-                if not is_window and not is_sidelite_or_borrowed:
+                if not is_window and not is_borrowed_lite_only:
                     obj["_reconciled_opening_mode"] = final_opening_mode
                 obj["_reconciled_int_ext"] = final_int_ext
                 

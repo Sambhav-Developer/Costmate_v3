@@ -603,5 +603,125 @@ class TestReconciliation(unittest.TestCase):
         self.assertEqual(doors[0]["LOCATION"], "LOBBY 100")
         self.assertEqual(doors[0]["FLOOR / LEVEL"], "Level 1")
 
+    def test_sidelight_transom_clerestory_engine(self):
+        from app.services.agents.layer2_vision.cv_detector_node import (
+            scan_header_evidence,
+            determine_schedule_convention,
+            parse_frame_features_from_title,
+            extract_convention_b_features
+        )
+
+        # 1. Test tokenized header scanner
+        headers_with_shortcodes = ["MARK", "DOOR TYPE", "SL", "TR", "CL"]
+        ev1 = scan_header_evidence(headers_with_shortcodes)
+        self.assertTrue(ev1["has_sidelite_header"])
+        self.assertTrue(ev1["has_transom_header"])
+        self.assertTrue(ev1["has_clerestory_header"])
+        self.assertTrue(ev1["has_any_evidence"])
+
+        # Boundary check: "Track" shouldn't trigger "tr", "Class" shouldn't trigger "cl"
+        headers_boundary = ["MARK", "TRACK TYPE", "CLASS CODE"]
+        ev2 = scan_header_evidence(headers_boundary)
+        self.assertFalse(ev2["has_any_evidence"])
+
+        # Descriptive keywords check
+        headers_desc = ["DOOR MARK", "SIDELITE WIDTH", "TRANSOM HEIGHT", "CLERESTORY"]
+        ev3 = scan_header_evidence(headers_desc)
+        self.assertTrue(ev3["has_sidelite_header"])
+        self.assertTrue(ev3["has_transom_header"])
+        self.assertTrue(ev3["has_clerestory_header"])
+
+        # 2. Test convention determination priority hierarchy
+        # Priority 1: Naming pattern heuristic (HM-002 baseline)
+        sched_a = [
+            {"frame_type": "HM-002", "sidelight width": "2'-0\"", "transom height": "1'-0\""},
+            {"frame_type": "HM-012", "sidelight width": "2'-0\"", "transom height": "1'-0\""},
+            {"frame_type": "HM-112", "sidelight width": "2'-0\"", "transom height": "1'-0\""}
+        ]
+        conv_a = determine_schedule_convention(sched_a, ["FRAME TYPE", "SIDELIGHT WIDTH", "TRANSOM HEIGHT"])
+        self.assertEqual(conv_a, "CONVENTION_A")
+
+        # Convention B: Baseline code has blank dimension values
+        sched_b = [
+            {"frame_type": "HM-002", "sidelight width": "-", "transom height": "-"},
+            {"frame_type": "HM-012", "sidelight width": "2'-0\"", "transom height": "-"},
+        ]
+        conv_b = determine_schedule_convention(sched_b, ["FRAME TYPE", "SIDELIGHT WIDTH", "TRANSOM HEIGHT"])
+        self.assertEqual(conv_b, "CONVENTION_B")
+
+        # 3. Test Title Parser
+        title1 = "HOLLOW METAL FRAME 2\" HEAD WITH (1) SIDELIGHT"
+        f1 = parse_frame_features_from_title(title1)
+        self.assertTrue(f1["has_sidelite"])
+        self.assertFalse(f1["has_transom"])
+        self.assertFalse(f1["has_clerestory"])
+
+        title2 = "HOLLOW METAL FRAME WITH TRANSOM AND (1) SIDELIGHT"
+        f2 = parse_frame_features_from_title(title2)
+        self.assertTrue(f2["has_sidelite"])
+        self.assertTrue(f2["has_transom"])
+        self.assertFalse(f2["has_clerestory"])
+
+        title3 = "STOREFRONT ASSEMBLY WITH CLERESTORY PANEL"
+        f3 = parse_frame_features_from_title(title3)
+        self.assertFalse(f3["has_sidelite"])
+        self.assertFalse(f3["has_transom"])
+        self.assertTrue(f3["has_clerestory"])
+
+        # 4. Test Convention B Extract Features & Normalized Blank Filter
+        row_b = {
+            "sidelight qty": "1",
+            "sidelight width": "1'-0\"",
+            "transom height": " n/a ",
+            "clerestory": "-"
+        }
+        fb = extract_convention_b_features(row_b)
+        self.assertTrue(fb["has_sidelite"])
+        self.assertFalse(fb["has_transom"])
+        self.assertFalse(fb["has_clerestory"])
+
+        # 5. Integration test: Reconciliation Node preserves door category & formats Estimator Note
+        state_sidelite_door = {
+            "schedule_data": [
+                {
+                    "mark": "D326",
+                    "frame_type": "HM-012",
+                    "door material": "WD",
+                    "frame material": "HM",
+                    "sidelight width": "2'-0\"",
+                    "transom height": "1'-6\""
+                }
+            ],
+            "elevation_sheet_map": {
+                "HM-012": {"has_sidelite": True, "has_transom": True, "has_clerestory": False}
+            },
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "D326",
+                        "bbox": [100, 100, 150, 150],
+                        "w_cx": 125,
+                        "w_cy": 125,
+                        "floor_no": "1",
+                        "int_ext": "Interior",
+                        "vlm_opening_mode": "SGL",
+                        "vlm_wall_type": "INT"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res_door = loop.run_until_complete(reconciliation_node(state_sidelite_door))
+        doors = res_door["qa_prefilled"]["doors"]
+        self.assertEqual(len(doors), 1) # Retains door takeoff category, not reclassified to window!
+        self.assertTrue(doors[0]["has_sidelite"])
+        self.assertTrue(doors[0]["has_transom"])
+        self.assertFalse(doors[0]["has_clerestory"])
+        self.assertEqual(doors[0]["estimator_note"], "Sidelight & Transom")
+        self.assertTrue(doors[0]["orange_highlight"])
+        self.assertEqual(doors[0]["highlight_color"], "#FFC000")
+
+
 if __name__ == "__main__":
     unittest.main()
+

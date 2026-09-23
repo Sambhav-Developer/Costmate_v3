@@ -87,6 +87,211 @@ def is_valid_orphan_tag_candidate(word: str, sched_marks: set) -> bool:
     return True
 
 
+# ==============================================================================
+# SIDELIGHT, TRANSOM & CLERESTORY DETECTION ENGINE (Layers 1 & 2)
+# ==============================================================================
+
+NORMALIZED_BLANK_LIST = {
+    "", "-", "—", "n/a", "na", "n.a.", "none", "null", "undefined", "0", "0'", "0''", "0.0", "0\"", "0' - 0\"", "0'-0\""
+}
+
+def scan_header_evidence(headers: list) -> dict:
+    """
+    Step 0: Tokenized evidence scanner for schedule column headers.
+    Exact token match for short codes ('sl', 'tl', 'tr', 'cl').
+    Boundary match for descriptive terms ('sidelight', 'sidelite', 'transom', 'clerestory', 'borrowed lite').
+    """
+    import re
+    evidence = {
+        "has_sidelite_header": False,
+        "has_transom_header": False,
+        "has_clerestory_header": False,
+        "has_any_evidence": False,
+        "found_headers": []
+    }
+    
+    short_code_pattern = re.compile(r'\b(sl|tl|tr|cl)\b', re.IGNORECASE)
+    sl_pattern = re.compile(r'\b(sidelight|sidelite|side\s*light|side\s*lite)\b', re.IGNORECASE)
+    tr_pattern = re.compile(r'\b(transom)\b', re.IGNORECASE)
+    cl_pattern = re.compile(r'\b(clerestory|clearstorey|clear\s*story|clearstory)\b', re.IGNORECASE)
+    
+    for h in headers:
+        h_str = str(h).strip()
+        
+        # Sidelite check
+        if sl_pattern.search(h_str) or any(t.lower() in ["sl"] for t in short_code_pattern.findall(h_str)):
+            evidence["has_sidelite_header"] = True
+            evidence["found_headers"].append(h_str)
+            
+        # Transom check
+        if tr_pattern.search(h_str) or any(t.lower() in ["tr", "tl"] for t in short_code_pattern.findall(h_str)):
+            evidence["has_transom_header"] = True
+            evidence["found_headers"].append(h_str)
+            
+        # Clerestory check
+        if cl_pattern.search(h_str) or any(t.lower() in ["cl"] for t in short_code_pattern.findall(h_str)):
+            evidence["has_clerestory_header"] = True
+            evidence["found_headers"].append(h_str)
+
+    evidence["has_any_evidence"] = (
+        evidence["has_sidelite_header"] or 
+        evidence["has_transom_header"] or 
+        evidence["has_clerestory_header"]
+    )
+    return evidence
+
+
+def determine_schedule_convention(schedule_data: list, raw_headers: list) -> str:
+    """
+    Step 1: Sheet-independent Convention Test using strict Priority Hierarchy:
+    - Priority 1: Naming Pattern Heuristic (Lowest/no-suffix code in numeric family).
+    - Priority 2: Frequency Heuristic (Most common frame code).
+    - Priority 3: Priority Contradiction -> Fall back to CONVENTION_A.
+    """
+    evidence = scan_header_evidence(raw_headers)
+    if not evidence["has_any_evidence"]:
+        return "NO_EVIDENCE"
+        
+    if not schedule_data:
+        return "CONVENTION_A"
+
+    frame_codes = []
+    frame_code_counts = {}
+    row_dim_populated = {}
+
+    for row in schedule_data:
+        code = str(row.get("frame_type") or row.get("FRAME TYPE") or row.get("frame_code") or row.get("FRAME CODE") or row.get("type") or "").strip().upper()
+        if not code:
+            continue
+        frame_codes.append(code)
+        frame_code_counts[code] = frame_code_counts.get(code, 0) + 1
+        
+        is_pop = False
+        for k, v in row.items():
+            k_lower = str(k).lower()
+            if any(term in k_lower for term in ["sidelight", "sidelite", "transom", "clerestory"]):
+                v_norm = str(v).strip().lower().replace('"', '').replace("'", "")
+                if v_norm and v_norm not in NORMALIZED_BLANK_LIST:
+                    is_pop = True
+                    break
+        row_dim_populated[code] = row_dim_populated.get(code, False) or is_pop
+
+    if not frame_code_counts:
+        return "CONVENTION_A"
+
+    import re
+    candidate_naming = None
+    numeric_families = {}
+    for code in frame_code_counts:
+        m = re.match(r"^([A-Z]+)\-?(\d+)([A-Z\-]*)$", code)
+        if m:
+            prefix = m.group(1)
+            num_str = m.group(2)
+            suffix = m.group(3)
+            num_val = int(num_str)
+            if prefix not in numeric_families:
+                numeric_families[prefix] = []
+            numeric_families[prefix].append((num_val, code, suffix))
+
+    for prefix, family in numeric_families.items():
+        if len(family) >= 2:
+            family.sort(key=lambda x: (len(x[2]), x[0]))
+            candidate_naming = family[0][1]
+            break
+
+    candidate_freq = max(frame_code_counts, key=frame_code_counts.get)
+
+    if candidate_naming:
+        baseline_code = candidate_naming
+    elif candidate_freq:
+        baseline_code = candidate_freq
+    else:
+        return "CONVENTION_A"
+
+    if candidate_naming and candidate_freq and candidate_naming != candidate_freq:
+        logger.info(f"Convention Heuristic Conflict: Naming candidate '{candidate_naming}' != Frequency candidate '{candidate_freq}'. Defaulting to CONVENTION_A.")
+        return "CONVENTION_A"
+
+    if row_dim_populated.get(baseline_code, False):
+        return "CONVENTION_A"
+    else:
+        return "CONVENTION_B"
+
+
+def parse_frame_features_from_title(title: str) -> dict:
+    """
+    Step 2A Stage 3: Deterministic keyword parser for elevation drawing titles / callouts.
+    Converts text labels into boolean flags (has_sidelite, has_transom, has_clerestory).
+    """
+    t = str(title).upper().strip()
+    features = {
+        "has_sidelite": False,
+        "has_transom": False,
+        "has_clerestory": False
+    }
+
+    sl_keywords = ["SIDELIGHT", "SIDELITE", "SIDE LIGHT", "SIDE LITE", "SIDE-LITE"]
+    for kw in sl_keywords:
+        if kw in t:
+            features["has_sidelite"] = True
+            break
+
+    if "TRANSOM" in t:
+        features["has_transom"] = True
+
+    cl_keywords = ["CLERESTORY", "CLEARSTOREY", "CLEAR STORY", "CLEARSTORY"]
+    for kw in cl_keywords:
+        if kw in t:
+            features["has_clerestory"] = True
+            break
+
+    return features
+
+
+def extract_convention_b_features(row: dict) -> dict:
+    """
+    Step 2B: Direct Feature Column Reader for Convention B.
+    Extracts has_sidelite, has_transom, has_clerestory using normalized blank filtering.
+    Supports single-column and multi-column headers (QTY, MATERIAL, WIDTH/NOTE, HEIGHT).
+    """
+    features = {
+        "has_sidelite": False,
+        "has_transom": False,
+        "has_clerestory": False
+    }
+
+    for k, v in row.items():
+        k_str = str(k).strip()
+        k_lower = k_str.lower()
+        v_str = str(v).strip().lower()
+        v_clean = v_str.replace('"', '').replace("'", "").strip()
+
+        if not v_clean or v_clean in NORMALIZED_BLANK_LIST:
+            continue
+
+        is_qty_gt_zero = False
+        try:
+            val_num = float(v_clean)
+            if val_num > 0:
+                is_qty_gt_zero = True
+        except:
+            pass
+
+        if any(kw in k_lower for kw in ["sidelight", "sidelite", "side light", "side lite"]):
+            if is_qty_gt_zero or v_clean not in NORMALIZED_BLANK_LIST:
+                features["has_sidelite"] = True
+
+        elif "transom" in k_lower:
+            if is_qty_gt_zero or v_clean not in NORMALIZED_BLANK_LIST:
+                features["has_transom"] = True
+
+        elif any(kw in k_lower for kw in ["clerestory", "clearstorey", "clearstory"]):
+            if is_qty_gt_zero or v_clean not in NORMALIZED_BLANK_LIST:
+                features["has_clerestory"] = True
+
+    return features
+
+
 SYSTEM_PROMPT = """You are an expert civil construction estimation assistant.
 
 You will be given two images:

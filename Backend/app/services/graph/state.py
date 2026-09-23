@@ -21,7 +21,9 @@ class CostmateState(TypedDict):
     cv_results: Optional[Dict[str, Any]]             # Output of OpenCV / mark detection including auto-derived INT/EXT and OPENING MODE
 
     # Multifamily Matrix & Bifurcation Engine
+    building_type: Optional[str]                     # MULTI_FAMILY or NON_MULTI_FAMILY
     unit_mix_matrix: Optional[List[Dict[str, Any]]]  # Building x Floor x Unit Type matrix
+    unit_door_schedule: Optional[List[Dict[str, Any]]] # Parsed REPEATING unit doors catalog
     unit_door_matrix: Optional[List[Dict[str, Any]]] # Unit Type x Door Tag extended matrix
     bifurcated_schedule: Optional[List[Dict[str, Any]]] # Schedule items after wall-type/location bifurcation
     

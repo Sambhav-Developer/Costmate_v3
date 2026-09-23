@@ -39,6 +39,17 @@ async def reconciliation_node(state: CostmateState) -> dict:
     ocr_results = state.get("ocr_results", {})
     cv_results = state.get("cv_results", {})
     
+    # Extract raw schedule headers before prefill
+    raw_schedule_headers = []
+    seen_h = set()
+    for item in schedule_data:
+        if isinstance(item, dict):
+            for k in item.keys():
+                kl = str(k).lower().strip()
+                if not k.startswith("_") and kl not in ["needs_review", "is_borderline", "review_reason", "count", "type"] and kl not in seen_h:
+                    seen_h.add(kl)
+                    raw_schedule_headers.append(k)
+
     # Extract marks from each track
     schedule_marks = {str(item.get("mark", "")).strip().upper() for item in schedule_data if item.get("mark")}
     
@@ -117,17 +128,91 @@ async def reconciliation_node(state: CostmateState) -> dict:
         fallback_floor = floors[0].get("name") or "Level 1"
 
     # Map schedule data to V1 qa_prefilled format so the frontend unlocks the Parameters tab
+    # Structured 6-step Reconciliation Audit per Door_Schedule_Discrepancy_Report.md
+    reconciliation_audit = {
+        "quantity_discrepancies": [],
+        "borderline_unlocated_marks": [],
+        "int_ext_conflicts": [],
+        "opening_mode_conflicts": [],
+        "excluded_scope_items": [],
+        "deduplicated_rows": []
+    }
+    
     doors_list = []
     windows_list = []
     
     for item in schedule_data:
         mark = str(item.get("mark", "")).upper()
         # count occurrences on the plan
-        count = sum(1 for m in all_plan_marks if str(m).upper() == mark)
+        mark_dets = [d for d in cv_detections if str(d.get("mark", "")).strip().upper() == mark]
+        raw_count = max(len(mark_dets), len([m for m in ocr_marks_list if str(m).strip().upper() == mark]))
         
+        # Deduplicate duplicate crop callouts for the same physical door location (e.g. HE210P, HE210Q, HE210S, HE210U, HE210V)
+        if raw_count > 1:
+            loc_val = str(item.get("location") or item.get("LOCATION") or "").strip()
+            unique_locs = {loc_val.upper()} if loc_val else set()
+            for d in mark_dets:
+                d_loc = str(d.get("location", "")).strip().upper()
+                if d_loc:
+                    unique_locs.add(d_loc)
+            
+            # 1. Spatial proximity check: cluster detections on the same page within 50pt radius
+            spatial_clusters = []
+            for d in mark_dets:
+                p_no = str(d.get("page_no", "0"))
+                try:
+                    cx = float(d.get("w_cx", 0))
+                    cy = float(d.get("w_cy", 0))
+                except: 
+                    cx, cy = 0.0, 0.0
+                
+                matched_cluster = False
+                for cluster in spatial_clusters:
+                    if cluster["page_no"] == p_no:
+                        dist = ((cluster["cx"] - cx)**2 + (cluster["cy"] - cy)**2)**0.5
+                        if dist < 50.0:
+                            matched_cluster = True
+                            break
+                if not matched_cluster:
+                    spatial_clusters.append({"page_no": p_no, "cx": cx, "cy": cy})
+
+            # If spatial clusters exist and are less than raw_count, deduplicate overlapping crops
+            if spatial_clusters and len(spatial_clusters) < raw_count:
+                reconciled_count = len(spatial_clusters)
+                reconciliation_audit["deduplicated_rows"].append({
+                    "mark": mark,
+                    "original_count": raw_count,
+                    "reconciled_count": reconciled_count,
+                    "reason": f"Consolidated {raw_count - reconciled_count} overlapping crop detection(s) for physical mark '{mark}' at location '{loc_val or 'Standard'}'"
+                })
+            else:
+                # 2. Location string matching: if all detections belong to the same room location name
+                is_dup_loc = False
+                if len(unique_locs) == 1:
+                    is_dup_loc = True
+                elif len(unique_locs) == 2:
+                    l_list = list(unique_locs)
+                    l1_clean = re.sub(r'[^A-Z0-9]', '', l_list[0])
+                    l2_clean = re.sub(r'[^A-Z0-9]', '', l_list[1])
+                    if l1_clean in l2_clean or l2_clean in l1_clean:
+                        is_dup_loc = True
+                        
+                if is_dup_loc and len(unique_locs) > 0:
+                    reconciled_count = 1
+                    reconciliation_audit["deduplicated_rows"].append({
+                        "mark": mark,
+                        "original_count": raw_count,
+                        "reconciled_count": 1,
+                        "reason": f"Deduplicated duplicate crop callout on drawing for location '{loc_val or 'Standard'}'"
+                    })
+                else:
+                    reconciled_count = raw_count
+        else:
+            reconciled_count = max(1, raw_count) if mark_dets else 0
+
         obj = {
             "type": mark,
-            "count": max(1, count),
+            "count": reconciled_count,
             # Pass needs_review through so the UI can show the REVIEW status badge
             "needs_review": bool(item.get("needs_review", False))
         }
@@ -178,12 +263,31 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 obj[canonical_key] = "True" if v else "False"
             else:
                 obj[canonical_key] = v
+
+        # Automatically populate LOCATION, bbox, and drawing coordinates from CV plan detections
+        if mark_dets:
+            det = mark_dets[0]
+            det_loc = str(det.get("location", "")).strip()
+            if det_loc and det_loc not in ["Unknown", "unknown", "NONE", ""]:
+                if not obj.get("LOCATION") or str(obj.get("LOCATION")).strip() in ["", "Unknown", "unknown"]:
+                    obj["LOCATION"] = det_loc
+                    obj["location"] = det_loc
+            if det.get("bbox"):
+                obj["bbox"] = det.get("bbox")
+            if det.get("w_cx") is not None:
+                obj["w_cx"] = det.get("w_cx")
+                obj["w_cy"] = det.get("w_cy")
+            if det.get("floor_no"):
+                obj["floor_no"] = det.get("floor_no")
+                obj["floor_name"] = det.get("floor_name")
+                obj["page_no"] = det.get("page_no")
         
         # Check Panel 2 presence in the schedule row
         panel_2_keys = []
         has_hardware = False
         has_material = False
         is_explicit_exterior = False
+        is_explicit_interior = False
         has_pair_leaves = False
         door_width_str = ""
         
@@ -198,10 +302,12 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 if v_str not in ["EXIST", "EX", "EXISTING"]:
                     panel_2_keys.append(v_str)
                     
-            # INT/EXT check to recognize exterior doors explicitly declared in the schedule
+            # INT/EXT check to recognize exterior/interior doors explicitly declared in the schedule
             if any(ie in k_lower for ie in ["int/ext", "int_ext", "interior/exterior", "int / ext", "interior / exterior"]):
                 if any(x in v_str for x in ["EXT", "EXTERNAL", "EXTERIOR"]):
                     is_explicit_exterior = True
+                elif any(x in v_str for x in ["INT", "INTERNAL", "INTERIOR"]):
+                    is_explicit_interior = True
                     
             # Leaf count check: e.g. NO. OF LEAVES = 2
             leaves_keys = ["no. of leaves", "leaves", "leaf qty", "panels", "leaves qty", "no. of panels", "leaves number"]
@@ -279,7 +385,7 @@ async def reconciliation_node(state: CostmateState) -> dict:
             
             # 1. Door Material mapping (door panel, panel 1, door material, mat'l, etc.)
             is_dm = False
-            if any(x in kl for x in ["door material", "door mat'l", "door matl", "dr mat", "dr mat'l", "dr matl"]):
+            if any(x in kl for x in ["door material", "door mat'l", "door matl", "dr mat", "dr mat'l", "dr matl", "door mat", "leaf material", "panel material"]):
                 is_dm = True
             elif any(x in kl for x in ["panel 1", "door panel", "panel type"]) and "frame" not in kl:
                 is_dm = True
@@ -296,12 +402,15 @@ async def reconciliation_node(state: CostmateState) -> dict:
             # 3. Window Material mapping
             is_wm = ("window" in kl or "glazing" in kl) and ("material" in kl or "mat'l" in kl or "matl" in kl)
             
-            if is_dm:
-                door_material = val_str
-            elif is_fm:
-                frame_material = val_str
-            elif is_wm:
-                window_material = val_str
+            if is_dm and val_str:
+                if not door_material or "panel 1" in kl or "door material" in kl:
+                    door_material = val_str
+            elif is_fm and val_str:
+                if not frame_material or "frame material" in kl:
+                    frame_material = val_str
+            elif is_wm and val_str:
+                if not window_material:
+                    window_material = val_str
                 
             # 4. Door Type mapping
             is_dt = False
@@ -317,20 +426,26 @@ async def reconciliation_node(state: CostmateState) -> dict:
             elif "type" in kl and "frame" in kl:
                 is_ft = True
                 
-            if is_dt:
-                sched_dtype = val_str
-            elif is_ft:
-                sched_ftype = val_str
-            elif any(ck in kl for ck in ["comments", "remarks", "estimator notes", "description"]):
-                sched_comments = val_str
+            if is_dt and val_str:
+                if not sched_dtype or "door type" in kl:
+                    sched_dtype = val_str
+            elif is_ft and val_str:
+                if not sched_ftype or "frame type" in kl:
+                    sched_ftype = val_str
+            elif any(ck in kl for ck in ["comments", "remarks", "estimator notes", "description"]) and val_str:
+                if not sched_comments:
+                    sched_comments = val_str
 
         sched_mat = door_material
 
         # Cased Opening check
-        if sched_mat in ["-", "", "NONE", "N/A", "CASED OPENING"] and sched_dtype in ["-", "", "CO", "NONE", "N/A", "CASED OPENING", "CASED"]:
+        # BOTH sched_mat and sched_dtype being empty strings "" is NOT a cased opening!
+        if sched_mat in ["-", "CASED OPENING"] and sched_dtype in ["-", "CO", "CASED OPENING", "CASED"]:
             is_sched_co = True
         elif sched_dtype in ["CO", "CASED OPENING", "CASED"]:
             is_sched_co = True
+        else:
+            is_sched_co = False
 
         # Storefront material check
         is_storefront_opening = False
@@ -345,10 +460,15 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 return False
             # Split by any non-alphanumeric character (e.g. slash, space, hyphen)
             tokens = [t.strip() for t in re.split(r'[^A-Z0-9]', m_clean) if t.strip()]
+            
+            # Wood / Hollow Metal Vision Lite Priority Guard:
+            # If primary leaf material is Wood (WD) or Metal (HM), presence of GLASS indicates a vision lite cutout, NOT storefront!
+            if any(wood_hm in tokens for wood_hm in ["WD", "WOOD", "HM", "STEEL", "FG", "FIBERGLASS"]):
+                return False
+
             sf_tokens = {
                 "AL", "ALUM", "ALUMINUM", "ALUMINIUM", "ALLUMINUM", "ALLUMINIUM", "ALM",
-                "STOREFRONT", "SF", "CW", "CURTAINWALL",
-                "GL", "GLASS", "GLZ", "GLAZING"
+                "STOREFRONT", "SF", "CW", "CURTAINWALL"
             }
             return any(t in sf_tokens for t in tokens) or "AL/GL" in m_clean or "GL/AL" in m_clean
         
@@ -386,6 +506,16 @@ async def reconciliation_node(state: CostmateState) -> dict:
         elif is_sf_mat(dm_val) or is_sf_mat(fm_val) or is_sf_mat(wm_val):
             is_storefront_opening = True
 
+        # Wood / Hollow Metal Leaf Guard:
+        # If the door leaf material or door type explicitly specifies Wood (WD/WOOD/SCWD) or Metal (HM/STEEL),
+        # force storefront to False unless comments/specs explicitly declare it as STOREFRONT/CURTAINWALL/AD SYSTEM.
+        tokens_door_mat = [t.strip() for t in re.split(r'[^A-Z0-9]', (door_material + " " + sched_dtype).upper()) if t.strip()]
+        is_door_leaf_wood_hm = any(w in tokens_door_mat for w in ["HM", "WD", "WOOD", "STEEL", "SCWD", "FG", "FIBERGLASS"])
+        is_system_sf = any(kw in (sched_comments + " " + sched_ftype).upper() for kw in ["STOREFRONT", "CURTAINWALL", "AD SYSTEM"]) or is_spec_storefront
+        
+        if is_door_leaf_wood_hm and not is_system_sf:
+            is_storefront_opening = False
+
         logger.info(f"Storefront material check: mark={mark}, door={door_material}, frame={frame_material}, window={window_material}, frame_type={sched_ftype} -> is_storefront={is_storefront_opening}")
 
 
@@ -396,11 +526,52 @@ async def reconciliation_node(state: CostmateState) -> dict:
         dtype_words = {w.strip(".,()[]{}-_#*") for w in sched_dtype.split()}
         comments_words = {w.strip(".,()[]{}-_#*") for w in sched_comments.split()}
         
+        is_sched_da = False
         if (any(p in sched_dtype for p in da_phrases) or 
             any(p in sched_comments for p in da_phrases) or 
             da_exact_words.intersection(dtype_words) or 
             da_exact_words.intersection(comments_words)):
             is_sched_da = True
+
+        # Barn / Sliding Door check
+        sld_phrases = ["BARN DOOR", "BARN-DOOR", "BARN", "SURFACE SLIDING", "SURFACE-SLIDING", "SLIDING DOOR", "SLIDING-DOOR", "SLIDING", "TOP HUNG SLIDING", "TOP-HUNG SLIDING", "BARN HARDWARE", "TRACK HARDWARE", "SLIDING TRACK"]
+        sld_exact_words = {"SLD", "BARN", "SLIDING"}
+        is_sched_sld = False
+        if (any(p in sched_dtype for p in sld_phrases) or 
+            any(p in sched_comments for p in sld_phrases) or 
+            sld_exact_words.intersection(dtype_words) or 
+            sld_exact_words.intersection(comments_words)):
+            is_sched_sld = True
+
+        # Pocket Door check
+        pkt_phrases = ["POCKET DOOR", "POCKET-DOOR", "POCKET"]
+        pkt_exact_words = {"PKT", "POCKET"}
+        is_sched_pkt = False
+        if (any(p in sched_dtype for p in pkt_phrases) or 
+            any(p in sched_comments for p in pkt_phrases) or 
+            pkt_exact_words.intersection(dtype_words) or 
+            pkt_exact_words.intersection(comments_words)):
+            is_sched_pkt = True
+
+        # Bifold Door check
+        bifold_phrases = ["BIFOLD", "BI-FOLD"]
+        bifold_exact_words = {"BIFOLD"}
+        is_sched_bifold = False
+        if (any(p in sched_dtype for p in bifold_phrases) or 
+            any(p in sched_comments for p in bifold_phrases) or 
+            bifold_exact_words.intersection(dtype_words) or 
+            bifold_exact_words.intersection(comments_words)):
+            is_sched_bifold = True
+
+        # Bypass Door check
+        bypass_phrases = ["BYPASS", "BY-PASS"]
+        bypass_exact_words = {"BYPASS"}
+        is_sched_bypass = False
+        if (any(p in sched_dtype for p in bypass_phrases) or 
+            any(p in sched_comments for p in bypass_phrases) or 
+            bypass_exact_words.intersection(dtype_words) or 
+            bypass_exact_words.intersection(comments_words)):
+            is_sched_bypass = True
 
         resolved_mode = sched_opening_mode
         if is_storefront_opening or is_window:
@@ -409,8 +580,20 @@ async def reconciliation_node(state: CostmateState) -> dict:
             resolved_mode = "CO"
         elif is_sched_da:
             resolved_mode = "DA"
+        elif is_sched_sld:
+            resolved_mode = "SLD"
+        elif is_sched_pkt:
+            resolved_mode = "PKT"
+        elif is_sched_bifold:
+            resolved_mode = "BIFOLD"
+        elif is_sched_bypass:
+            resolved_mode = "BYPASS"
         elif has_panel_2:
             resolved_mode = "PR"
+        elif mark_dets and mark_dets[0].get("opening_mode"):
+            resolved_mode = mark_dets[0].get("opening_mode")
+        else:
+            resolved_mode = "SGL"
             
         final_opening_mode = resolved_mode
         final_int_ext = "Exterior" if is_explicit_exterior else "Interior"
@@ -418,36 +601,39 @@ async def reconciliation_node(state: CostmateState) -> dict:
         if mark_dets:
             det = mark_dets[0]
             vlm_mode = det.get("vlm_opening_mode", "UNKNOWN")
-            vlm_wall = det.get("vlm_wall_type", "UNKNOWN")
+            l1_mode = det.get("layer1_schedule_mode") or resolved_mode
+            l2_mode = det.get("layer2_vector_mode") or "UNKNOWN"
+            l3_mode = det.get("layer3_vlm_mode") or vlm_mode
+
+            # Material & hardware sanity cleanup for Layer 3 VLM prediction
+            l3_cleaned = l3_mode
+            if (l3_mode in ["CO", "REV"]) and (has_hardware or has_material):
+                l3_cleaned = "PR" if has_panel_2 else (resolved_mode if resolved_mode in ["SLD", "PKT", "BIFOLD", "BYPASS"] else "SGL")
+            elif l3_mode in ["PR", "PAIR", "DOUBLE", "DBL"] and not has_panel_2 and resolved_mode in ["SGL", "SLD", "PKT", "BIFOLD", "BYPASS"]:
+                l3_cleaned = resolved_mode
+
+            VISUAL_SPECIALTY_MODES = {"SLD", "PKT", "BIFOLD", "OHD", "REV", "BYPASS", "DA"}
             
+            # 3-Layer Weighted Voting
+            votes = {}
+            if l1_mode and l1_mode != "UNKNOWN":
+                votes[l1_mode] = votes.get(l1_mode, 0.0) + 1.0
+            if l2_mode and l2_mode != "UNKNOWN":
+                votes[l2_mode] = votes.get(l2_mode, 0.0) + 1.0
+            if l3_cleaned and l3_cleaned != "UNKNOWN":
+                votes[l3_cleaned] = votes.get(l3_cleaned, 0.0) + 1.0
+
+            # Layer 3 Visual Specialty Bonus: Give Layer 3 +0.5 bonus weight for legend-matched visual types
+            if l3_mode in VISUAL_SPECIALTY_MODES and l3_cleaned == l3_mode:
+                votes[l3_mode] = votes.get(l3_mode, 0.0) + 0.5
+
             if resolved_mode == "STOREFRONT":
                 final_opening_mode = "STOREFRONT"
-            elif vlm_mode != "UNKNOWN":
-                # Sanity check cased openings (CO) and revolving (REV)
-                is_invalid_co = (vlm_mode == "CO") and (has_hardware or has_material)
-                is_invalid_rev = (vlm_mode == "REV") and (has_hardware or has_material)
-                
-                vlm_mode_cleaned = vlm_mode
-                if is_invalid_co or is_invalid_rev:
-                    vlm_mode_cleaned = "PR" if has_panel_2 else "SGL"
-                    logger.info(f"Reconciliation: Overriding invalid VLM {vlm_mode} for mark {mark} to {vlm_mode_cleaned} (has hardware/material).")
-                elif vlm_mode == "PR" and not has_panel_2 and resolved_mode == "SGL":
-                    vlm_mode_cleaned = "SGL"
-                    logger.info(f"Reconciliation: Overriding VLM PR for mark {mark} to SGL (no Panel 2 in schedule).")
- 
-                if resolved_mode == vlm_mode_cleaned:
-                    final_opening_mode = resolved_mode
-                elif resolved_mode == "PR" and vlm_mode_cleaned in ["DE", "DA"]:
-                    final_opening_mode = "PR"
-                else:
-                    unresolved_queue.append({
-                        "type": "opening_mode_conflict",
-                        "mark": mark,
-                        "context": f"Opening Mode Conflict: Schedule suggests '{resolved_mode}' but floor plan crop reads as '{vlm_mode_cleaned}'. (Reasoning: {det.get('vlm_reasoning', 'VLM detection discrepancy')})"
-                    })
-                    obj["needs_review"] = True
-                    # Prioritize schedule-resolved mode over wrong VLM guess for final output
-                    final_opening_mode = resolved_mode
+            elif votes:
+                sorted_modes = sorted(votes.items(), key=lambda x: x[1], reverse=True)
+                winner_mode = sorted_modes[0][0]
+                final_opening_mode = winner_mode
+                logger.info(f"Reconciliation 3-Layer Voting for Mark {mark}: L1={l1_mode}, L2={l2_mode}, L3={l3_cleaned} -> WINNER={winner_mode} (votes={votes})")
             else:
                 final_opening_mode = resolved_mode
             
@@ -459,8 +645,45 @@ async def reconciliation_node(state: CostmateState) -> dict:
             geom_int_ext = det.get("int_ext", "Interior")
             vlm_wall = det.get("vlm_wall_type", "UNKNOWN")
 
-            if is_explicit_exterior or is_curtain_wall or vlm_wall in ["EXT", "EXTERIOR"]:
+            # Priority 1: Explicit Schedule Facts (Highest Confidence)
+            if is_explicit_exterior or is_curtain_wall:
                 final_int_ext = "Exterior"
+            elif is_explicit_interior:
+                final_int_ext = "Interior"
+                if vlm_wall in ["EXT", "EXTERIOR"]:
+                    reconciliation_audit["int_ext_conflicts"].append({
+                        "mark": mark,
+                        "schedule_value": "Interior",
+                        "detected_value": "Exterior",
+                        "resolution": "Interior (Schedule Priority of Evidence)"
+                    })
+            # Priority 2: 2D Geometry Building Footprint (Primary CAD Physical Signal)
+            elif dist_val > 85.0:
+                final_int_ext = "Interior"
+                if vlm_wall in ["EXT", "EXTERIOR"]:
+                    reconciliation_audit["int_ext_conflicts"].append({
+                        "mark": mark,
+                        "schedule_value": "Interior",
+                        "detected_value": "Exterior",
+                        "resolution": f"Interior (Resolved by 2D CAD Building Footprint at {dist_val:.1f}pt)"
+                    })
+            # Priority 3: Perimeter Zone (dist_val <= 85.0 pt) — VLM Tiebreaker & Secondary Room Name QA Corroboration
+            elif vlm_wall in ["EXT", "EXTERIOR"]:
+                loc_upper = str(obj.get("LOCATION") or det.get("location") or "").upper()
+                interior_kws = ["OFFICE", "CORRIDOR", "STORAGE", "TOILET", "SHOWER", "CONFERENCE", "HALL", "LOUNGE", "STAIR", "CLOSET", "RECEPTION", "WAITING", "PANTRY", "EXAM", "CARE", "UTILITY", "ELEC", "MECH", "JANITOR", "HOLDING"]
+                has_interior_loc = any(kw in loc_upper for kw in interior_kws)
+                has_exterior_loc = any(kw in loc_upper for kw in ["ROOF", "PATIO", "COURTYARD", "OUTDOOR", "EXTERIOR", "PARKING", "DOCK"])
+                
+                if has_interior_loc and not has_exterior_loc:
+                    final_int_ext = "Interior"
+                    reconciliation_audit["int_ext_conflicts"].append({
+                        "mark": mark,
+                        "schedule_value": "Interior",
+                        "detected_value": "Exterior",
+                        "resolution": f"Interior (Resolved by Room Location '{loc_upper}')"
+                    })
+                else:
+                    final_int_ext = "Exterior"
             else:
                 final_int_ext = "Interior"
         else:
@@ -471,6 +694,15 @@ async def reconciliation_node(state: CostmateState) -> dict:
             obj["needs_review"] = True
             obj["is_borderline"] = True
             obj["review_reason"] = "mark_not_located_on_drawing"
+            if not obj.get("Takeoff Notes"):
+                obj["Takeoff Notes"] = "Schedule mark not located on drawing; Qty verified by estimator."
+            
+            reconciliation_audit["borderline_unlocated_marks"].append({
+                "mark": mark,
+                "location": obj.get("LOCATION", "Unknown"),
+                "status": "mark_not_located_on_drawing",
+                "action": "Flagged Qty=0 for human verification against source drawings"
+            })
             
             unresolved_queue.append({
                 "type": "mark_not_located",
@@ -491,10 +723,20 @@ async def reconciliation_node(state: CostmateState) -> dict:
             final_int_ext = "Not in Scope"
             obj["Takeoff Notes"] = "Door tag found on Floor plan it is a multifold wall assembly. So, Excluded."
             obj["excluded"] = True
+            reconciliation_audit["excluded_scope_items"].append({
+                "mark": mark,
+                "exclusion_note": obj["Takeoff Notes"],
+                "treatment": "Flagged NOT IN SCOPE (Header #FF69B4)"
+            })
         elif is_storefront_opening:
             final_int_ext = "Not in Scope"
             obj["Takeoff Notes"] = f"Door Excluded. Door material {door_material or 'HM'} but on elevation it is storefront."
             obj["excluded"] = True
+            reconciliation_audit["excluded_scope_items"].append({
+                "mark": mark,
+                "exclusion_note": obj["Takeoff Notes"],
+                "treatment": "Flagged NOT IN SCOPE (Header #FF69B4)"
+            })
         elif is_window:
             final_int_ext = "Window"
         elif is_sidelite_or_borrowed:
@@ -509,17 +751,45 @@ async def reconciliation_node(state: CostmateState) -> dict:
         elif is_explicit_exterior:
             final_int_ext = "Exterior"
         
-        is_ad_system = "AD SYSTEM" in sched_comments.upper() or "AD SYSTEM" in sched_dtype.upper() or resolved_mode == "STOREFRONT" or is_storefront_opening
-        if is_ad_system:
+        door_mat = str(obj.get("DOOR MATERIAL", obj.get("door_material", ""))).strip()
+        frame_mat = str(obj.get("FRAME MATERIAL", obj.get("frame_material", ""))).strip()
+        
+        # User Rule: If door material or frame material is '-', it is a Storefront opening
+        if door_mat == "-" or frame_mat == "-":
             obj["_is_ad_system"] = True
+            obj["Opening Mode"] = "STOREFRONT"
             obj["_reconciled_opening_mode"] = "STOREFRONT"
+            final_int_ext = "Not in Scope"
+            obj["INT/EXT"] = "Not in Scope"
             obj["_reconciled_int_ext"] = "Not in Scope"
+            if not obj.get("Takeoff Notes"):
+                obj["Takeoff Notes"] = "SEE STOREFRONT SCHEDULE."
         else:
-            if not is_window and not is_sidelite_or_borrowed:
-                obj["_reconciled_opening_mode"] = final_opening_mode
-            obj["_reconciled_int_ext"] = final_int_ext
-            
-        obj["INT/EXT"] = final_int_ext
+            is_ad_system = "AD SYSTEM" in sched_comments.upper() or "AD SYSTEM" in sched_dtype.upper() or resolved_mode == "STOREFRONT" or is_storefront_opening
+            if is_ad_system:
+                obj["_is_ad_system"] = True
+                obj["Opening Mode"] = "STOREFRONT"
+                obj["_reconciled_opening_mode"] = "STOREFRONT"
+                obj["_reconciled_int_ext"] = "Not in Scope"
+                final_int_ext = "Not in Scope"
+            else:
+                if not is_window and not is_sidelite_or_borrowed:
+                    obj["_reconciled_opening_mode"] = final_opening_mode
+                obj["_reconciled_int_ext"] = final_int_ext
+                
+            obj["INT/EXT"] = final_int_ext
+
+        if mark_dets:
+            det = mark_dets[0]
+            obj["layer1_schedule_mode"] = det.get("layer1_schedule_mode", "UNKNOWN")
+            obj["layer2_vector_mode"] = det.get("layer2_vector_mode", "UNKNOWN")
+            obj["layer3_vlm_mode"] = det.get("layer3_vlm_mode", "UNKNOWN")
+        else:
+            obj["layer1_schedule_mode"] = "UNKNOWN"
+            obj["layer2_vector_mode"] = "UNKNOWN"
+            obj["layer3_vlm_mode"] = "UNKNOWN"
+
+        obj["final_reconciled_mode"] = obj.get("_reconciled_opening_mode", final_opening_mode)
         
         # Shift detail values if they drifted into the FINISH or FRAME FINISH columns
         for finish_key in ["FINISH", "FRAME FINISH"]:
@@ -553,47 +823,13 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 doors_list.append(obj)
 
     # ---------------------------------------------------------------------
-    # SKILL.md BIFURCATION ENGINE (Wall Type / Thickness / Location Suffixing: .1, .2, .L)
+    # PRESERVE ORIGINAL DOOR MARKS (NO ARTIFICIAL .1, .2, .3 SUFFIXING)
     # ---------------------------------------------------------------------
     bifurcated_doors = []
     assumption_log = []
     
     for door in doors_list:
-        m_tag = door.get("type") or door.get("mark") or ""
-        wall_t = str(door.get("Wall Type", door.get("WALL TYPE", "DRY"))).upper()
-        notes = str(door.get("Takeoff Notes", ""))
-        
-        # Check if door occurs in multiple wall partition types or thicknesses in cv_detections
-        matching_dets = [d for d in cv_detections if str(d.get("mark", "")).upper() == m_tag]
-        detected_wall_types = {str(d.get("vlm_wall_type", d.get("wall_type", "DRY"))).upper() for d in matching_dets if d.get("vlm_wall_type") or d.get("wall_type")}
-        
-        if len(detected_wall_types) > 1:
-            idx = 1
-            for wt in sorted(list(detected_wall_types)):
-                bif_door = dict(door)
-                bif_tag = f"{m_tag}.{idx}"
-                bif_door["type"] = bif_tag
-                bif_door["mark"] = bif_tag
-                bif_door["Wall Type"] = wt
-                bif_door["WALL TYPE"] = wt
-                bif_door["is_bifurcated"] = True
-                bif_door["original_tag"] = m_tag
-                bif_door["Takeoff Notes"] = "Door Bifurcated on basis of wall type"
-                bifurcated_doors.append(bif_door)
-                
-                assumption_log.append({
-                    "id": f"A-{len(assumption_log)+1:03d}",
-                    "building": "Building A",
-                    "floor": bif_door.get("FLOOR / LEVEL", "Level 1"),
-                    "item": bif_tag,
-                    "issue": f"Bifurcated mark '{m_tag}' on basis of wall type '{wt}'",
-                    "source": "Floor Plan / Partition Schedule",
-                    "action": "CALCULATED"
-                })
-                idx += 1
-            logger.info(f"Reconciliation: Bifurcated mark {m_tag} into {idx-1} variants across wall types: {detected_wall_types}")
-        else:
-            bifurcated_doors.append(door)
+        bifurcated_doors.append(door)
 
     if unresolved_queue:
         for u in unresolved_queue:
@@ -646,9 +882,11 @@ async def reconciliation_node(state: CostmateState) -> dict:
 
     qa_prefilled = {
         "project_name": "Auto-Extracted Project",
+        "raw_schedule_headers": raw_schedule_headers,
         "doors": bifurcated_doors,
         "windows": windows_list,
-        "assumption_log": assumption_log
+        "assumption_log": assumption_log,
+        "reconciliation_audit": reconciliation_audit
     }
 
     return {
@@ -659,5 +897,6 @@ async def reconciliation_node(state: CostmateState) -> dict:
         "bifurcated_schedule": bifurcated_doors,
         "unit_door_matrix": unit_door_matrix,
         "qa_gates_status": qa_gates_status,
-        "assumption_log": assumption_log
+        "assumption_log": assumption_log,
+        "reconciliation_audit": reconciliation_audit
     }

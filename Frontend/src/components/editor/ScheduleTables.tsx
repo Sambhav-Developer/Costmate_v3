@@ -36,28 +36,32 @@ function TdTextInput({ value, onChange, disabled, readOnly, width = '100%', minW
 }
 
 // ─── Review Status Badge (2nd column after MARK) ───────────────
-function ReviewBadge({ needsReview }: { needsReview: boolean }) {
+function ReviewBadge({ needsReview, onClick }: { needsReview: boolean; onClick?: () => void }) {
   if (needsReview) {
     return (
-      <div
-        title="This row could not be cross-verified. Please double-check the values."
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wide cursor-help select-none"
-        style={{ background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.3)' }}
+      <button
+        type="button"
+        onClick={onClick}
+        title="Click to approve details and convert status to Green OK."
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wide cursor-pointer select-none hover:scale-105 transition-all"
+        style={{ background: 'rgba(251,191,36,0.2)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.4)' }}
       >
         <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
         Check
-      </div>
+      </button>
     );
   }
   return (
-    <div
-      title="Row verified by consensus."
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wide cursor-default select-none"
-      style={{ background: 'rgba(52,211,153,0.12)', color: '#34d399', border: '1px solid rgba(52,211,153,0.2)' }}
+    <button
+      type="button"
+      onClick={onClick}
+      title="Verified OK. Click to toggle back to review mode."
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wide cursor-pointer select-none hover:scale-105 transition-all"
+      style={{ background: 'rgba(52,211,153,0.15)', color: '#34d399', border: '1px solid rgba(52,211,153,0.3)' }}
     >
       <CheckCircle2 className="w-2.5 h-2.5 shrink-0" />
       OK
-    </div>
+    </button>
   );
 }
 
@@ -80,10 +84,12 @@ function ScheduleTable({ headers, children }: { headers: string[]; children: Rea
   );
 }
 
-function ScheduleRow({ needsReview, children }: { needsReview?: boolean; children: React.ReactNode }) {
+function ScheduleRow({ needsReview, rowId, children }: { needsReview?: boolean; rowId?: string; children: React.ReactNode }) {
   return (
     <tr
-      className="border-b group transition-colors"
+      id={rowId}
+      tabIndex={-1}
+      className="border-b group transition-colors outline-none focus:ring-2 focus:ring-amber-400/50"
       style={{
         borderColor: 'var(--panel-border)',
         // Subtly highlight rows that need review
@@ -245,6 +251,37 @@ export function DoorsSchedule({ doors, editable, onRemove, onChange, onAdd, newD
     setCustomKeys([...displayKeys, cleanKey]);
   };
 
+  const handleToggleDoorReview = (idx: number) => {
+    const d = doors[idx] as any;
+    const currentStatus = !!d.needs_review;
+    const newStatus = !currentStatus;
+    onChange(idx, 'needs_review', newStatus);
+
+    if (currentStatus) {
+      const curQty = Number(d.qty ?? d.QTY ?? d.count ?? 0);
+      if (curQty === 0) {
+        onChange(idx, 'qty', 1);
+        onChange(idx, 'QTY', 1);
+        onChange(idx, 'count', 1);
+        if (!d['Takeoff Notes'] || String(d['Takeoff Notes']).includes('not located')) {
+          onChange(idx, 'Takeoff Notes', 'Schedule mark not located on drawing; Qty verified by estimator.');
+        }
+      }
+
+      setTimeout(() => {
+        const remaining = doors.map((item: any, i: number) => ({ idx: i, needs_review: i === idx ? false : !!item.needs_review }));
+        const next = remaining.find(item => item.idx > idx && item.needs_review) || remaining.find(item => item.idx !== idx && item.needs_review);
+        if (next) {
+          const el = document.getElementById(`door-row-${next.idx}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.focus();
+          }
+        }
+      }, 50);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4">
       {editable && (
@@ -325,14 +362,14 @@ export function DoorsSchedule({ doors, editable, onRemove, onChange, onAdd, newD
             {doors.map((d, idx) => {
               const needsReview = !!(d as any).needs_review;
               return (
-                <ScheduleRow key={idx} needsReview={needsReview}>
+                <ScheduleRow key={idx} rowId={`door-row-${idx}`} needsReview={needsReview}>
                   {/* MARK */}
                   <td className="py-2.5 px-3 font-bold text-xs" style={{ color: 'var(--foreground)' }}>
                     <TdTextInput value={(d as any).mark || (d as any).type || 'Door'} readOnly={!editable} onChange={(e: any) => onChange(idx, 'mark', e.target.value)} width={80} />
                   </td>
                   {/* REVIEW status badge */}
                   <td className="py-2 px-3 text-center whitespace-nowrap">
-                    <ReviewBadge needsReview={needsReview} />
+                    <ReviewBadge needsReview={needsReview} onClick={() => handleToggleDoorReview(idx)} />
                   </td>
                   {displayKeys.map(k => (
                     <td key={k} className="py-2.5 px-2">
@@ -451,6 +488,37 @@ export function WindowsSchedule({ windows, editable, onRemove, onChange, onAdd, 
     setCustomKeys([...displayKeys, cleanKey]);
   };
 
+  const handleToggleWindowReview = (idx: number) => {
+    const w = windows[idx] as any;
+    const currentStatus = !!w.needs_review;
+    const newStatus = !currentStatus;
+    onChange(idx, 'needs_review', newStatus);
+
+    if (currentStatus) {
+      const curQty = Number(w.qty ?? w.QTY ?? w.count ?? 0);
+      if (curQty === 0) {
+        onChange(idx, 'qty', 1);
+        onChange(idx, 'QTY', 1);
+        onChange(idx, 'count', 1);
+        if (!w['Takeoff Notes'] || String(w['Takeoff Notes']).includes('not located')) {
+          onChange(idx, 'Takeoff Notes', 'Schedule mark not located on drawing; Qty verified by estimator.');
+        }
+      }
+
+      setTimeout(() => {
+        const remaining = windows.map((item: any, i: number) => ({ idx: i, needs_review: i === idx ? false : !!item.needs_review }));
+        const next = remaining.find(item => item.idx > idx && item.needs_review) || remaining.find(item => item.idx !== idx && item.needs_review);
+        if (next) {
+          const el = document.getElementById(`window-row-${next.idx}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.focus();
+          }
+        }
+      }, 50);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4">
       {editable && (
@@ -531,14 +599,14 @@ export function WindowsSchedule({ windows, editable, onRemove, onChange, onAdd, 
             {windows.map((w, idx) => {
               const needsReview = !!(w as any).needs_review;
               return (
-                <ScheduleRow key={idx} needsReview={needsReview}>
+                <ScheduleRow key={idx} rowId={`window-row-${idx}`} needsReview={needsReview}>
                   {/* MARK */}
                   <td className="py-2.5 px-3 font-bold text-xs" style={{ color: 'var(--foreground)' }}>
                     <TdTextInput value={(w as any).mark || (w as any).type || 'Window'} readOnly={!editable} onChange={(e: any) => onChange(idx, 'mark', e.target.value)} width={80} />
                   </td>
                   {/* REVIEW status badge */}
                   <td className="py-2 px-3 text-center whitespace-nowrap">
-                    <ReviewBadge needsReview={needsReview} />
+                    <ReviewBadge needsReview={needsReview} onClick={() => handleToggleWindowReview(idx)} />
                   </td>
                   {displayKeys.map(k => (
                     <td key={k} className="py-2.5 px-2">

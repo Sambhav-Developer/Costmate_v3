@@ -101,6 +101,36 @@ class TestReconciliation(unittest.TestCase):
         doors = res["qa_prefilled"]["doors"]
         self.assertEqual(doors[0]["_reconciled_opening_mode"], "DA")
 
+    def test_barn_door_detection(self):
+        state_barn = {
+            "schedule_data": [
+                {
+                    "mark": "B101",
+                    "comments": "BARN DOOR WITH SURFACE SLIDING HARDWARE",
+                    "door type": "BARN",
+                    "material": "WD"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "B101",
+                        "bbox": [100, 100, 150, 120],
+                        "w_cx": 125,
+                        "w_cy": 110,
+                        "floor_no": "1",
+                        "int_ext": "Interior",
+                        "vlm_opening_mode": "SLD",
+                        "vlm_wall_type": "INT"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_barn))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["_reconciled_opening_mode"], "SLD")
+
     def test_double_acting_regression(self):
         # Test case: Unrelated comments like "AUTOMATIC, CR" should NOT trigger DA
         state_normal = {
@@ -257,6 +287,37 @@ class TestReconciliation(unittest.TestCase):
         doors = res["qa_prefilled"]["doors"]
         self.assertEqual(doors[0]["_reconciled_opening_mode"], "CO")
 
+        # 5. Wood door in Aluminum Frame case: WD/GL door material with ALUM frame material (In Scope Wood Door, NOT Storefront)
+        state_wd_alum = {
+            "schedule_data": [
+                {
+                    "mark": "200",
+                    "door type": "FG",
+                    "door material": "WD/GL",
+                    "frame material": "ALUM",
+                    "comments": ""
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "200",
+                        "bbox": [500, 500, 550, 520],
+                        "w_cx": 525,
+                        "w_cy": 510,
+                        "floor_no": "1",
+                        "int_ext": "Interior",
+                        "vlm_opening_mode": "SGL",
+                        "vlm_wall_type": "INT"
+                    }
+                ]
+            }
+        }
+        res = loop.run_until_complete(reconciliation_node(state_wd_alum))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["_reconciled_opening_mode"], "SGL")
+        self.assertEqual(doors[0]["_reconciled_int_ext"], "Interior")
+
     def test_prep_door_frame_regression(self):
         # Relocated door with "PREP DOOR/FRAME" in comments should NOT trigger PR (remains SGL)
         state_relocated = {
@@ -288,6 +349,143 @@ class TestReconciliation(unittest.TestCase):
         res = loop.run_until_complete(reconciliation_node(state_relocated))
         doors = res["qa_prefilled"]["doors"]
         self.assertEqual(doors[0]["_reconciled_opening_mode"], "SGL")
+
+    def test_deduplicate_same_mark_same_room(self):
+        # Multiple crop detections scanning the same door callout bubble (e.g. HE210L) in the same room location
+        state_duplicates = {
+            "schedule_data": [
+                {
+                    "mark": "HE210L",
+                    "location": "CONFERENCE ROOM",
+                    "door material": "WD/GLASS",
+                    "frame material": "HM",
+                    "comments": "WOOD DOOR WITH VISION LITE"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "HE210L",
+                        "location": "CONFERENCE ROOM",
+                        "page_no": "0",
+                        "w_cx": 100.0,
+                        "w_cy": 100.0,
+                        "floor_no": "1"
+                    },
+                    {
+                        "mark": "HE210L",
+                        "location": "CONFERENCE ROOM",
+                        "page_no": "0",
+                        "w_cx": 115.0,
+                        "w_cy": 110.0,
+                        "floor_no": "1"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_duplicates))
+        doors = res["qa_prefilled"]["doors"]
+        audit = res["reconciliation_audit"]
+        
+        # Count should be reconciled down to 1
+        self.assertEqual(doors[0]["count"], 1)
+        self.assertEqual(len(audit["deduplicated_rows"]), 1)
+        self.assertEqual(audit["deduplicated_rows"][0]["mark"], "HE210L")
+
+    def test_deep_interior_geometry_priority(self):
+        # Step 5 Test: Door deep inside footprint (dist_to_boundary > 85pt) must classify Interior even if VLM guesses EXT
+        state_deep_interior = {
+            "schedule_data": [
+                {
+                    "mark": "HE210V",
+                    "location": "OFFICE 101",
+                    "door material": "WD",
+                    "frame material": "HM"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "HE210V",
+                        "location": "OFFICE 101",
+                        "dist_to_boundary": 150.0,  # Deep inside footprint
+                        "vlm_wall_type": "EXT",     # VLM guessed EXT based on double line
+                        "int_ext": "Interior",
+                        "w_cx": 500,
+                        "w_cy": 500,
+                        "floor_no": "1"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_deep_interior))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["INT/EXT"], "Interior")
+
+    def test_perimeter_zone_vlm_tiebreaker(self):
+        # Step 5 Test: Perimeter door (dist_to_boundary <= 85pt) with VLM EXT and no interior room name -> Exterior
+        state_perimeter_ext = {
+            "schedule_data": [
+                {
+                    "mark": "EXT-01",
+                    "location": "MAIN ENTRY",
+                    "door material": "AL",
+                    "frame material": "AL"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "EXT-01",
+                        "location": "MAIN ENTRY",
+                        "dist_to_boundary": 30.0,   # Perimeter zone
+                        "vlm_wall_type": "EXT",
+                        "int_ext": "Exterior",
+                        "w_cx": 50,
+                        "w_cy": 50,
+                        "floor_no": "1"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_perimeter_ext))
+        doors = res["qa_prefilled"]["doors"]
+        # Aluminum storefront entry -> Not in Scope or Exterior
+        self.assertIn(doors[0]["INT/EXT"], ["Exterior", "Not in Scope"])
+
+    def test_missing_location_geometry_fallback(self):
+        # Step 5 Test: LOCATION fails to resolve upstream (Unknown), deep geometry distance -> Interior
+        state_missing_loc = {
+            "schedule_data": [
+                {
+                    "mark": "HE210L",
+                    "location": "",
+                    "door material": "WD",
+                    "frame material": "HM"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "HE210L",
+                        "location": "Unknown",
+                        "dist_to_boundary": 200.0,
+                        "vlm_wall_type": "EXT",
+                        "int_ext": "Interior",
+                        "w_cx": 600,
+                        "w_cy": 600,
+                        "floor_no": "1"
+                    }
+                ]
+            }
+        }
+        loop = asyncio.get_event_loop()
+        res = loop.run_until_complete(reconciliation_node(state_missing_loc))
+        doors = res["qa_prefilled"]["doors"]
+        self.assertEqual(doors[0]["INT/EXT"], "Interior")
 
 if __name__ == "__main__":
     unittest.main()

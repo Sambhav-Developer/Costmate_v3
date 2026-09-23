@@ -12,6 +12,7 @@ import {
   Bot,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -141,11 +142,13 @@ export default function CopilotPanel({
   const headerBg   = 'var(--panel-header)';
 
   return (
-    <div className={`shrink-0 border-r flex flex-col h-full transition-all duration-300`}
+    <motion.div 
+      layout
+      initial={false}
+      animate={{ width: collapsed ? 44 : 360 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+      className="shrink-0 flex flex-col h-[calc(100%-2rem)] my-4 mr-4 rounded-[2rem] glass-panel shadow-2xl"
       style={{
-        width: collapsed ? 44 : 360,
-        background: panelBg,
-        borderColor: panelBorder,
         overflow: 'hidden',
       }}>
 
@@ -154,7 +157,7 @@ export default function CopilotPanel({
         style={{ borderColor: panelBorder, background: headerBg }}>
         {!collapsed && (
           <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-[#d946ef]" />
+            <Sparkles className="w-4 h-4 text-[#e05a33]" />
             <span className="font-bold text-xs tracking-wider uppercase" style={{ color: 'var(--foreground)' }}>
               AI Swarm Copilot
             </span>
@@ -162,7 +165,7 @@ export default function CopilotPanel({
         )}
         {collapsed && (
           <button onClick={() => setCollapsed(false)}
-            className="w-8 h-8 flex items-center justify-center rounded-xl cursor-pointer transition-all border text-[#d946ef]" title="Expand Copilot">
+            className="w-8 h-8 flex items-center justify-center rounded-2xl cursor-pointer transition-all border text-[#e05a33]" title="Expand Copilot">
             <Bot className="w-4 h-4" />
           </button>
         )}
@@ -185,8 +188,12 @@ export default function CopilotPanel({
       {!collapsed && (
       <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 min-h-0">
         {chatHistory.map((msg, idx) => (
-          <div key={idx}
-            className={`flex flex-col gap-1 max-w-[88%] animate-fade-in ${
+          <motion.div 
+            key={idx}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+            className={`flex flex-col gap-1 max-w-[88%] ${
               msg.role === 'user' ? 'self-end items-end' : 'self-start items-start'
             }`}>
             {/* Sender label */}
@@ -194,13 +201,13 @@ export default function CopilotPanel({
               {msg.role === 'user' ? (
                 <><span>Engineer</span><User className="w-2.5 h-2.5" /></>
               ) : (
-                <><Sparkles className="w-2.5 h-2.5 text-[#d946ef]" /><span className="text-gradient-accent">Copilot</span></>
+                <><Sparkles className="w-2.5 h-2.5 text-[#e05a33]" /><span className="text-gradient-accent">Copilot</span></>
               )}
             </div>
 
             {/* Bubble */}
-            <div className={`p-3 rounded-2xl text-xs leading-relaxed border ${
-              msg.role === 'user' ? 'rounded-tr-none bg-gradient-accent border-transparent shadow-md text-white' : 'rounded-tl-none'
+            <div className={`p-4 rounded-3xl text-xs leading-relaxed border shadow-sm ${
+              msg.role === 'user' ? 'rounded-tr-sm bg-gradient-accent border-transparent text-white' : 'rounded-tl-sm'
             }`}
               style={msg.role !== 'user' ? {
                 background: 'var(--panel-header)',
@@ -214,7 +221,7 @@ export default function CopilotPanel({
             <span className="text-[8px] font-mono px-1.5" style={{ color: 'var(--muted)' }}>
               {msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
             </span>
-          </div>
+          </motion.div>
         ))}
 
         {/* Typing indicator */}
@@ -224,7 +231,7 @@ export default function CopilotPanel({
               <Sparkles className="w-2.5 h-2.5 animate-spin" />
               <span>Copilot is writing…</span>
             </div>
-            <div className="p-3 rounded-2xl rounded-tl-none flex items-center justify-center h-9"
+            <div className="p-4 rounded-3xl rounded-tl-sm flex items-center justify-center h-10 shadow-sm"
               style={{ background: 'var(--panel-header)', border: '1px solid var(--panel-border)' }}>
               <span className="flex gap-1">
                 {[0, 150, 300].map(delay => (
@@ -259,7 +266,7 @@ export default function CopilotPanel({
           onBlur={e => (e.target.style.borderColor = 'var(--input-border)')}
         />
         <button type="submit" disabled={submitting || !message.trim()}
-          className="flex items-center justify-center w-8 h-8 rounded-xl transition-all disabled:opacity-50 cursor-pointer shrink-0 bg-gradient-accent"
+          className="flex items-center justify-center w-10 h-10 rounded-full transition-all disabled:opacity-50 cursor-pointer shrink-0 bg-gradient-accent"
           style={{
             color: 'white',
             boxShadow: '0 4px 12px rgba(255,81,47,.3)',
@@ -272,7 +279,7 @@ export default function CopilotPanel({
       {/* ── Agent Log Terminal ── */}
       {!collapsed && (
       <div className="h-44 border-t flex flex-col shrink-0"
-        style={{ borderColor: panelBorder, background: 'var(--term)' }}>
+        style={{ borderColor: panelBorder, background: 'var(--terminal)' }}>
         {/* Log header */}
         <div className="px-3 py-2 border-b flex items-center justify-between"
           style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
@@ -296,7 +303,11 @@ export default function CopilotPanel({
             </div>
           ) : (
             agentLogs.map(log => (
-              <div key={log.id} className="flex gap-2 items-start leading-relaxed animate-slide-in">
+              <motion.div 
+                key={log.id} 
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="flex gap-2 items-start leading-relaxed">
                 <span style={{ color: 'var(--muted)' }}>[{log.time}]</span>
                 <span className={`font-bold ${!['success', 'warning', 'error'].includes(log.type) ? 'text-gradient-accent' : ''}`} style={{
                   color: log.type === 'success' ? '#10b981'
@@ -306,14 +317,14 @@ export default function CopilotPanel({
                 }}>
                   [{log.tag}]
                 </span>
-                <span className="flex-1" style={{ color: 'var(--term-fg)', opacity: 0.8 }}>{log.text}</span>
-              </div>
+                <span className="flex-1" style={{ color: 'var(--terminal-fg)', opacity: 0.8 }}>{log.text}</span>
+              </motion.div>
             ))
           )}
           <div ref={feedEndRef} />
         </div>
       </div>
       )}
-    </div>
+    </motion.div>
   );
 }

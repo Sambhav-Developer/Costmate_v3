@@ -130,6 +130,9 @@ class TestReconciliation(unittest.TestCase):
         res = loop.run_until_complete(reconciliation_node(state_barn))
         doors = res["qa_prefilled"]["doors"]
         self.assertEqual(doors[0]["_reconciled_opening_mode"], "SLD")
+        self.assertEqual(doors[0]["opening_mode_note"], "Barn Door")
+        self.assertEqual(doors[0]["Opening Mode"], "Barn Door")
+        self.assertTrue(doors[0].get("is_barn_door"))
 
     def test_double_acting_regression(self):
         # Test case: Unrelated comments like "AUTOMATIC, CR" should NOT trigger DA
@@ -721,7 +724,136 @@ class TestReconciliation(unittest.TestCase):
         self.assertTrue(doors[0]["orange_highlight"])
         self.assertEqual(doors[0]["highlight_color"], "#FFC000")
 
+        # 6. Test detect_sidelight_geometry helper & 2D CAD Plan Vector Geometry Reconciliation
+        from app.services.agents.layer2_vision.cv_detector_node import detect_sidelight_geometry
+        import fitz
+        drawings_with_sidelight = [
+            # Glass frame box adjacent to door mark (width=35pt, height=8pt, dist~45pt)
+            {"rect": fitz.Rect(120, 100, 155, 108), "items": [("l", (120,100), (155,100))]}
+        ]
+        res_geom = detect_sidelight_geometry(drawings_with_sidelight, mark_cx=100.0, mark_cy=100.0)
+        self.assertTrue(res_geom["has_sidelite_geom"])
+        self.assertEqual(res_geom["sidelight_width_pt"], 35.0)
+
+        # Integration test: CAD vector sidelight detection overrides blank schedule to flag Sidelight
+        state_cad_sidelite = {
+            "schedule_data": [
+                {
+                    "mark": "D326-CAD",
+                    "door material": "WD",
+                    "frame material": "HM"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "D326-CAD",
+                        "bbox": [100, 100, 150, 150],
+                        "w_cx": 125,
+                        "w_cy": 125,
+                        "has_sidelite_geom": True,
+                        "floor_no": "1",
+                        "int_ext": "Interior",
+                        "vlm_opening_mode": "SGL",
+                        "vlm_wall_type": "INT"
+                    }
+                ]
+            }
+        }
+        res_cad_door = loop.run_until_complete(reconciliation_node(state_cad_sidelite))
+        doors_cad = res_cad_door["qa_prefilled"]["doors"]
+        self.assertTrue(doors_cad[0]["has_sidelite"])
+        self.assertEqual(doors_cad[0]["estimator_note"], "Sidelight")
+        self.assertTrue(doors_cad[0]["orange_highlight"])
+        self.assertEqual(doors_cad[0]["highlight_color"], "#FFC000")
+
+        # 7. Test detect_transom_geometry and detect_clerestory_geometry helpers
+        from app.services.agents.layer2_vision.cv_detector_node import detect_transom_geometry, detect_clerestory_geometry
+        drawings_transom = [
+            {"rect": fitz.Rect(80, 70, 120, 85), "dashes": "[] 0"}
+        ]
+        res_tr = detect_transom_geometry(drawings_transom, mark_cx=100.0, mark_cy=100.0)
+        self.assertTrue(res_tr["has_transom_geom"])
+
+        drawings_clerestory = [
+            {"rect": fitz.Rect(70, 40, 130, 55), "items": [("l", (70,40), (130,40))]}
+        ]
+        res_cl = detect_clerestory_geometry(drawings_clerestory, mark_cx=100.0, mark_cy=100.0)
+        self.assertTrue(res_cl["has_clerestory_geom"])
+
+        # Integration test: CAD vector transom & clerestory detection flags estimator note
+        state_cad_tr_cl = {
+            "schedule_data": [
+                {
+                    "mark": "D327-CAD",
+                    "door material": "WD",
+                    "frame material": "HM"
+                }
+            ],
+            "cv_results": {
+                "detections": [
+                    {
+                        "mark": "D327-CAD",
+                        "bbox": [100, 100, 150, 150],
+                        "w_cx": 125,
+                        "w_cy": 125,
+                        "has_transom_geom": True,
+                        "has_clerestory_geom": True,
+                        "floor_no": "1",
+                        "int_ext": "Interior",
+                        "vlm_opening_mode": "SGL",
+                        "vlm_wall_type": "INT"
+                    }
+                ]
+            }
+        }
+        res_cad_tr_cl = loop.run_until_complete(reconciliation_node(state_cad_tr_cl))
+        doors_tr_cl = res_cad_tr_cl["qa_prefilled"]["doors"]
+        self.assertTrue(doors_tr_cl[0]["has_transom"])
+        self.assertTrue(doors_tr_cl[0]["has_clerestory"])
+        self.assertEqual(doors_tr_cl[0]["estimator_note"], "Transom & Clerestory")
+        self.assertTrue(doors_tr_cl[0]["orange_highlight"])
+
+    def test_specialty_opening_modes_detection(self):
+        loop = asyncio.get_event_loop()
+
+        # 1. Test Pocket Door (PKT)
+        state_pkt = {
+            "schedule_data": [{"mark": "P101", "door leaf": "POCKET DOOR", "material": "WD", "frame material": "HM"}],
+            "cv_results": {"detections": [{"mark": "P101", "w_cx": 100, "w_cy": 100, "vlm_opening_mode": "SGL"}]}
+        }
+        res_pkt = loop.run_until_complete(reconciliation_node(state_pkt))
+        self.assertEqual(res_pkt["qa_prefilled"]["doors"][0]["_reconciled_opening_mode"], "PKT")
+
+        # 2. Test Cased Opening (CO) with frame material
+        state_co = {
+            "schedule_data": [{"mark": "C101", "door leaf": "CASED OPENING", "material": "-", "frame material": "HM"}],
+            "cv_results": {"detections": [{"mark": "C101", "w_cx": 100, "w_cy": 100, "vlm_opening_mode": "SGL"}]}
+        }
+        res_co = loop.run_until_complete(reconciliation_node(state_co))
+        self.assertEqual(res_co["qa_prefilled"]["doors"][0]["_reconciled_opening_mode"], "CO")
+
+        # 3. Test Barn Door (SLD)
+        state_barn = {
+            "schedule_data": [{"mark": "B102", "opening type": "SURFACE SLIDING BARN DOOR", "material": "WD"}],
+            "cv_results": {"detections": [{"mark": "B102", "w_cx": 100, "w_cy": 100, "vlm_opening_mode": "SGL"}]}
+        }
+        res_barn = loop.run_until_complete(reconciliation_node(state_barn))
+        self.assertEqual(res_barn["qa_prefilled"]["doors"][0]["_reconciled_opening_mode"], "SLD")
+
+        # 4. Test Unequal Pair Door
+        state_uneq = {
+            "schedule_data": [{"mark": "U101", "door leaf": "2-UNEQUAL PAIR", "material": "HM"}],
+            "cv_results": {"detections": [{"mark": "U101", "w_cx": 100, "w_cy": 100, "vlm_opening_mode": "PR"}]}
+        }
+        res_uneq = loop.run_until_complete(reconciliation_node(state_uneq))
+        door_u = res_uneq["qa_prefilled"]["doors"][0]
+        self.assertEqual(door_u["_reconciled_opening_mode"], "UNEQ")
+        self.assertTrue(door_u.get("is_unequal_pair"))
+        self.assertEqual(door_u.get("opening_mode_note"), "Unequal Pair")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

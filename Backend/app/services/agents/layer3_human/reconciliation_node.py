@@ -574,59 +574,65 @@ async def reconciliation_node(state: CostmateState) -> dict:
 
 
 
-        # Double-Acting check
+        # Full row text search for robust keyword detection across all columns (DOOR LEAF, TYPE, COMMENTS, REMARKS, etc.)
+        all_row_text = " ".join([str(v) for v in item.values() if v]).upper()
+        all_words_set = {w.strip(".,()[]{}-_#*/\"'") for w in all_row_text.split()}
+
+        # 1. Cased Opening (CO) check
+        co_phrases = ["CASED OPENING", "CASED-OPENING", "CASED", "C.O.", "OPENING ONLY", "FRAME ONLY", "NO DOOR"]
+        is_sched_co = False
+        if any(p in all_row_text for p in co_phrases) or "CO" in all_words_set:
+            is_sched_co = True
+
+        # 2. Unequal Pair Door check
+        unequal_phrases = ["UNEQUAL PAIR", "UNEQUAL-PAIR", "UNQUAL PAIR", "UNEQUAL", "UNQ PAIR", "PR-UNEQ", "PR (UNEQUAL)", "1-LEAF & 1-HALF", "LEAF AND HALF"]
+        is_sched_unequal_pair = False
+        if any(p in all_row_text for p in unequal_phrases):
+            is_sched_unequal_pair = True
+
+        # 3. Double-Acting check
         da_phrases = ["DBL ACT", "DBL-ACT", "DOUBLE ACTING", "DOUBLE-ACTING", "DOUBLE ACT", "DOUBLE-ACT", "ANTI-BARRICADE", "ANTI - BARRICADE"]
         da_exact_words = {"DA", "AB"}
-        dtype_words = {w.strip(".,()[]{}-_#*") for w in sched_dtype.split()}
-        comments_words = {w.strip(".,()[]{}-_#*") for w in sched_comments.split()}
-        
         is_sched_da = False
-        if (any(p in sched_dtype for p in da_phrases) or 
-            any(p in sched_comments for p in da_phrases) or 
-            da_exact_words.intersection(dtype_words) or 
-            da_exact_words.intersection(comments_words)):
+        if any(p in all_row_text for p in da_phrases) or da_exact_words.intersection(all_words_set):
             is_sched_da = True
 
-        # Barn / Sliding Door check
+        # 4. Barn / Surface Sliding Door check
         sld_phrases = ["BARN DOOR", "BARN-DOOR", "BARN", "SURFACE SLIDING", "SURFACE-SLIDING", "SLIDING DOOR", "SLIDING-DOOR", "SLIDING", "TOP HUNG SLIDING", "TOP-HUNG SLIDING", "BARN HARDWARE", "TRACK HARDWARE", "SLIDING TRACK"]
         sld_exact_words = {"SLD", "BARN", "SLIDING"}
         is_sched_sld = False
-        if (any(p in sched_dtype for p in sld_phrases) or 
-            any(p in sched_comments for p in sld_phrases) or 
-            sld_exact_words.intersection(dtype_words) or 
-            sld_exact_words.intersection(comments_words)):
+        if any(p in all_row_text for p in sld_phrases) or sld_exact_words.intersection(all_words_set):
             is_sched_sld = True
 
-        # Pocket Door check
-        pkt_phrases = ["POCKET DOOR", "POCKET-DOOR", "POCKET"]
+        # 5. Pocket Door check
+        pkt_phrases = ["POCKET DOOR", "POCKET-DOOR", "POCKET", "RECESSED SLIDING", "SLIDING POCKET"]
         pkt_exact_words = {"PKT", "POCKET"}
         is_sched_pkt = False
-        if (any(p in sched_dtype for p in pkt_phrases) or 
-            any(p in sched_comments for p in pkt_phrases) or 
-            pkt_exact_words.intersection(dtype_words) or 
-            pkt_exact_words.intersection(comments_words)):
+        if any(p in all_row_text for p in pkt_phrases) or pkt_exact_words.intersection(all_words_set):
             is_sched_pkt = True
 
-        # Bifold Door check
+        # 6. Bifold Door check
         bifold_phrases = ["BIFOLD", "BI-FOLD"]
         bifold_exact_words = {"BIFOLD"}
         is_sched_bifold = False
-        if (any(p in sched_dtype for p in bifold_phrases) or 
-            any(p in sched_comments for p in bifold_phrases) or 
-            bifold_exact_words.intersection(dtype_words) or 
-            bifold_exact_words.intersection(comments_words)):
+        if any(p in all_row_text for p in bifold_phrases) or bifold_exact_words.intersection(all_words_set):
             is_sched_bifold = True
 
-        # Bypass Door check
+        # 7. Bypass Door check
         bypass_phrases = ["BYPASS", "BY-PASS"]
         bypass_exact_words = {"BYPASS"}
         is_sched_bypass = False
-        if (any(p in sched_dtype for p in bypass_phrases) or 
-            any(p in sched_comments for p in bypass_phrases) or 
-            bypass_exact_words.intersection(dtype_words) or 
-            bypass_exact_words.intersection(comments_words)):
+        if any(p in all_row_text for p in bypass_phrases) or bypass_exact_words.intersection(all_words_set):
             is_sched_bypass = True
 
+        # 8. Double Egress Door check (before generic DA/Pair)
+        de_phrases = ["DOUBLE EGRESS", "DOUBLE-EGRESS", "DBL EGRESS", "DBL-EGRESS", "EGRESS PAIR", "CROSS CORRIDOR", "CROSS-CORRIDOR"]
+        de_exact_words = {"DE"}
+        is_sched_de = False
+        if any(p in all_row_text for p in de_phrases) or de_exact_words.intersection(all_words_set):
+            is_sched_de = True
+
+        # Specialty modes take precedence over generic Pair/Single defaults
         resolved_mode = sched_opening_mode
         if is_storefront_opening or is_window:
             resolved_mode = "STOREFRONT"
@@ -634,14 +640,18 @@ async def reconciliation_node(state: CostmateState) -> dict:
             resolved_mode = "CO"
         elif is_sched_da:
             resolved_mode = "DA"
-        elif is_sched_sld:
-            resolved_mode = "SLD"
+        elif is_sched_de:
+            resolved_mode = "DE"
         elif is_sched_pkt:
             resolved_mode = "PKT"
+        elif is_sched_sld:
+            resolved_mode = "SLD"
         elif is_sched_bifold:
             resolved_mode = "BIFOLD"
         elif is_sched_bypass:
             resolved_mode = "BYPASS"
+        elif is_sched_unequal_pair:
+            resolved_mode = "UNEQ"
         elif has_panel_2:
             resolved_mode = "PR"
         elif mark_dets and mark_dets[0].get("opening_mode"):
@@ -661,24 +671,26 @@ async def reconciliation_node(state: CostmateState) -> dict:
 
             # Material & hardware sanity cleanup for Layer 3 VLM prediction
             l3_cleaned = l3_mode
-            if (l3_mode in ["CO", "REV"]) and (has_hardware or has_material):
-                l3_cleaned = "PR" if has_panel_2 else (resolved_mode if resolved_mode in ["SLD", "PKT", "BIFOLD", "BYPASS"] else "SGL")
-            elif l3_mode in ["PR", "PAIR", "DOUBLE", "DBL"] and not has_panel_2 and resolved_mode in ["SGL", "SLD", "PKT", "BIFOLD", "BYPASS"]:
+            if l3_mode == "REV" and (has_hardware or has_material):
+                l3_cleaned = "PR" if has_panel_2 else "SGL"
+            elif l3_mode in ["PR", "PAIR", "DOUBLE", "DBL"] and not has_panel_2 and resolved_mode in ["SGL", "SLD", "PKT", "BIFOLD", "BYPASS", "CO"]:
                 l3_cleaned = resolved_mode
 
-            VISUAL_SPECIALTY_MODES = {"SLD", "PKT", "BIFOLD", "OHD", "REV", "BYPASS", "DA"}
+            SPECIALTY_MODES = {"SLD", "PKT", "BIFOLD", "OHD", "REV", "BYPASS", "DA", "DE", "UNEQ", "CO"}
             
             # 3-Layer Weighted Voting
             votes = {}
             if l1_mode and l1_mode != "UNKNOWN":
-                votes[l1_mode] = votes.get(l1_mode, 0.0) + 1.0
+                weight = 2.5 if l1_mode in SPECIALTY_MODES else 1.0
+                votes[l1_mode] = votes.get(l1_mode, 0.0) + weight
             if l2_mode and l2_mode != "UNKNOWN":
                 votes[l2_mode] = votes.get(l2_mode, 0.0) + 1.0
             if l3_cleaned and l3_cleaned != "UNKNOWN":
-                votes[l3_cleaned] = votes.get(l3_cleaned, 0.0) + 1.0
+                weight = 1.5 if l3_cleaned in SPECIALTY_MODES else 1.0
+                votes[l3_cleaned] = votes.get(l3_cleaned, 0.0) + weight
 
-            # Layer 3 Visual Specialty Bonus: Give Layer 3 +0.5 bonus weight for legend-matched visual types
-            if l3_mode in VISUAL_SPECIALTY_MODES and l3_cleaned == l3_mode:
+            # Layer 3 Visual Specialty Bonus
+            if l3_mode in SPECIALTY_MODES and l3_cleaned == l3_mode:
                 votes[l3_mode] = votes.get(l3_mode, 0.0) + 0.5
 
             if resolved_mode == "STOREFRONT":
@@ -791,6 +803,22 @@ async def reconciliation_node(state: CostmateState) -> dict:
                 obj["needs_review"] = True
                 obj["review_reason"] = "VERIFY: Door Elevation Sheet required for frame code lookup"
 
+        # Check 2D CAD Plan & Elevation Vector Geometry evidence from drawing detections
+        geom_has_sl = False
+        geom_has_tr = False
+        geom_has_cl = False
+        if mark_dets:
+            geom_has_sl = any(d.get("has_sidelite_geom") or d.get("has_sidelite") for d in mark_dets)
+            geom_has_tr = any(d.get("has_transom_geom") or d.get("has_transom") for d in mark_dets)
+            geom_has_cl = any(d.get("has_clerestory_geom") or d.get("has_clerestory") for d in mark_dets)
+
+        if geom_has_sl:
+            has_sl = True
+        if geom_has_tr:
+            has_tr = True
+        if geom_has_cl:
+            has_cl = True
+
         obj["has_sidelite"] = has_sl
         obj["has_transom"] = has_tr
         obj["has_clerestory"] = has_cl
@@ -891,6 +919,48 @@ async def reconciliation_node(state: CostmateState) -> dict:
 
         obj["final_reconciled_mode"] = obj.get("_reconciled_opening_mode", final_opening_mode)
         
+        mode_val = obj.get("_reconciled_opening_mode", final_opening_mode)
+        display_label = None
+        if is_sched_unequal_pair or mode_val == "UNEQ":
+            obj["is_unequal_pair"] = True
+            obj["opening_mode_note"] = "Unequal Pair"
+            display_label = "Unequal Pair"
+        elif is_sched_sld or mode_val == "SLD":
+            obj["is_barn_door"] = True
+            obj["opening_mode_note"] = "Barn Door"
+            display_label = "Barn Door"
+        elif is_sched_pkt or mode_val == "PKT":
+            obj["is_pocket_door"] = True
+            obj["opening_mode_note"] = "Pocket Door"
+            display_label = "Pocket Door"
+        elif is_sched_bifold or mode_val == "BIFOLD":
+            obj["is_bifold_door"] = True
+            obj["opening_mode_note"] = "Bi-Fold Door"
+            display_label = "Bi-Fold Door"
+        elif is_sched_bypass or mode_val == "BYPASS":
+            obj["is_bypass_door"] = True
+            obj["opening_mode_note"] = "By-Pass Sliding Door"
+            display_label = "By-Pass Sliding Door"
+        elif is_sched_de or mode_val == "DE":
+            obj["is_double_egress"] = True
+            obj["opening_mode_note"] = "Double Egress"
+            display_label = "Double Egress"
+        elif is_sched_da or mode_val == "DA":
+            obj["is_double_acting"] = True
+            obj["opening_mode_note"] = "Double Acting"
+            display_label = "Double Acting"
+        elif is_sched_co or mode_val == "CO":
+            obj["is_cased_opening"] = True
+            obj["opening_mode_note"] = "Cased Opening"
+            display_label = "Cased Opening"
+
+        if display_label:
+            obj["Opening Mode"] = display_label
+            obj["opening_mode_display"] = display_label
+            for om_k in list(obj.keys()):
+                if om_k.lower() in ["opening mode", "opening_mode", "door mode", "mode"]:
+                    obj[om_k] = display_label
+
         # Shift detail values if they drifted into the FINISH or FRAME FINISH columns
         for finish_key in ["FINISH", "FRAME FINISH"]:
             finish_val = str(obj.get(finish_key, "")).strip()

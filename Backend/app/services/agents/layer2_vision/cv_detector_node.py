@@ -33,7 +33,7 @@ while dir_path:
         break
     dir_path = parent
 WORKSPACE_DIR = dir_path
-REFERENCE_CATALOG_PATH = os.path.join(WORKSPACE_DIR, "Assets", "door_types_updated.png")
+REFERENCE_CATALOG_PATH = os.path.join(WORKSPACE_DIR, "Assets", "Door Types.png")
 
 @lru_cache(maxsize=1)
 def get_reference_catalog_b64() -> str:
@@ -43,7 +43,7 @@ def get_reference_catalog_b64() -> str:
     with open(REFERENCE_CATALOG_PATH, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
-VALID_OPENING_MODES = {"SGL", "PR", "CO", "DA", "SLD", "PKT", "BIFOLD", "OHD", "REV", "BYPASS", "UNKNOWN"}
+VALID_OPENING_MODES = {"SGL", "PR", "UNEQ", "CO", "DA", "SLD", "PKT", "BIFOLD", "DE", "BYPASS", "OHD", "REV", "UNKNOWN"}
 VALID_WALL_TYPES = {"INT", "EXT", "UNKNOWN"}
 
 NON_DOOR_TAG_KEYWORDS = {
@@ -295,21 +295,34 @@ def extract_convention_b_features(row: dict) -> dict:
 SYSTEM_PROMPT = """You are an expert civil construction estimation assistant.
 
 You will be given two images:
-1. A reference catalog image showing 10 standard door opening-type plan symbols, each labeled with its code (SGL, PR, CO, DA, SLD, PKT, BIFOLD, OHD, REV, BYPASS).
+1. A reference catalog image (Sheet A-501) showing 10 standard door opening-type plan symbols. Each symbol is labeled with a number (01-10), a name, and a description.
 2. A cropped image from an architectural floor plan, centered exactly on the door opening of interest.
 
 Your task is to analyze the door opening located directly at the center of the Crop Image, compare it against the Reference Catalog, and determine its properties.
 
 Please classify the following fields:
-- "matched_code": Identify which of the 10 reference codes the center door opening symbol most closely resembles. Select ONLY from: "SGL", "PR", "CO", "DA", "SLD", "PKT", "BIFOLD", "OHD", "REV", "BYPASS". If it does not resemble any of them, return "UNKNOWN".
-  Classification tips for visual shapes:
-  * "SGL" (Single Swing): One leaf, one quarter-circle arc. Very common.
-  * "PR" (Pair Swing): Two mirrored leaves, two arcs meeting at the center (double doors).
-  * "CO" (Cased Opening): Just jamb/trim lines, no swing arc line, no door leaf line (open doorway).
-  * "DA" (Double Acting): Pivot dot with swing arc paths on both sides of the wall.
-  * "SLD" (Sliding): Flat panel riding along the wall surface, often with a travel arrow.
-  * "PKT" (Pocket Sliding): Sliding panel shown dashed, sliding inside the wall cavity.
-  * "BIFOLD" (Bi-fold): Panels folding into a "V" shape.
+- "matched_code": Identify which catalog symbol the center door opening most closely resembles.
+  Select ONLY from: "SGL", "PR", "UNEQ", "BYPASS", "SLD", "PKT", "BIFOLD", "DE", "DA", "CO", "UNKNOWN".
+
+  Visual matching guide (match against catalog symbols 01-10):
+  * "SGL"    (01 Single Door):        ONE leaf shown open 90° to the wall with a SINGLE quarter-circle swing arc.
+  * "PR"     (02 Pair Door):          TWO equal mirrored leaves of the SAME width, each with a quarter-circle arc, arcs meeting at the center.
+  * "UNEQ"   (03 Unequal Door):       TWO leaves in ONE frame — one noticeably WIDER active leaf and a NARROWER inactive leaf. Different arc/leaf widths distinguish it from PR.
+  * "BYPASS" (04 By-Pass Sliding):    TWO panels on PARALLEL double tracks (two dashed track lines overhead), panels offset and overlapping each other.
+  * "SLD"    (05 Barn Door):          ONE flat panel drawn ALONG the wall face (surface-mounted), hung from an EXPOSED overhead track line outside the wall pocket.
+  * "PKT"    (06 Pocket Door):        ONE panel sliding INTO the wall shown with DASHED hatch lines (hidden inside wall cavity/pocket); no exposed track.
+  * "BIFOLD" (07 Bi-Fold Door):       Panels drawn in an accordion V-shape folding along an OVERHEAD DASHED TRACK inside the opening width.
+  * "DE"     (08 Double Egress Door): TWO leaves in a SHARED FRAME each swinging in OPPOSITE directions — one arc into Room A, one arc into Room B. Two rooms labeled on opposite sides.
+  * "DA"     (09 Double Acting Door): SINGLE CENTER-PIVOT leaf drawn PERPENDICULAR to wall with SEMICIRCULAR arcs on BOTH SIDES of the wall (two-way swing).
+  * "CO"     (10 Cased Opening):      NO leaf, NO swing arc, NO track — only CASED JAMBS at wall ends (the wall gap simply stops with jamb trim lines).
+
+  Key visual disambiguation rules:
+  - PR vs UNEQ: If both leaves are the same width → PR. If one leaf is clearly wider than the other → UNEQ.
+  - SLD vs PKT: Panel outside/along wall face with visible exposed track → SLD. Panel hidden inside wall with dashed hatch cavity → PKT.
+  - DA vs SGL: DA has arcs on BOTH sides of wall. SGL has arc on ONE side only.
+  - DE vs PR:  DE has arcs swinging in OPPOSITE directions (one into each room). PR has arcs swinging in the SAME direction meeting at center.
+  - BYPASS vs BIFOLD: BYPASS = two overlapping flat panels on parallel tracks. BIFOLD = V-shaped folded panels.
+
 - "wall_type": Classify whether the wall the door is sitting in is "INT" or "EXT".
   Tips for accuracy:
   * Read any wall tag symbols printed near the wall/door on the plan (e.g., tags like "6A.AL.EXT", "CMU.EXT", "6A.AL", "6A").
@@ -323,7 +336,7 @@ Please classify the following fields:
 
 Return ONLY a clean JSON object:
 {
-  "matched_code": "SGL" | "PR" | "CO" | "DA" | "SLD" | "PKT" | "BIFOLD" | "OHD" | "REV" | "BYPASS" | "UNKNOWN",
+  "matched_code": "SGL" | "PR" | "UNEQ" | "BYPASS" | "SLD" | "PKT" | "BIFOLD" | "DE" | "DA" | "CO" | "UNKNOWN",
   "wall_type": "INT" | "EXT" | "UNKNOWN",
   "location": "string",
   "confidence": "high" | "medium" | "low",
@@ -1152,6 +1165,8 @@ def normalize_opening_mode(val: str) -> str:
         return "DA"
     if val_clean in ["DE", "DOUBLE EGRESS", "DOUBLE-EGRESS", "DOUBLE_EGRESS"]:
         return "DE"
+    if val_clean in ["UNEQ", "UNEQUAL", "UNEQUAL PAIR", "UNEQUAL-PAIR", "PR-UNEQ", "PR (UNEQUAL)", "LEAF AND HALF", "1-LEAF & 1-HALF"]:
+        return "UNEQ"
     if val_clean in ["PR", "PAIR", "PAIRED", "DOUBLE SGL", "PR.", "PRS", "P"]:
         return "PR"
     if val_clean in ["CO", "DOUBLE-LEAF", "DOUBLE LEAF", "TWO-LEAF", "TWO LEAF", "2", "CASED", "CASED OPENING"]:
@@ -1239,49 +1254,67 @@ def classify_opening_from_schedule(item: dict) -> str:
     # Barn / Sliding Door check (Highest Specialty Priority)
     sld_phrases = ["BARN DOOR", "BARN-DOOR", "BARN", "SURFACE SLIDING", "SURFACE-SLIDING", "SLIDING DOOR", "SLIDING-DOOR", "SLIDING", "TOP HUNG SLIDING", "TOP-HUNG SLIDING", "BARN HARDWARE", "TRACK HARDWARE", "SLIDING TRACK"]
     sld_exact_words = {"SLD", "BARN", "SLIDING"}
-    if (any(p in dtype_upper for p in sld_phrases) or 
-        any(p in comments_upper for p in sld_phrases) or 
-        sld_exact_words.intersection(dtype_words) or 
+    if (any(p in dtype_upper for p in sld_phrases) or
+        any(p in comments_upper for p in sld_phrases) or
+        sld_exact_words.intersection(dtype_words) or
         sld_exact_words.intersection(comments_words)):
         return "SLD"
 
     # Pocket Door check
-    pkt_phrases = ["POCKET DOOR", "POCKET-DOOR", "POCKET"]
+    pkt_phrases = ["POCKET DOOR", "POCKET-DOOR", "POCKET", "RECESSED SLIDING", "SLIDING POCKET"]
     pkt_exact_words = {"PKT", "POCKET"}
-    if (any(p in dtype_upper for p in pkt_phrases) or 
-        any(p in comments_upper for p in pkt_phrases) or 
-        pkt_exact_words.intersection(dtype_words) or 
+    if (any(p in dtype_upper for p in pkt_phrases) or
+        any(p in comments_upper for p in pkt_phrases) or
+        pkt_exact_words.intersection(dtype_words) or
         pkt_exact_words.intersection(comments_words)):
         return "PKT"
 
     # Bifold Door check
     bifold_phrases = ["BIFOLD", "BI-FOLD"]
     bifold_exact_words = {"BIFOLD"}
-    if (any(p in dtype_upper for p in bifold_phrases) or 
-        any(p in comments_upper for p in bifold_phrases) or 
-        bifold_exact_words.intersection(dtype_words) or 
+    if (any(p in dtype_upper for p in bifold_phrases) or
+        any(p in comments_upper for p in bifold_phrases) or
+        bifold_exact_words.intersection(dtype_words) or
         bifold_exact_words.intersection(comments_words)):
         return "BIFOLD"
 
     # Bypass Door check
     bypass_phrases = ["BYPASS", "BY-PASS"]
     bypass_exact_words = {"BYPASS"}
-    if (any(p in dtype_upper for p in bypass_phrases) or 
-        any(p in comments_upper for p in bypass_phrases) or 
-        bypass_exact_words.intersection(dtype_words) or 
+    if (any(p in dtype_upper for p in bypass_phrases) or
+        any(p in comments_upper for p in bypass_phrases) or
+        bypass_exact_words.intersection(dtype_words) or
         bypass_exact_words.intersection(comments_words)):
         return "BYPASS"
+
+    # Double Egress Door check (before generic DA/Pair checks)
+    de_phrases = ["DOUBLE EGRESS", "DOUBLE-EGRESS", "DBL EGRESS", "DBL-EGRESS", "EGRESS PAIR", "CROSS CORRIDOR", "CROSS-CORRIDOR"]
+    de_exact_words = {"DE"}
+    if (any(p in dtype_upper for p in de_phrases) or
+        any(p in comments_upper for p in de_phrases) or
+        de_exact_words.intersection(dtype_words) or
+        de_exact_words.intersection(comments_words)):
+        return "DE"
 
     # Double Acting Door check
     da_phrases = ["DBL ACT", "DBL-ACT", "DOUBLE ACTING", "DOUBLE-ACTING", "DOUBLE ACT", "DOUBLE-ACT", "ANTI-BARRICADE", "ANTI - BARRICADE"]
     da_exact_words = {"DA", "AB"}
-    if (any(p in dtype_upper for p in da_phrases) or 
-        any(p in comments_upper for p in da_phrases) or 
-        da_exact_words.intersection(dtype_words) or 
+    if (any(p in dtype_upper for p in da_phrases) or
+        any(p in comments_upper for p in da_phrases) or
+        da_exact_words.intersection(dtype_words) or
         da_exact_words.intersection(comments_words)):
         return "DA"
 
-    # Pair Door (PR) Detection:
+    # Unequal Pair Door check (must come BEFORE generic PR to avoid being swallowed)
+    uneq_phrases = ["UNEQUAL PAIR", "UNEQUAL-PAIR", "UNQUAL PAIR", "PR-UNEQ", "PR (UNEQUAL)", "1-LEAF & 1-HALF", "LEAF AND HALF", "UNEQUAL"]
+    uneq_exact_words = {"UNEQ"}
+    if (any(p in dtype_upper for p in uneq_phrases) or
+        any(p in comments_upper for p in uneq_phrases) or
+        uneq_exact_words.intersection(dtype_words) or
+        uneq_exact_words.intersection(comments_words)):
+        return "UNEQ"
+
+    # Pair Door (PR) Detection: two equal leaves (w_a AND w_b present, or explicit PR/PAIR/DOUBLE keyword)
     if (w_a and w_b) or p2_type or any(p in dtype_upper for p in ["PR", "PAIR", "DOUBLE", "DBL"]) or any(p in comments_upper for p in ["PR", "PAIR", "DOUBLE"]):
         return "PR"
 
@@ -1350,21 +1383,400 @@ def classify_opening_from_schedule(item: dict) -> str:
     else:
         if is_sf_token(panel_a) or is_sf_token(panel_b):
             return "STOREFRONT"
-        elif not panel_a and not panel_b:
-            return "STOREFRONT"
 
-    if w_a:
+    if w_a or any(p in dtype_upper for p in ["SINGLE", "SGL", "FLUSH", "1 LEAF", "DOOR"]) or dtype_upper in ["SGL", "SINGLE", ""]:
         return "SGL"
 
-    return "UNKNOWN"
+    return "SGL"
+
+# ---------------------------------------------------------------------------
+# Geometric Detection Helpers — Sliding & Special Door Types
+# ---------------------------------------------------------------------------
+
+def _is_dashed_path(d: dict) -> bool:
+    """Return True if a drawing path has a non-trivial dash pattern."""
+    dashes = d.get("dashes")
+    if dashes is None:
+        return False
+    if isinstance(dashes, str):
+        return dashes.strip() not in ("", "[] 0", "[] 0.0", "[]")
+    if isinstance(dashes, (list, tuple)):
+        return len(dashes) > 0
+    return False
+
+
+def _is_arc_path(d: dict) -> bool:
+    """Return True if a drawing path contains any Bezier curve command."""
+    return any(it[0] in ("c", "v", "y", "qu") for it in d.get("items", []))
+
+
+def _path_center(d: dict):
+    """Return (cx, cy) centroid of a drawing path's bounding rect."""
+    import fitz as fz
+    r = fz.Rect(d.get("rect", [0, 0, 0, 0]))
+    return (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+
+
+def detect_bypass(drawings_near: list, mark_cx: float, mark_cy: float) -> bool:
+    """
+    BYPASS (04 By-Pass Sliding): Two flat panels on PARALLEL double tracks.
+
+    Geometric signature:
+    - >= 2 dashed, non-curved, long (>= 25pt) lines within 90pt of mark.
+    - The two dashed panels are at SIMILAR offset positions on the track axis
+      (within 20pt perpendicular to the wall) but are slightly offset from each other.
+    - No swing arc present.
+    """
+    import fitz as fz
+    dashed_panels = []
+    for d in drawings_near:
+        cx, cy = _path_center(d)
+        dist = ((cx - mark_cx) ** 2 + (cy - mark_cy) ** 2) ** 0.5
+        if dist > 90:
+            continue
+        if not _is_dashed_path(d):
+            continue
+        if _is_arc_path(d):
+            continue
+        r = fz.Rect(d.get("rect", [0, 0, 0, 0]))
+        # Must be long enough to represent a sliding panel
+        if max(r.width, r.height) >= 25.0:
+            dashed_panels.append(r)
+
+    if len(dashed_panels) < 2:
+        return False
+
+    # Two dashed panels must be CLOSE together perpendicular to the wall
+    # (within the wall thickness ~20pt), suggesting they ride the same pair of tracks.
+    for i in range(len(dashed_panels)):
+        for j in range(i + 1, len(dashed_panels)):
+            ra, rb = dashed_panels[i], dashed_panels[j]
+            # Check y-axis proximity (horizontal bypass) OR x-axis proximity (vertical bypass)
+            y_close = abs((ra.y0 + ra.y1) / 2 - (rb.y0 + rb.y1) / 2) <= 22.0
+            x_close = abs((ra.x0 + ra.x1) / 2 - (rb.x0 + rb.x1) / 2) <= 22.0
+            if y_close or x_close:
+                logger.info("CV Drawing Analysis: BYPASS signature — 2 parallel dashed panels on double track.")
+                return True
+    return False
+
+
+def detect_pocket(drawings_near: list, mark_cx: float, mark_cy: float) -> bool:
+    """
+    PKT (06 Pocket Door): Panel sliding INTO a hollow wall cavity.
+
+    Geometric signature:
+    - Exactly 1 dashed, non-curved, long (>= 25pt) line within 80pt of mark.
+    - OR 1 dashed panel AND a solid filled rect (the wall pocket body) in close proximity.
+    - BYPASS is excluded before this is called (BYPASS has >= 2 dashed panels).
+    - No swing arc present.
+    """
+    import fitz as fz
+    dashed_panels = []
+    solid_blocks = []
+    for d in drawings_near:
+        cx, cy = _path_center(d)
+        dist = ((cx - mark_cx) ** 2 + (cy - mark_cy) ** 2) ** 0.5
+        if dist > 80:
+            continue
+        if _is_arc_path(d):
+            continue
+        r = fz.Rect(d.get("rect", [0, 0, 0, 0]))
+        if _is_dashed_path(d) and max(r.width, r.height) >= 25.0:
+            dashed_panels.append(r)
+        elif d.get("fill") is not None and r.width >= 8.0 and r.height >= 8.0:
+            solid_blocks.append(r)
+
+    if len(dashed_panels) == 1:
+        logger.info("CV Drawing Analysis: PKT signature — 1 dashed panel inside wall cavity.")
+        return True
+    # Also accept: 1 dashed panel with an adjacent solid block (the pocket wall body)
+    if len(dashed_panels) >= 1 and solid_blocks:
+        logger.info("CV Drawing Analysis: PKT signature — dashed panel + solid pocket wall body.")
+        return True
+    return False
+
+
+def detect_bifold(drawings_near: list, mark_cx: float, mark_cy: float) -> bool:
+    """
+    BIFOLD (07 Bi-Fold Door): Accordion V-shape panels + overhead dashed track.
+
+    Geometric signature:
+    - 1+ dashed long (>= 30pt) line (overhead track).
+    - >= 2 short-to-medium (8–55pt) non-arc, non-dashed lines that are neither
+      purely horizontal nor purely vertical (diagonal/angled accordion panels).
+    - All within 70pt of mark.
+    """
+    import fitz as fz
+    has_overhead_track = False
+    angled_lines = []
+
+    for d in drawings_near:
+        cx, cy = _path_center(d)
+        dist = ((cx - mark_cx) ** 2 + (cy - mark_cy) ** 2) ** 0.5
+        if dist > 70:
+            continue
+        if _is_arc_path(d):
+            continue
+        r = fz.Rect(d.get("rect", [0, 0, 0, 0]))
+        longer_dim = max(r.width, r.height)
+        shorter_dim = min(r.width, r.height)
+
+        if _is_dashed_path(d) and longer_dim >= 30.0:
+            has_overhead_track = True
+
+        if not _is_dashed_path(d) and 8.0 <= longer_dim <= 55.0:
+            # Angled line: not purely axis-aligned
+            # aspect ratio 0.15–6.5 means it has both width AND height (diagonal)
+            aspect = r.width / max(r.height, 0.1)
+            if 0.15 <= aspect <= 6.5 and shorter_dim >= 4.0:
+                angled_lines.append(r)
+
+    if has_overhead_track and len(angled_lines) >= 2:
+        logger.info(f"CV Drawing Analysis: BIFOLD signature — overhead track + {len(angled_lines)} angled accordion panel lines.")
+        return True
+    return False
+
+
+def detect_barn(drawings_near: list, mark_cx: float, mark_cy: float) -> bool:
+    """
+    SLD (05 Barn Door): Surface-mounted panel along wall face with exposed track.
+
+    Geometric signature:
+    - 1 solid (non-dashed), long (>= 25pt), non-arc line within 90pt of mark.
+    - The panel's CENTER is significantly OFFSET from the mark center (> 20pt),
+      meaning it has already slid past the opening.
+    - No swing arc present.
+    """
+    import fitz as fz
+    flat_panels = []
+    for d in drawings_near:
+        cx, cy = _path_center(d)
+        dist = ((cx - mark_cx) ** 2 + (cy - mark_cy) ** 2) ** 0.5
+        if dist > 90:
+            continue
+        if _is_dashed_path(d):
+            continue  # barn panel is solid (not dashed — that's PKT)
+        if _is_arc_path(d):
+            continue
+        r = fz.Rect(d.get("rect", [0, 0, 0, 0]))
+        if max(r.width, r.height) >= 25.0:
+            flat_panels.append((r, cx, cy))
+
+    for r, pcx, pcy in flat_panels:
+        offset = ((pcx - mark_cx) ** 2 + (pcy - mark_cy) ** 2) ** 0.5
+        # Panel center is displaced from the door mark → slid open along the wall
+        if offset > 20.0:
+            logger.info(f"CV Drawing Analysis: SLD (Barn) signature — solid panel offset {offset:.1f}pt from mark center.")
+            return True
+    return False
+
+
+def detect_double_egress(groups: list, mark_cx: float, mark_cy: float) -> bool:
+    """
+    DE (08 Double Egress Door): Two arc groups swinging into OPPOSITE rooms.
+
+    Geometric signature:
+    - Two distinct arc groups present.
+    - One arc group is on Side A of wall face, other arc group is on Side B of wall face.
+    - Horizontal wall (wall line Y=mark_cy):
+      - One arc has cy < mark_cy - CROSS_WALL_MIN and abs(cx - mark_cx) < 45pt
+      - Other arc has cy > mark_cy + CROSS_WALL_MIN and abs(cx - mark_cx) < 45pt
+    - Vertical wall (wall line X=mark_cx):
+      - One arc has cx < mark_cx - CROSS_WALL_MIN and abs(cy - mark_cy) < 45pt
+      - Other arc has cx > mark_cx + CROSS_WALL_MIN and abs(cy - mark_cy) < 45pt
+    """
+    if len(groups) < 2:
+        return False
+
+    centroids = []
+    for g in groups:
+        if not g:
+            continue
+        cxs = [a["cx"] for a in g]
+        cys = [a["cy"] for a in g]
+        centroids.append((sum(cxs) / len(cxs), sum(cys) / len(cys)))
+
+    if len(centroids) < 2:
+        return False
+
+    CROSS_WALL_MIN = 25.0  # min pts cross-wall distance from centerline
+
+    # Check horizontal wall DE: arcs split above and below mark_cy, BOTH near mark_cx
+    above_h = [c for c in centroids if c[1] < mark_cy - CROSS_WALL_MIN and abs(c[0] - mark_cx) < 45.0]
+    below_h = [c for c in centroids if c[1] > mark_cy + CROSS_WALL_MIN and abs(c[0] - mark_cx) < 45.0]
+    if above_h and below_h:
+        logger.info(
+            f"CV Drawing Analysis: DE (Double Egress) -- horizontal wall: "
+            f"arcs split above (cy<{mark_cy-CROSS_WALL_MIN:.1f}) and below (cy>{mark_cy+CROSS_WALL_MIN:.1f})."
+        )
+        return True
+
+    # Check vertical wall DE: arcs split left and right of mark_cx, BOTH near mark_cy
+    left_v  = [c for c in centroids if c[0] < mark_cx - CROSS_WALL_MIN and abs(c[1] - mark_cy) < 45.0]
+    right_v = [c for c in centroids if c[0] > mark_cx + CROSS_WALL_MIN and abs(c[1] - mark_cy) < 45.0]
+    if left_v and right_v:
+        logger.info(
+            f"CV Drawing Analysis: DE (Double Egress) -- vertical wall: "
+            f"arcs split left (cx<{mark_cx-CROSS_WALL_MIN:.1f}) and right (cx>{mark_cx+CROSS_WALL_MIN:.1f})."
+        )
+        return True
+
+    return False
+
+
+def detect_sidelight_geometry(drawings_near: list, mark_cx: float, mark_cy: float) -> dict:
+    """
+    Plan View Sidelight Vector Detection Helper:
+    Scans vector drawings within 110pt of door mark for adjacent sidelight glass frames.
+    
+    Geometric signature:
+    - Non-arc, non-dashed bounding rectangle with aspect ratio between 2.5:1 and 12:1.
+    - Embedded in or running along the wall line near the door opening (longer dimension 12pt to 65pt).
+    - Distance from glass frame centroid to mark center is within 15pt to 110pt.
+    
+    Returns: {"has_sidelite_geom": bool, "sidelight_width_pt": float}
+    """
+    import fitz as fz
+    sidelight_frames = []
+    
+    for d in drawings_near:
+        if _is_arc_path(d) or _is_dashed_path(d):
+            continue
+        cx, cy = _path_center(d)
+        dist_to_mark = ((cx - mark_cx) ** 2 + (cy - mark_cy) ** 2) ** 0.5
+        if dist_to_mark > 110.0 or dist_to_mark < 15.0:
+            continue
+        
+        r = fz.Rect(d.get("rect", [0, 0, 0, 0]))
+        w, h = r.width, r.height
+        longer_dim = max(w, h)
+        shorter_dim = min(w, h)
+        
+        # Sidelight frame box: longer_dim 12-65pt (representing 1'-0" to 4'-0" sidelight panel)
+        # shorter_dim 3-18pt (representing frame depth / wall width)
+        if 12.0 <= longer_dim <= 65.0 and 3.0 <= shorter_dim <= 18.0:
+            aspect = longer_dim / max(shorter_dim, 0.1)
+            if 2.5 <= aspect <= 12.0:
+                sidelight_frames.append((r, longer_dim, dist_to_mark))
+                
+    if sidelight_frames:
+        best_frame = min(sidelight_frames, key=lambda x: x[2])
+        logger.info(
+            f"CV Drawing Analysis: Sidelight vector signature detected -- glass frame "
+            f"width={best_frame[1]:.1f}pt at dist={best_frame[2]:.1f}pt from mark center."
+        )
+        return {"has_sidelite_geom": True, "sidelight_width_pt": round(best_frame[1], 1)}
+        
+    return {"has_sidelite_geom": False, "sidelight_width_pt": 0.0}
+
+
+def detect_transom_geometry(drawings_near: list, mark_cx: float, mark_cy: float) -> dict:
+    """
+    Plan & Elevation Transom CAD Vector Detection Helper:
+    Scans vector paths near the door mark for overhead transom header lines or transom glass frames.
+
+    Geometric signature:
+    - 2D Plan: Dashed or thin overhead line spanning across opening width (24pt to 80pt long)
+      within 60pt of mark center.
+    - Elevation CAD: Rectangular frame box sitting directly above the door header line
+      (width matching door width +/- 6pt, height 8pt to 45pt).
+
+    Returns: {"has_transom_geom": bool, "transom_height_pt": float}
+    """
+    import fitz as fz
+    transom_elements = []
+
+    for d in drawings_near:
+        if _is_arc_path(d):
+            continue
+        cx, cy = _path_center(d)
+        dist_to_mark = ((cx - mark_cx) ** 2 + (cy - mark_cy) ** 2) ** 0.5
+        if dist_to_mark > 80.0:
+            continue
+
+        r = fz.Rect(d.get("rect", [0, 0, 0, 0]))
+        longer_dim = max(r.width, r.height)
+        shorter_dim = min(r.width, r.height)
+
+        # Overhead transom line or frame rectangle:
+        # Spans door width (24-80pt) with thin depth (<= 25pt)
+        if 24.0 <= longer_dim <= 80.0 and shorter_dim <= 25.0:
+            # Over-head header line or dashed stroke
+            if _is_dashed_path(d) or (8.0 <= shorter_dim <= 25.0 and dist_to_mark < 60.0):
+                transom_elements.append((r, shorter_dim, dist_to_mark))
+
+    if transom_elements:
+        best_elem = min(transom_elements, key=lambda x: x[2])
+        logger.info(
+            f"CV Drawing Analysis: Transom vector signature detected -- header frame/line "
+            f"span={max(best_elem[0].width, best_elem[0].height):.1f}pt at dist={best_elem[2]:.1f}pt."
+        )
+        return {"has_transom_geom": True, "transom_height_pt": round(best_elem[1], 1)}
+
+    return {"has_transom_geom": False, "transom_height_pt": 0.0}
+
+
+def detect_clerestory_geometry(drawings_near: list, mark_cx: float, mark_cy: float) -> dict:
+    """
+    Plan & Elevation Clerestory CAD Vector Detection Helper:
+    Scans vector paths near the door mark for high-wall ribbon glass frame vector paths.
+
+    Geometric signature:
+    - High-level long horizontal/vertical window frame box or ribbon glass path
+      elevated > 50pt above/near the door mark.
+    - Non-arc, non-dashed (or high-level dashed) path with long span (>= 40pt).
+
+    Returns: {"has_clerestory_geom": bool}
+    """
+    import fitz as fz
+    clerestory_paths = []
+
+    for d in drawings_near:
+        if _is_arc_path(d):
+            continue
+        cx, cy = _path_center(d)
+        dist_to_mark = ((cx - mark_cx) ** 2 + (cy - mark_cy) ** 2) ** 0.5
+        if dist_to_mark > 120.0 or dist_to_mark < 35.0:
+            continue
+
+        r = fz.Rect(d.get("rect", [0, 0, 0, 0]))
+        longer_dim = max(r.width, r.height)
+        shorter_dim = min(r.width, r.height)
+
+        # High ribbon window path: long span >= 40pt, depth 4-30pt
+        if longer_dim >= 40.0 and 4.0 <= shorter_dim <= 30.0:
+            clerestory_paths.append((r, dist_to_mark))
+
+    if clerestory_paths:
+        best_path = min(clerestory_paths, key=lambda x: x[1])
+        logger.info(
+            f"CV Drawing Analysis: Clerestory vector signature detected -- high ribbon glass path "
+            f"span={max(best_path[0].width, best_path[0].height):.1f}pt at dist={best_path[1]:.1f}pt."
+        )
+        return {"has_clerestory_geom": True}
+
+    return {"has_clerestory_geom": False}
+
 
 def classify_opening_from_drawings(drawings_near: list, mark_rect, item: dict = None) -> str:
     """
-    Layer 2 CAD Vector Geometry Classifier: Analyzes raw PDF vector paths in 65pt radius.
+    Layer 2 CAD Vector Geometry Classifier: Analyzes raw PDF vector paths near the door mark.
+
+    Detection priority order:
+      Rule 1  → Schedule facts (Layer 1) — highest confidence
+      Rule 2  → DA: dashed short stroke (both-side swing)
+      Rule 3a → BYPASS: 2 parallel dashed panels on double track
+      Rule 3b → PKT: 1 dashed panel inside wall cavity
+      Rule 3c → BIFOLD: angled V-lines + dashed overhead track
+      Rule 3d → SLD: solid panel offset from door mark center
+      Rule 4  → CO: cased jamb end-caps only, no arcs, no panels
+      Rule 5  → Arc analysis: DE (opposite sides) / UNEQ (width ratio) / PR / SGL
     """
     import fitz as fz
 
-    # 1. Rule 1: Check raw schedule facts FIRST.
+    # ------------------------------------------------------------------
+    # Rule 1: Schedule facts (Layer 1) — always first
+    # ------------------------------------------------------------------
     if item and isinstance(item, dict):
         l1 = classify_opening_from_schedule(item)
         if l1 != "UNKNOWN":
@@ -1374,73 +1786,104 @@ def classify_opening_from_drawings(drawings_near: list, mark_rect, item: dict = 
     mark_cx = (mark_rect.x0 + mark_rect.x1) / 2
     mark_cy = (mark_rect.y0 + mark_rect.y1) / 2
 
-    # 2. Rule 2: Check for Double-Acting (DA) dashed path strokes near the mark (ignoring label bubbles)
+    # ------------------------------------------------------------------
+    # Rule 2: DA — dashed path stroke with short span near the mark
+    # ------------------------------------------------------------------
     for d in drawings_near:
-        d_rect = fz.Rect(d.get("rect"))
-        cx = (d_rect.x0 + d_rect.x1) / 2
-        cy = (d_rect.y0 + d_rect.y1) / 2
+        r = fz.Rect(d.get("rect", [0, 0, 0, 0]))
+        cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
         dist = ((cx - mark_cx) ** 2 + (cy - mark_cy) ** 2) ** 0.5
-        area = d_rect.width * d_rect.height
-
-        # Skip mark label bubble annotation strokes
+        area = r.width * r.height
+        # Skip label bubble annotation strokes
         if dist < 15 and area < 200:
             continue
+        if dist > 65:
+            continue
+        if not _is_dashed_path(d):
+            continue
+        items_d = d.get("items", [])
+        has_curves = any(it[0] in ("c", "qu") for it in items_d)
+        # Long straight dashes are wall lines, not door swings
+        if not has_curves and (r.width > 80 or r.height > 80):
+            continue
+        logger.info(f"CV Drawing Analysis: Dashed stroke near mark (dist={dist:.1f}pt, w={r.width:.0f}, h={r.height:.0f}) -> DA")
+        return "DA"
 
-        if dist < 65:
-            dashes = d.get("dashes", None)
-            is_dashed = False
-            if dashes is not None:
-                if isinstance(dashes, str):
-                    clean = dashes.strip()
-                    if clean and clean not in ("[] 0", "[] 0.0", "[]", ""):
-                        is_dashed = True
-                elif isinstance(dashes, (list, tuple)) and len(dashes) > 0:
-                    is_dashed = True
+    # ------------------------------------------------------------------
+    # Rule 3 — Sliding family: detect before arc collection
+    # Each helper checks within its own radius without touching arcs.
+    # ------------------------------------------------------------------
 
-            if is_dashed:
-                # To distinguish dashed walls from dashed swings, ensure it's not a long straight wall line
-                is_straight_long = False
-                items = d.get("items", [])
-                has_curves = any(it[0] in ("c", "qu") for it in items)
-                
-                # If it's a straight segment and has a large span, it's a wall line, not a door swing
-                if not has_curves and (d_rect.width > 80 or d_rect.height > 80):
-                    is_straight_long = True
-                    
-                if not is_straight_long:
-                    logger.info(f"CV Drawing Analysis: Found dashed stroke path near mark (dist={dist:.1f}) -> DA")
-                    return "DA"
+    # Quick check: are there ANY arc curves within 65pt?
+    def _has_nearby_arcs(radius=65.0):
+        for d in drawings_near:
+            if not _is_arc_path(d):
+                continue
+            r = fz.Rect(d.get("rect", [0, 0, 0, 0]))
+            cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+            dist = ((cx - mark_cx) ** 2 + (cy - mark_cy) ** 2) ** 0.5
+            area = r.width * r.height
+            if dist < 15 and area < 200:
+                continue  # label bubble
+            if dist <= radius:
+                return True
+        return False
 
-    # 3. Rule 3: Collect arc curves for single vs double leaf counting (tight 65pt radius)
-    # 3. Rule 3: Progressive Multi-Radius Arc Collection (25pt baseline -> 45pt -> 65pt fallback)
+    if not _has_nearby_arcs():
+        # No swing arcs present → must be a non-swinging type
+
+        # Rule 3a: BYPASS — 2 parallel dashed panels
+        if detect_bypass(drawings_near, mark_cx, mark_cy):
+            return "BYPASS"
+
+        # Rule 3b: PKT — 1 dashed panel in wall cavity (BYPASS excluded above)
+        if detect_pocket(drawings_near, mark_cx, mark_cy):
+            return "PKT"
+
+        # Rule 3c: BIFOLD — angled V-lines + dashed overhead track
+        if detect_bifold(drawings_near, mark_cx, mark_cy):
+            return "BIFOLD"
+
+        # Rule 3d: SLD (Barn) — solid panel offset from door mark center
+        if detect_barn(drawings_near, mark_cx, mark_cy):
+            return "SLD"
+
+        # Rule 4: CO — cased jamb end-cap lines only (no arcs, no panels)
+        if detect_wall_endcap_jamb_signature(mark_rect, drawings_near):
+            logger.info("CV Drawing Analysis: CO signature — cased jamb end-caps, no arc, no panel.")
+            return "CO"
+
+        # Fallback: no arcs, no sliding geometry, no cased jamb → treat as plain single opening
+        logger.info("CV Drawing Analysis: No arcs and no sliding/CO signature found -> SGL fallback.")
+        return "SGL"
+
+    # ------------------------------------------------------------------
+    # Rule 5 — Swing arc analysis (SGL / PR / UNEQ / DE)
+    # Arcs ARE present. Collect with progressive radius.
+    # ------------------------------------------------------------------
     def collect_arcs_for_radius(r_limit):
         collected = []
+        # Polyline chain arcs
         poly_arcs = find_polyline_chain_arcs(drawings_near, (mark_cx, mark_cy), radius=r_limit)
         for arc in poly_arcs:
             arc_cx, arc_cy = arc["center"]
             dist = ((arc_cx - mark_cx) ** 2 + (arc_cy - mark_cy) ** 2) ** 0.5
             if dist <= r_limit:
-                collected.append({"rect": arc["rect"], "cx": arc_cx, "cy": arc_cy, "dist": dist})
-
+                r_rect = arc.get("rect")
+                collected.append({"rect": fz.Rect(r_rect) if r_rect else fz.Rect(), "cx": arc_cx, "cy": arc_cy, "dist": dist})
+        # Direct Bezier curve paths
         for d in drawings_near:
-            items = d.get("items", [])
-            has_curve = any(it[0] in ("c", "qu") for it in items)
-            if not has_curve:
+            if not _is_arc_path(d):
                 continue
-
-            arc_rect = fz.Rect(d.get("rect"))
+            arc_rect = fz.Rect(d.get("rect", [0, 0, 0, 0]))
             arc_cx = (arc_rect.x0 + arc_rect.x1) / 2
             arc_cy = (arc_rect.y0 + arc_rect.y1) / 2
             dist = ((arc_cx - mark_cx) ** 2 + (arc_cy - mark_cy) ** 2) ** 0.5
-
             if dist > r_limit:
                 continue
-
-            # Skip tiny mark-label annotation bubble arcs
             arc_area = arc_rect.width * arc_rect.height
             if dist < 15 and arc_area < 200:
-                continue
-
+                continue  # label bubble
             collected.append({"rect": arc_rect, "cx": arc_cx, "cy": arc_cy, "dist": dist})
         return collected
 
@@ -1451,12 +1894,14 @@ def classify_opening_from_drawings(drawings_near: list, mark_rect, item: dict = 
         if candidate_arcs:
             arc_paths = candidate_arcs
             used_radius = r_check
-            logger.info(f"CV Drawing Analysis: Found {len(arc_paths)} arc curve(s) at tight radius {r_check}pt.")
+            logger.info(f"CV Drawing Analysis: Found {len(arc_paths)} arc curve(s) at radius {r_check}pt.")
             break
 
     if not arc_paths:
+        logger.info("CV Drawing Analysis: No arc paths resolved -> SGL fallback.")
         return "SGL"
 
+    # --- Group arc paths by centroid proximity ---
     def centroid_dist(a, b):
         return ((a["cx"] - b["cx"]) ** 2 + (a["cy"] - b["cy"]) ** 2) ** 0.5
 
@@ -1472,11 +1917,33 @@ def classify_opening_from_drawings(drawings_near: list, mark_rect, item: dict = 
             groups.append([arc])
 
     distinct_leaves = len(groups)
-    logger.info(f"CV Drawing Analysis: {distinct_leaves} distinct door leaf group(s) at radius {used_radius}pt -> {'PR' if distinct_leaves >= 2 else 'SGL'}")
+    logger.info(f"CV Drawing Analysis: {distinct_leaves} distinct arc group(s) at radius {used_radius}pt.")
 
-    if distinct_leaves >= 2:
-        return "PR"
-    return "SGL"
+    if distinct_leaves == 1:
+        return "SGL"
+
+    # --- 2+ arc groups: DE / UNEQ / PR ---
+
+    # Rule 5a: DE (Double Egress) — arcs on OPPOSITE sides of wall centerline
+    if detect_double_egress(groups, mark_cx, mark_cy):
+        return "DE"
+
+    # Rule 5b: UNEQ vs PR — compare bounding rect widths of arc groups
+    # If the wider group's arc rect is >30% wider than the narrower group's, it's UNEQ.
+    def _group_max_width(g):
+        widths = [a["rect"].width for a in g if hasattr(a.get("rect"), "width")]
+        return max(widths) if widths else 0.0
+
+    group_widths = sorted([_group_max_width(g) for g in groups], reverse=True)
+    if len(group_widths) >= 2 and group_widths[0] > 0:
+        wider, narrower = group_widths[0], group_widths[1]
+        ratio = (wider - narrower) / wider
+        if ratio > 0.30:
+            logger.info(f"CV Drawing Analysis: UNEQ signature — arc width ratio {ratio:.2f} (wider={wider:.1f}pt, narrower={narrower:.1f}pt).")
+            return "UNEQ"
+
+    logger.info(f"CV Drawing Analysis: {distinct_leaves} equal-width arc groups -> PR")
+    return "PR"
 
 
 async def get_location_from_crop(crop_path: str, mark: str, floor_no: int, semaphore: asyncio.Semaphore) -> str:

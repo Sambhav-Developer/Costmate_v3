@@ -17,6 +17,9 @@
     "@grapecity/wijmo.xlsx": "^5.20261.50",
     "@gsap/react": "^2.1.2",
     "@react-oauth/google": "^0.13.5",
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.1",
+    "@types/three": "^0.186.0",
     "ag-grid-community": "^35.3.1",
     "ag-grid-react": "^35.3.1",
     "clsx": "^2.1.1",
@@ -31,6 +34,7 @@
     "react-dom": "19.2.4",
     "react-zoom-pan-pinch": "^4.2.0",
     "tailwind-merge": "^3.6.0",
+    "three": "^0.186.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

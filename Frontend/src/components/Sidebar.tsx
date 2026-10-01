@@ -26,7 +26,7 @@ import { api } from '../lib/api';
 import SetupWizardModal from './SetupWizardModal';
 import { motion, AnimatePresence } from 'framer-motion';
 
-type FileType = 'plan' | 'excel' | 'readme' | 'parameters';
+type FileType = 'plan' | 'excel' | 'readme' | 'parameters' | 'final_excel';
 
 interface EstimationSession {
   id: string;
@@ -97,6 +97,12 @@ function getSubItems(session: EstimationSession): SubItem[] {
     {
       type: 'excel',
       label: 'BOQ Excel',
+      icon: <FileSpreadsheet className="w-3 h-3" />,
+      available: done,
+    },
+    {
+      type: 'final_excel',
+      label: 'Final Excel',
       icon: <FileSpreadsheet className="w-3 h-3" />,
       available: done,
     },

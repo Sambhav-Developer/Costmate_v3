@@ -212,8 +212,8 @@ const InteractiveFloorPlanViewer = ({
   useEffect(() => {
     if (containerReady && naturalSize && !hasFitOnce.current && containerRef.current) {
       const cw = containerRef.current.clientWidth - 40;
-      const ch = containerRef.current.clientHeight - 120;
-      const fitScale = Math.min(cw / naturalSize.width, ch / naturalSize.height);
+      // Default to fit width so the plan appears wider automatically
+      const fitScale = cw / naturalSize.width;
       setTransform({ scale: fitScale, x: 0, y: 0 });
       hasFitOnce.current = true;
     }
@@ -1117,35 +1117,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 sm:p-10 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300 font-sans">
       <div className="flex w-full h-full max-w-[1400px] max-h-[90vh] bg-bg rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.5)] overflow-hidden border border-white/10 relative">
-        {/* Left Side: Technical Blueprint Visuals */}
-        {step === 1 && (
-          <div 
-            className="hidden lg:block w-[45%] relative border-r border-border overflow-hidden shrink-0 bg-[#0f172a]"
-          >
-            {/* Faded construction image */}
-            <img src="/setup-hero-bg.jpg" alt="Blueprint to Reality" className="absolute inset-0 w-full h-full object-cover opacity-90 pointer-events-none" />
-            <div className="absolute inset-0 bg-gradient-to-t from-[#0f172a] via-[#0f172a]/70 to-transparent pointer-events-none"></div>
-            
-            {/* Grid Pattern Overlay */}
-            <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'radial-gradient(rgba(255,255,255,1) 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
-            
-            {/* CAD Registration Marks */}
-            <div className="absolute top-6 left-6 text-white/30 font-mono text-sm leading-none">+</div>
-            <div className="absolute top-6 right-6 text-white/30 font-mono text-sm leading-none">+</div>
-            <div className="absolute bottom-6 left-6 text-white/30 font-mono text-sm leading-none">+</div>
-            <div className="absolute bottom-6 right-6 text-white/30 font-mono text-sm leading-none">+</div>
 
-            <div className="absolute bottom-16 left-12 pr-12 z-10">
-               <div className="w-12 h-12 bg-transparent flex items-center justify-center border border-white/20 mb-8 rounded-none">
-                  <Building2 className="w-5 h-5 text-white/70" />
-               </div>
-               <h2 className="text-2xl font-black text-white mb-4 tracking-[0.2em] uppercase font-mono leading-tight">Project<br/>Initialization</h2>
-               <p className="text-white/50 text-xs leading-relaxed font-mono tracking-widest uppercase mt-6 border-l border-white/20 pl-4">
-                 Configure global parameters<br/>and upload schedules to begin<br/>AI-assisted civil estimation.
-               </p>
-            </div>
-          </div>
-        )}
         
         {/* Right Side: Interactive Form */}
         <div 
@@ -1153,32 +1125,36 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
           style={{ backgroundImage: 'radial-gradient(rgba(128,128,128,0.15) 1px, transparent 1px)', backgroundSize: '20px 20px' }}
         >
         
-        {/* Header */}
-        <div className="flex items-center justify-between px-10 py-6 shrink-0 z-10 bg-bg/80 backdrop-blur-sm border-b border-border/50">
-          <div className="flex items-center gap-3">
-            <h2 className="text-xl font-black uppercase tracking-widest text-fg">Project Config</h2>
+        {/* Header & Stepper Combined */}
+        <div className="flex items-center justify-between px-8 py-5 shrink-0 z-10 bg-bg/80 backdrop-blur-sm border-b border-border/50 relative">
+          <div className="flex items-center gap-3 w-1/4">
+            <h2 className="text-lg font-black uppercase tracking-widest text-fg">Project Config</h2>
           </div>
-          <button onClick={onClose} className="p-2.5 bg-panel hover:bg-panel rounded-xl border border-border text-muted hover:text-fg transition-all">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+          
+          <div className="flex-1 flex items-center justify-center absolute inset-0 pointer-events-none">
+            <div className="flex items-center gap-8 pointer-events-auto">
+              {[
+                { num: 1, label: 'Global Setup' },
+                { num: 2, label: 'Floor Layouts & Details' }
+              ].map((s, i) => (
+                <React.Fragment key={s.num}>
+                  <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setStep(s.num)}>
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all ${step === s.num ? 'bg-accent text-accent-fg shadow-[0_0_15px_var(--accent)]' : step > s.num ? 'bg-accent/20 text-accent border border-accent/50' : 'bg-panel border border-border text-muted group-hover:bg-panel'}`}>
+                      {step > s.num ? <Check className="w-3.5 h-3.5" /> : s.num}
+                    </div>
+                    <span className={`text-xs font-bold transition-colors tracking-wide ${step === s.num ? 'text-fg' : step > s.num ? 'text-fg opacity-80' : 'text-muted group-hover:text-fg opacity-60'}`}>{s.label}</span>
+                  </div>
+                  {i < 1 && <div className={`w-8 h-[2px] rounded-full ${step > s.num ? 'bg-accent/50' : 'bg-border'}`} />}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
 
-        {/* Stepper */}
-        <div className="px-10 pb-6 border-b border-border/50 flex items-center gap-12 shrink-0 z-10">
-          {[
-            { num: 1, label: 'Global Setup' },
-            { num: 2, label: 'Floor Layouts & Details' }
-          ].map((s, i) => (
-            <React.Fragment key={s.num}>
-              <div className="flex items-center gap-4 cursor-pointer group" onClick={() => setStep(s.num)}>
-                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold transition-all ${step === s.num ? 'bg-accent text-accent-fg shadow-[0_0_15px_var(--accent)]' : step > s.num ? 'bg-accent/20 text-accent border border-accent/50' : 'bg-panel border border-border text-muted group-hover:bg-panel'}`}>
-                  {step > s.num ? <Check className="w-4 h-4" /> : s.num}
-                </div>
-                <span className={`text-sm font-bold transition-colors tracking-wide ${step === s.num ? 'text-fg' : step > s.num ? 'text-fg opacity-80' : 'text-muted group-hover:text-fg opacity-60'}`}>{s.label}</span>
-              </div>
-              {i < 1 && <div className={`w-12 h-[2px] rounded-full ${step > s.num ? 'bg-accent/50' : 'bg-border'}`} />}
-            </React.Fragment>
-          ))}
+          <div className="w-1/4 flex justify-end z-10 pointer-events-auto">
+            <button onClick={onClose} className="p-2 bg-panel hover:bg-panel rounded-lg border border-border text-muted hover:text-fg transition-all">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Error Banner */}
@@ -1205,7 +1181,25 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                       {renderInput("Project Name", globalSettings.projectName, v => setGlobalSettings({...globalSettings, projectName: v}), "e.g. Skyline Towers")}
-                      {renderSelect("Building Type", globalSettings.buildingType, v => setGlobalSettings({...globalSettings, buildingType: v}), ['Multi-Family', 'Non Multi-Family'])}
+                      <div className="flex flex-col gap-1.5 w-full">
+                        <label className="text-[10px] font-bold text-fg/60 uppercase tracking-[0.15em] font-mono pl-0.5">Building Type</label>
+                        <div className="flex bg-transparent border border-border/50 rounded-lg p-0.5">
+                          <button 
+                            type="button" 
+                            onClick={() => setGlobalSettings({...globalSettings, buildingType: 'Multi-Family'})}
+                            className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-all ${globalSettings.buildingType === 'Multi-Family' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-fg hover:bg-black/5 dark:hover:bg-white/5'}`}
+                          >
+                            Multi-Family
+                          </button>
+                          <button 
+                            type="button" 
+                            onClick={() => setGlobalSettings({...globalSettings, buildingType: 'Non Multi-Family'})}
+                            className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-all ${globalSettings.buildingType === 'Non Multi-Family' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-fg hover:bg-black/5 dark:hover:bg-white/5'}`}
+                          >
+                            Non Multi-Family
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1217,6 +1211,30 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
                   </h3>
                   
                   <div className="flex flex-col gap-4">
+                    {/* Conditional Multi-Family Schedules */}
+                    {globalSettings.buildingType === 'Multi-Family' && (
+                      <>
+                        <div className="flex items-center gap-4">
+                          <button 
+                            type="button"
+                            className="px-4 py-2 rounded-lg bg-panel border border-border flex items-center gap-2 text-sm font-medium w-52 opacity-60 cursor-not-allowed"
+                          >
+                            <Upload className="w-4 h-4" /> Upload Unit Matrix
+                          </button>
+                          <span className="text-xs text-muted font-medium italic">Pending integration</span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <button 
+                            type="button"
+                            className="px-4 py-2 rounded-lg bg-panel border border-border flex items-center gap-2 text-sm font-medium w-52 opacity-60 cursor-not-allowed"
+                          >
+                            <Upload className="w-4 h-4" /> Upload Unit Door Matrix
+                          </button>
+                          <span className="text-xs text-muted font-medium italic">Pending integration</span>
+                        </div>
+                      </>
+                    )}
+
                     {/* Door Schedule */}
                     <div className="flex items-center gap-4">
                       <button 
@@ -1396,7 +1414,7 @@ export default function SetupWizardModal({ isOpen, onClose, onTakeoffStarted }: 
             <div className="flex-1 flex h-full overflow-hidden animate-in fade-in">
               
               {/* Sidebar: Floors */}
-              <div className="w-[260px] border-r border-border bg-bg/90 flex flex-col shrink-0 relative z-10 backdrop-blur-md">
+              <div className="w-[15%] min-w-[160px] border-r border-border bg-bg/90 flex flex-col shrink-0 relative z-10 backdrop-blur-md">
                 <div className="p-4 flex justify-between items-center border-b border-border z-10 bg-panel">
                   <span className="text-[10px] font-black text-fg uppercase tracking-[0.15em]">Levels</span>
                   <button onClick={handleAddFloor} className="p-1 rounded bg-bg border border-border hover:border-accent hover:text-accent transition-all text-muted">

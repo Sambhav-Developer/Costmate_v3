@@ -284,23 +284,10 @@ export function DoorsSchedule({ doors, editable, onRemove, onChange, onAdd, newD
 
   return (
     <div className="flex flex-col gap-4">
-      {editable && (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={addColumn}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-accent/40 bg-accent/10 text-accent font-semibold hover:bg-accent/20 transition-all cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" /> Add Custom Column
-          </button>
-        </div>
-      )}
       <div className="overflow-x-auto rounded-xl border" style={{ borderColor: 'var(--panel-border)' }}>
         <table className="w-full text-xs text-left border-collapse">
           <thead>
             <tr className="border-b" style={{ borderColor: 'var(--panel-border)', background: 'var(--panel-header)' }}>
-              <th className="py-2.5 px-3 text-[10px] font-bold uppercase tracking-wide select-none" style={{ color: 'var(--muted)' }}>MARK</th>
-              <th className="py-2.5 px-3 text-[10px] font-bold uppercase tracking-wide text-center select-none" style={{ color: 'var(--muted)' }}>REVIEW</th>
               {displayKeys.map((k, idx) => (
                 <th
                   key={k}
@@ -358,19 +345,10 @@ export function DoorsSchedule({ doors, editable, onRemove, onChange, onAdd, newD
             </tr>
           </thead>
           <tbody>
-            {doors.length === 0 && <EmptyRow colSpan={totalCols} label="No doors added yet." />}
             {doors.map((d, idx) => {
               const needsReview = !!(d as any).needs_review;
               return (
                 <ScheduleRow key={idx} rowId={`door-row-${idx}`} needsReview={needsReview}>
-                  {/* MARK */}
-                  <td className="py-2.5 px-3 font-bold text-xs" style={{ color: 'var(--foreground)' }}>
-                    <TdTextInput value={(d as any).mark || (d as any).type || 'Door'} readOnly={!editable} onChange={(e: any) => onChange(idx, 'mark', e.target.value)} width={80} />
-                  </td>
-                  {/* REVIEW status badge */}
-                  <td className="py-2 px-3 text-center whitespace-nowrap">
-                    <ReviewBadge needsReview={needsReview} onClick={() => handleToggleDoorReview(idx)} />
-                  </td>
                   {displayKeys.map(k => (
                     <td key={k} className="py-2.5 px-2">
                       <TdTextInput value={(d as any)[k] || ''} readOnly={!editable} onChange={(e: any) => {
@@ -395,18 +373,11 @@ export function DoorsSchedule({ doors, editable, onRemove, onChange, onAdd, newD
           </tbody>
         </table>
       </div>
-      {editable && (
-        <AddRowForm title="Add New Door" onAdd={onAdd} values={newDoor} setValues={setNewDoor}
-          fields={[
-            { label: 'Code', key: 'type', type: 'text', width: 80 },
-            ...displayKeys.map(k => ({ label: k.toUpperCase().replace(/_/g, ' '), key: k, type: 'text', width: 100 }))
-          ]} />
-      )}
     </div>
   );
 }
 
-// ─── Windows Schedule ──────────────────────────────────────────
+// --- Windows Schedule ---
 interface WindowsProps {
   windows: Window[];
   editable: boolean;
@@ -521,23 +492,10 @@ export function WindowsSchedule({ windows, editable, onRemove, onChange, onAdd, 
 
   return (
     <div className="flex flex-col gap-4">
-      {editable && (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={addColumn}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-accent/40 bg-accent/10 text-accent font-semibold hover:bg-accent/20 transition-all cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" /> Add Custom Column
-          </button>
-        </div>
-      )}
       <div className="overflow-x-auto rounded-xl border" style={{ borderColor: 'var(--panel-border)' }}>
         <table className="w-full text-xs text-left border-collapse">
           <thead>
             <tr className="border-b" style={{ borderColor: 'var(--panel-border)', background: 'var(--panel-header)' }}>
-              <th className="py-2.5 px-3 text-[10px] font-bold uppercase tracking-wide select-none" style={{ color: 'var(--muted)' }}>MARK</th>
-              <th className="py-2.5 px-3 text-[10px] font-bold uppercase tracking-wide text-center select-none" style={{ color: 'var(--muted)' }}>REVIEW</th>
               {displayKeys.map((k, idx) => (
                 <th
                   key={k}
@@ -595,19 +553,10 @@ export function WindowsSchedule({ windows, editable, onRemove, onChange, onAdd, 
             </tr>
           </thead>
           <tbody>
-            {windows.length === 0 && <EmptyRow colSpan={totalCols} label="No windows added yet." />}
             {windows.map((w, idx) => {
               const needsReview = !!(w as any).needs_review;
               return (
                 <ScheduleRow key={idx} rowId={`window-row-${idx}`} needsReview={needsReview}>
-                  {/* MARK */}
-                  <td className="py-2.5 px-3 font-bold text-xs" style={{ color: 'var(--foreground)' }}>
-                    <TdTextInput value={(w as any).mark || (w as any).type || 'Window'} readOnly={!editable} onChange={(e: any) => onChange(idx, 'mark', e.target.value)} width={80} />
-                  </td>
-                  {/* REVIEW status badge */}
-                  <td className="py-2 px-3 text-center whitespace-nowrap">
-                    <ReviewBadge needsReview={needsReview} onClick={() => handleToggleWindowReview(idx)} />
-                  </td>
                   {displayKeys.map(k => (
                     <td key={k} className="py-2.5 px-2">
                       <TdTextInput value={(w as any)[k] || ''} readOnly={!editable} onChange={(e: any) => {
@@ -632,13 +581,6 @@ export function WindowsSchedule({ windows, editable, onRemove, onChange, onAdd, 
           </tbody>
         </table>
       </div>
-      {editable && (
-        <AddRowForm title="Add New Window" onAdd={onAdd} values={newWindow} setValues={setNewWindow}
-          fields={[
-            { label: 'Code', key: 'type', type: 'text', width: 80 },
-            ...displayKeys.map(k => ({ label: k.toUpperCase().replace(/_/g, ' '), key: k, type: 'text', width: 100 }))
-          ]} />
-      )}
     </div>
   );
 }

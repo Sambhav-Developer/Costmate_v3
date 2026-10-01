@@ -502,8 +502,7 @@ export default function Page() {
         <div className="app-bg-grid"></div>
       </div>
       {/* Top Header Navbar */}
-      <header className="px-6 py-4 flex items-center justify-between glass-header z-20 shrink-0 relative z-10"
-        style={{ boxShadow: '0 1px 0 var(--panel-border)' }}>
+      <header className="px-6 py-4 flex items-center justify-between bg-transparent z-20 shrink-0 relative z-10">
 
         {/* Brand */}
         <div className="flex items-center gap-2.5">
